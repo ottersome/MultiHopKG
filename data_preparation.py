@@ -8,10 +8,10 @@ Explanation:
 """
 import argparse
 import os
-from multihopkg import data_utils 
 from transformers import AutoTokenizer
-from multihopkg.logging import setup_logger
-from multihopkg.utils.setup import get_git_root
+from src import data_utils 
+from src.utils.logging import setup_logger
+from src.utils.setup import get_git_root
 
 def process_traditional_kb_data(data_dir:str, test:bool, model:str, add_reverse_relations: bool):
     # NOTE: Their code here
