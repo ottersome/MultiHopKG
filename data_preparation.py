@@ -12,6 +12,9 @@ from transformers import AutoTokenizer
 from src import data_utils 
 from src.utils.logging import setup_logger
 from src.utils.setup import get_git_root
+from datetime import datetime
+from typing import Dict
+import json
 
 def process_traditional_kb_data(data_dir:str, test:bool, model:str, add_reverse_relations: bool):
     # NOTE: Their code here
@@ -22,21 +25,56 @@ def process_traditional_kb_data(data_dir:str, test:bool, model:str, add_reverse_
     data_utils.prepare_kb_envrioment(raw_kb_path, train_path, dev_path, test_path, test, add_reverse_relations)
 
 
-def process_qa_data(raw_data_dir: str,  cache_data_dir: str, text_tokenizer: str):
+def process_qa_data(
+    raw_data_dir: str, cache_data_path: str, text_tokenizer_name: str, split: Dict[str, float]
+):
     # Load the Transformers Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(text_tokenizer)
+    tokenizer = AutoTokenizer.from_pretrained(text_tokenizer_name)
     # Load the data
     logger.info(
         "Loading the data with parameters:\n"
         f"---> raw_data_dir: {raw_data_dir}\n"
-        f"---> cache_data_dir: {cache_data_dir}\n"
-        f"---> text_tokenizer: {text_tokenizer}\n"
+        f"---> cache_data_dir: {cache_data_path}\n"
+        f"---> text_tokenizer: {text_tokenizer_name}\n"
     )
-    data_utils.process_qa_data(
+
+    # Whatever processing that needs to be done on the data
+    new_df = data_utils.process_qa_data(
         raw_data_dir,
-        cache_data_dir,
+        cache_data_path,
         tokenizer,
     )
+    # Shuffle the data
+    new_df = new_df.sample(frac=1)
+
+    ## Prepare metadata for export
+    # Tokenize the text by applying a pandas map function
+    # Store the metadata
+    question_col_idx = len(new_df.columns) - 2
+    metadata = {
+        "tokenizer": text_tokenizer_name,
+        "num_columns": question_col_idx + 1,
+        "question_column": question_col_idx,
+        "split": split,
+        "0-index_column": True,
+        "date_processed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    num_path_cols = question_col_idx
+    # Hyper Parametsrs name_{value}
+    # Create teh spit before saving to the cache
+    splits_names = {
+        k: cache_data_path.format(text_tokenizer_name, num_path_cols, f"{k}_{v}")
+        for k, v in split.items()
+    }
+    init_row = 0
+    for k,sn in splits_names.items():
+        end_row = init_row + int(split[k] * len(new_df))
+        split_df = new_df.iloc[ init_row:end_row,:]
+        split_df.to_csv(sn, index=False)
+        init_row = end_row
+
+    with open(cache_data_path.replace(".csv", ".json"), "w") as f:
+        json.dump(metadata, f)
 
 
 def all_arguments(valid_operations: list) -> argparse.Namespace:
@@ -76,6 +114,12 @@ def all_arguments(valid_operations: list) -> argparse.Namespace:
         action="store_true",
         help="add reverse relations to KB (default: False)",
     )
+    ap.add_argument(
+        "--split",
+        type=list,
+        default= {"train":0.8, "valid":0.1, "test":0.1},
+        help="split the data into train, dev, test (default: [0.8, 0.1, 0.1])",
+    )
 
     #----------------
     # process_qa_data
@@ -90,7 +134,7 @@ def all_arguments(valid_operations: list) -> argparse.Namespace:
     ap.add_argument(
         "--cached_QAPathData_path",
         type=str,
-        default=os.path.join(repo_root, ".cache/itl/itl_data-tok_{}-maxpathlen_{}.csv"),
+        default=os.path.join(repo_root, ".cache/itl/itl_data-tok_{}-maxpathlen_{}_split_{}.csv"),
         help="Directory where the knowledge graph data is stored (default: None)",
     )
     ap.add_argument(
@@ -133,7 +177,12 @@ def main(args: argparse.Namespace, valid_operations: dict):
     if args.operation == "process_data":
         operation(args.data_dir, args.test, args.model, args.add_reverse_relations)
     elif args.operation == "process_qa_data":
-        operation(args.raw_QAPathData_path, args.cached_QAPathData_path, args.text_tokenizer)
+        operation(
+            args.raw_QAPathData_path,
+            args.cached_QAPathData_path,
+            args.text_tokenizer,
+            args.split,
+        )
     else:
         raise NotImplementedError
 
