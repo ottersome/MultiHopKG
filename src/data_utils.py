@@ -461,7 +461,6 @@ def process_qa_data(
           These columns are organized as Entity, Relation, Entity,...
     LG: We might change this assumption to a whole graph later on:
     """
-
     ## TODO:(Maybe not actually: SoC) CACHE Checking
     # if (
     #     os.path.exists(triples_cache_loc)

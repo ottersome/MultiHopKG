@@ -223,15 +223,8 @@ class QnAKnowledgeGraph(nn.Module):
         dev_subjects, dev_objects = {}, {}
         all_subjects, all_objects = {}, {}
         # include dummy examples
-        add_subject(self.dummy_e, self.dummy_e, self.dummy_r, train_subjects)
-        add_subject(self.dummy_e, self.dummy_e, self.dummy_r, dev_subjects)
-        add_subject(self.dummy_e, self.dummy_e, self.dummy_r, all_subjects)
-        add_object(self.dummy_e, self.dummy_e, self.dummy_r, train_objects)
-        add_object(self.dummy_e, self.dummy_e, self.dummy_r, dev_objects)
-        add_object(self.dummy_e, self.dummy_e, self.dummy_r, all_objects)
+
         for file_name in ['raw.kb', 'train.triples', 'dev.triples', 'test.triples']:
-            if 'NELL' in self.args.data_dir and self.args.test and file_name == 'train.triples':
-                continue
             with open(os.path.join(data_dir, file_name)) as f:
                 for line in f:
                     e1, e2, r = line.strip().split()
@@ -280,14 +273,19 @@ class QnAKnowledgeGraph(nn.Module):
         # extend current adjacency list with fuzzy facts
         dev_path = os.path.join(self.args.data_dir, 'dev.triples')
         test_path = os.path.join(self.args.data_dir, 'test.triples')
+
+        # Load the 
+
         with open(dev_path) as f:
             dev_triples = [l.strip() for l in f.readlines()]
         with open(test_path) as f:
             test_triples = [l.strip() for l in f.readlines()]
+
         removed_triples = set(dev_triples + test_triples)
         theta = 0.5
         fuzzy_fact_path = os.path.join(self.args.data_dir, 'train.fuzzy.triples')
         count = 0
+
         with open(fuzzy_fact_path) as f:
             for line in f:
                 e1, e2, r, score = line.strip().split()
@@ -392,14 +390,6 @@ class QnAKnowledgeGraph(nn.Module):
         return NO_OP_ENTITY_ID        
 
     @property
-    def dummy_r(self):
-        return DUMMY_RELATION_ID
-
-    @property
-    def dummy_e(self):
-        return DUMMY_ENTITY_ID
-
-    @property
     def dummy_start_r(self):
         return START_RELATION_ID
 
@@ -438,6 +428,8 @@ class KnowledgeGraph(nn.Module):
         self.load_graph_data(args.data_dir)
         self.load_all_answers(args.data_dir)
 
+        # For Q&A Stuff
+
         # Define NN Modules
         self.entity_dim = args.entity_dim
         self.relation_dim = args.relation_dim
@@ -449,7 +441,7 @@ class KnowledgeGraph(nn.Module):
         self.relation_img_embeddings = None
         self.EDropout = None
         self.RDropout = None
-        
+
         self.define_modules()
         self.initialize_modules()
 

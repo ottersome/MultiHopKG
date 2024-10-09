@@ -22,7 +22,7 @@ from src.parse_args import args
 import src.data_utils as data_utils
 import src.eval
 from src.hyperparameter_range import hp_range
-from src.knowledge_graph import KnowledgeGraph
+from src.knowledge_graph import KnowledgeGraph, QnAKnowledgeGraph
 from src.emb.fact_network import ComplEx, ConvE, DistMult
 from src.emb.fact_network import get_conve_kg_state_dict, get_complex_kg_state_dict, get_distmult_kg_state_dict
 from src.emb.emb import EmbeddingBasedMethod
@@ -180,7 +180,12 @@ def construct_model(args):
     """
     Construct NN graph.
     """
-    kg = KnowledgeGraph(args)
+    if args.qa_run:
+        kg = QnAKnowledgeGraph(args)
+    else:
+        kg = KnowledgeGraph(args)
+
+    # Load Fuzzy Facts
     if args.model.endswith('.gc'):
         kg.load_fuzzy_facts()
 
@@ -561,7 +566,6 @@ def run_experiment(args):
     if args.process_data:
 
         # Process knowledge graph data
-
         process_data()
     else:
         with torch.set_grad_enabled(args.train or args.search_random_seed or args.grid_search):
