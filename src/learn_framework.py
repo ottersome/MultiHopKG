@@ -19,6 +19,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
 
+import pdb
 import src.eval
 from src.utils.ops import var_cuda, zeros_var_cuda
 import src.utils.ops as ops
@@ -60,12 +61,14 @@ class LFramework(nn.Module):
             print(name, param.numel(), 'requires_grad={}'.format(param.requires_grad))
         param_sizes = [param.numel() for param in self.parameters()]
         print('Total # parameters = {}'.format(sum(param_sizes)))
+        print('This would give a total (in MegaBytes) of {}'.format(sum(param_sizes) / 1000000))
         print('--------------------------')
         print()
 
     def run_train(self, train_data, dev_data):
         self.print_all_model_parameters()
 
+        pdb.set_trace()
         if self.optim is None:
             self.optim = optim.Adam(
                 filter(lambda p: p.requires_grad, self.parameters()), lr=self.learning_rate)
