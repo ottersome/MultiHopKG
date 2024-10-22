@@ -57,5 +57,11 @@ def main():
         print(f"Saving {len(test_data)} samples of test data in : {test_path}")
         f.writelines(test_data)
 
+    # For good measure copy same data to raw.csv l
+    raw_kb_dir = os.path.join(dirname, "raw.kb")
+    with open(raw_kb_dir, 'w') as f: 
+        print(f"For good measure I'll also be saving the training data in this directory {raw_kb_dir}")
+        f.writelines(train_data)
+
 if __name__ == '__main__':
     main()
