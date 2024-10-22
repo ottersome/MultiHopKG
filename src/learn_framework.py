@@ -78,6 +78,10 @@ class LFramework(nn.Module):
         dev_metrics_history = []
 
         for epoch_id in range(self.start_epoch, self.num_epochs):
+
+            # Now we will check the GPU memory usage to check for trans-epoch memory leaks
+            print('GPU memory usage: {} MB'.format(torch.cuda.max_memory_allocated() / 1000000))
+
             print('Epoch {}'.format(epoch_id))
             if self.rl_variation_tag.startswith('rs'):
                 # Reward shaping module sanity check:
