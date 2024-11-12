@@ -395,9 +395,7 @@ def rollout(
         ########################################
         # Log Stuff for across batch
         ########################################
-        logger.warn(f"Am I in dev mode? {in_dev_mode}")
-        if in_dev_mode:
-            logger.debug("In dev mode. Stopppinng before preprending log_probs")
+        cur_state = states
         log_action_probs.append(log_probs)
 
         # pn.update_path(action, kg) # TODO: Confirm this is actually needed
