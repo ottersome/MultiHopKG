@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import pdb
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any, DefaultDict
 
 import numpy as np
 import pandas as pd
@@ -95,7 +95,7 @@ def batch_loop_dev(
     answer_ids_padded_tensor = collate_token_ids_batch(answers).to(torch.int32)
 
     logger.warn(f"About to go into rollout")
-    log_probs, rewards = rollout(
+    log_probs, rewards, extras = rollout(
         steps_in_episode,
         nav_agent,
         hunch_llm,
@@ -128,7 +128,7 @@ def batch_loop(
     nav_agent: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
     steps_in_episode: int,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, Dict[str, Any]]:
 
     ########################################
     # Start the batch loop with zero grad
@@ -141,7 +141,7 @@ def batch_loop(
     question_embeddings = env.get_llm_embeddings(questions)
     answer_ids_padded_tensor = collate_token_ids_batch(answers).to(torch.int32)
 
-    log_probs, rewards = rollout(
+    log_probs, rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         hunch_llm,
@@ -160,7 +160,7 @@ def batch_loop(
 
     pg_loss = -1*rewards_t * log_probs_t
 
-    return pg_loss
+    return pg_loss, eval_extras
 
 
 def evaluate_training(
@@ -204,6 +204,20 @@ def evaluate_training(
             logger.info("Finishing inner looop of batch")
             metrics['dev/pg_loss'].append(pg_loss.mean().item())
         logger.info("Done with all batches")
+
+        ########################################
+        # Textual Evaluation 
+        ########################################
+        last_batch_id = num_batches-1
+        mini_batch = dev_df[last_batch_id*batch_size:(last_batch_id+1)*batch_size]
+        if not isinstance(mini_batch, pd.DataFrame): # For the lsp to give me a break
+            raise RuntimeError(f"The mini batch is not a pd.DataDFrame, but a {type(mini_batch)}. Please check the data loading code.")
+        table = wandb.Table(columns=["Question","Path Taken","Real Answer","Given Answer"])
+        pg_loss = batch_loop_dev(
+            env, mini_batch, nav_agent, hunch_llm, steps_in_episode
+        )
+    
+
 
     # Average out all metrics in side metrics
     for k,v in metrics.items():
@@ -274,7 +288,7 @@ def train_multihopkg(
             mini_batch = train_data[sample_offset_idx : sample_offset_idx + batch_size]
             assert isinstance(mini_batch, pd.DataFrame) # For the lsp to give me a break
             optimizer.zero_grad()
-            pg_loss = batch_loop(
+            pg_loss,_ = batch_loop(
                  env, mini_batch, nav_agent, hunch_llm, steps_in_episode
             )
             if torch.isnan(pg_loss).any():
@@ -334,7 +348,8 @@ def rollout(
     env: ITLGraphEnvironment,
     questions_embeddings: torch.Tensor,
     answers_ids: torch.Tensor,
-) -> Tuple[List[torch.Tensor], List[torch.Tensor]]: 
+    dev_mode: bool = False,
+) -> Tuple[List[torch.Tensor], List[torch.Tensor], Dict[str, Any]]: 
     """
     Will execute RL episode rollouts in parallel.
     args:
@@ -356,6 +371,7 @@ def rollout(
     ########################################
     log_action_probs = []
     rewards = []
+    dev_dictionary = DefaultDict(list)
 
     # Dummy nodes ? TODO: Figur eout what they do.
     # TODO: Perhaps here we can enter through the centroid.
@@ -379,8 +395,8 @@ def rollout(
         # TODO:Make sure we are gettign rewards from the environment.
         observations = env.step(sampled_actions)
 
-        # For now, we use states given by the path encoder and positions mostly for debugging
         positions, states = (observations.position, observations.state)
+        # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
 
         ########################################
@@ -398,19 +414,20 @@ def rollout(
         cur_state = states
         log_action_probs.append(log_probs)
 
-        # pn.update_path(action, kg) # TODO: Confirm this is actually needed
-        # action_prob = sample_outcome["action_prob"]
-        # log_action_probs.append(ops.safe_log(action_prob)) # TODO: Compute this again ( if necessary)
-        # action_entropy.append(policy_entropy) # TOREM: Comes from `transit` not sure if I shoudl remove it
-        # TODO: Calculate next cur_observation
-        
-        # TODO: Is this somethign we want?
-        # if visualize_action_probs:
-        #     top_k_action = sample_outcome["top_actions"]
-        #     top_k_action_prob = sample_outcome["top_action_probs"]
-        #     path_components.append((e, top_k_action, top_k_action_prob))
-        
-    return log_action_probs, rewards
+        ########################################
+        # Stuff that we will only use for evaluation
+        ########################################
+        if in_dev_mode:
+            dev_dictionary["sampled_actions"].append(sampled_actions)
+            dev_dictionary["visited_position"].append(observations.position)
+            meep = observations.position
+
+    dev_dictionary = { k: torch.stack(v) for k,v in dev_dictionary.items()}
+    # dev_dictionary["sampled_actions"] = torch.stack(dev_dictionary["sampled_actions"])
+    # dev_dictionary["visited_position"] = torch.stack(dev_dictionary["visited_position"])
+
+
+    return log_action_probs, rewards, dev_dictionary
 
 def load_qa_data(cached_metadata_path: str, raw_QAData_path, tokenizer_name: str):
     if os.path.exists(cached_metadata_path):
