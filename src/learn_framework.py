@@ -11,6 +11,7 @@ import os
 import random
 import shutil
 from tqdm import tqdm
+from typing import List, Tuple
 
 import numpy as np
 
@@ -26,7 +27,7 @@ import src.utils.ops as ops
 
 
 class LFramework(nn.Module):
-    def __init__(self, args, kg, mdl):
+    def __init__(self, args, kg, embedding_module):
         super(LFramework, self).__init__()
         self.args = args
         self.data_dir = args.data_dir
@@ -51,7 +52,7 @@ class LFramework(nn.Module):
         self.run_analysis = args.run_analysis
 
         self.kg = kg
-        self.mdl = mdl
+        self.embedding_module = embedding_module
         print('{} module created'.format(self.model))
 
     def print_all_model_parameters(self):
@@ -68,7 +69,7 @@ class LFramework(nn.Module):
     def run_train(self, train_data, dev_data):
         self.print_all_model_parameters()
 
-        pdb.set_trace()
+        print('GPU usage before adam: '+f'{torch.cuda.max_memory_allocated() / 1000000} MB')
         if self.optim is None:
             self.optim = optim.Adam(
                 filter(lambda p: p.requires_grad, self.parameters()), lr=self.learning_rate)
@@ -105,10 +106,15 @@ class LFramework(nn.Module):
             if self.run_analysis:
                 rewards = None
                 fns = None
+
+            ########################################
+            ## Batching
+            ########################################
             for example_id in tqdm(range(0, len(train_data), self.batch_size)):
 
                 self.optim.zero_grad()
 
+                pdb.set_trace()
                 mini_batch = train_data[example_id:example_id + self.batch_size]
                 if len(mini_batch) < self.batch_size:
                     continue
@@ -131,8 +137,13 @@ class LFramework(nn.Module):
                         fns = loss['fn']
                     else:
                         fns = torch.cat([fns, loss['fn']])
+
+                del loss
+            ########################################
             # Check training statistics
-            stdout_msg = 'Epoch {}: average training loss = {}'.format(epoch_id, np.mean(batch_losses))
+            ########################################
+            stdout_msg = 'Epoch {}: average training loss = {}'.format(epoch_id, np.mean(batch_losses).item())
+            del batch_losses
             if entropies:
                 stdout_msg += ' entropy = {}'.format(np.mean(entropies))
             print(stdout_msg)
@@ -201,6 +212,7 @@ class LFramework(nn.Module):
 
     def forward(self, examples, verbose=False):
         pred_scores = []
+        pdb.set_trace()
         for example_id in tqdm(range(0, len(examples), self.batch_size)):
             mini_batch = examples[example_id:example_id + self.batch_size]
             mini_batch_size = len(mini_batch)
@@ -211,7 +223,7 @@ class LFramework(nn.Module):
         scores = torch.cat(pred_scores)
         return scores
 
-    def format_batch(self, batch_data, num_labels=-1, num_tiles=1):
+    def format_batch(self, batch_data: List[Tuple[int,List[int], int]], num_labels=-1, num_tiles=1):
         """
         Convert batched tuples to the tensors accepted by the NN.
         """
@@ -228,15 +240,21 @@ class LFramework(nn.Module):
             return e2_label
 
         batch_e1, batch_e2, batch_r = [], [], []
+        # Separate the 
         for i in range(len(batch_data)):
             e1, e2, r = batch_data[i]
             batch_e1.append(e1)
             batch_e2.append(e2)
             batch_r.append(r)
+        # This removes the grad from the embeddings. Perhaps something to consider in my own training?
+        # Actually, no. It should still be here.
         batch_e1 = var_cuda(torch.LongTensor(batch_e1), requires_grad=False)
         batch_r = var_cuda(torch.LongTensor(batch_r), requires_grad=False)
+        pdb.set_trace()
+        # It likely wont be this 
         if type(batch_e2[0]) is list:
             batch_e2 = convert_to_binary_multi_object(batch_e2)
+        # Nor this
         elif type(batch_e1[0]) is list:
             batch_e1 = convert_to_binary_multi_subject(batch_e1)
         else:

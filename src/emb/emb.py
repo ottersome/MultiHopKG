@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 import torch
 import torch.nn as nn
+import pdb
 
 from src.learn_framework import LFramework
 from src.data_utils import NO_OP_ENTITY_ID, DUMMY_ENTITY_ID
@@ -19,8 +20,9 @@ from src.utils.ops import var_cuda, int_var_cuda, int_fill_var_cuda
 
 
 class EmbeddingBasedMethod(LFramework):
-    def __init__(self, args, kg, mdl, secondary_kg=None, tertiary_kg=None):
-        super(EmbeddingBasedMethod, self).__init__(args, kg, mdl)
+    def __init__(self, args, kg, embedding_module, secondary_kg=None, tertiary_kg=None):
+        # embedding_module is the conve thing
+        super(EmbeddingBasedMethod, self).__init__(args, kg, embedding_module)
         self.num_negative_samples = args.num_negative_samples
         self.label_smoothing_epsilon = args.label_smoothing_epsilon
         self.loss_fun = nn.BCELoss()
@@ -30,39 +32,40 @@ class EmbeddingBasedMethod(LFramework):
         self.tertiary_kg = tertiary_kg
 
     def forward_fact(self, examples):
-        kg, mdl = self.kg, self.mdl
+        kg, embedding_module = self.kg, self.embedding_module
         pred_scores = []
         for example_id in tqdm(range(0, len(examples), self.batch_size)):
-            mini_batch = examples[example_id:example_id + self.batch_size]
+            mini_batch = examples[example_id : example_id + self.batch_size]
             mini_batch_size = len(mini_batch)
             if len(mini_batch) < self.batch_size:
                 self.make_full_batch(mini_batch, self.batch_size)
             e1, e2, r = self.format_batch(mini_batch)
-            pred_score = mdl.forward_fact(e1, r, e2, kg)
+            pred_score = embedding_module.forward_fact(e1, r, e2, kg)
             pred_scores.append(pred_score[:mini_batch_size])
         return torch.cat(pred_scores)
 
     def loss(self, mini_batch):
-        kg, mdl = self.kg, self.mdl
+        kg, embedding_module = self.kg, self.embedding_module
         # compute object training loss
         e1, e2, r = self.format_batch(mini_batch, num_labels=kg.num_entities)
         e2_label = ((1 - self.label_smoothing_epsilon) * e2) + (1.0 / e2.size(1))
-        pred_scores = mdl.forward(e1, r, kg)
-        loss = self.loss_fun(pred_scores, e2_label)
+        # Predction can be prediction_scores (traditionally is), or can be the result of operationg relation and head together.
+        prediction = embedding_module.forward(e1, r, kg)
+        loss = self.loss_fun(prediction, e2_label)
         loss_dict = {}
-        loss_dict['model_loss'] = loss
-        loss_dict['print_loss'] = float(loss)
+        loss_dict["model_loss"] = loss
+        loss_dict["print_loss"] = float(loss)
         return loss_dict
 
     def predict(self, mini_batch, verbose=False):
-        kg, mdl = self.kg, self.mdl
+        kg, embedding_module = self.kg, self.embedding_module
         e1, e2, r = self.format_batch(mini_batch)
-        if self.model == 'hypere':
-            pred_scores = mdl.forward(e1, r, kg, [self.secondary_kg])
-        elif self.model == 'triplee':
-            pred_scores = mdl.forward(e1, r, kg, [self.secondary_kg, self.tertiary_kg])
+        if self.model == "hypere":
+            pred_scores = embedding_module.forward(e1, r, kg, [self.secondary_kg])
+        elif self.model == "triplee":
+            pred_scores = embedding_module.forward(e1, r, kg, [self.secondary_kg, self.tertiary_kg])
         else:
-            pred_scores = mdl.forward(e1, r, kg)
+            pred_scores = embedding_module.forward(e1, r, kg)
         return pred_scores
 
     def get_subject_mask(self, e1_space, e2, q):
@@ -105,22 +108,22 @@ class EmbeddingBasedMethod(LFramework):
         """
         Export knowledge graph embeddings and fact network parameters for reward shaping models.
         """
-        fn_state_dict_path = os.path.join(self.model_dir, 'fn_state_dict')
-        fn_kg_state_dict_path = os.path.join(self.model_dir, 'fn_kg_state_dict')
-        torch.save(self.mdl.state_dict(), fn_state_dict_path)
-        print('Fact network parameters export to {}'.format(fn_state_dict_path))
+        fn_state_dict_path = os.path.join(self.model_dir, "fn_state_dict")
+        fn_kg_state_dict_path = os.path.join(self.model_dir, "fn_kg_state_dict")
+        torch.save(self.embedding_module.state_dict(), fn_state_dict_path)
+        print("Fact network parameters export to {}".format(fn_state_dict_path))
         torch.save(self.kg.state_dict(), fn_kg_state_dict_path)
-        print('Knowledge graph embeddings export to {}'.format(fn_kg_state_dict_path))
+        print("Knowledge graph embeddings export to {}".format(fn_kg_state_dict_path))
 
     def export_fuzzy_facts(self):
         """
         Export high confidence facts according to the model.
         """
-        kg, mdl = self.kg, self.mdl
+        kg, embedding_module = self.kg, self.embedding_module
 
         # Gather all possible (subject, relation) and (relation, object) pairs
         sub_rel, rel_obj = {}, {}
-        for file_name in ['raw.kb', 'train.triples', 'dev.triples', 'test.triples']:
+        for file_name in ["raw.kb", "train.triples", "dev.triples", "test.triples"]:
             with open(os.path.join(self.data_dir, file_name)) as f:
                 for line in f:
                     e1, e2, r = line.strip().split()
@@ -136,8 +139,12 @@ class EmbeddingBasedMethod(LFramework):
                         rel_obj[e2_id][r_id] = set()
                     rel_obj[e2_id][r_id].add(e1_id)
 
-        o_f = open(os.path.join(self.data_dir, 'train.fuzzy.triples'), 'w')
-        print('Saving fuzzy facts to {}'.format(os.path.join(self.data_dir, 'train.fuzzy.triples')))
+        o_f = open(os.path.join(self.data_dir, "train.fuzzy.triples"), "w")
+        print(
+            "Saving fuzzy facts to {}".format(
+                os.path.join(self.data_dir, "train.fuzzy.triples")
+            )
+        )
         count = 0
         # Save recovered objects
         e1_ids, r_ids = [], []
@@ -146,11 +153,11 @@ class EmbeddingBasedMethod(LFramework):
                 e1_ids.append(e1_id)
                 r_ids.append(r_id)
         for i in range(0, len(e1_ids), self.batch_size):
-            e1_ids_b = e1_ids[i:i+self.batch_size]
-            r_ids_b = r_ids[i:i+self.batch_size]
+            e1_ids_b = e1_ids[i : i + self.batch_size]
+            r_ids_b = r_ids[i : i + self.batch_size]
             e1 = var_cuda(torch.LongTensor(e1_ids_b))
             r = var_cuda(torch.LongTensor(r_ids_b))
-            pred_scores = mdl.forward(e1, r, kg)
+            pred_scores = embedding_module.forward(e1, r, kg)
             for j in range(pred_scores.size(0)):
                 for _e2 in range(pred_scores.size(1)):
                     if _e2 in [NO_OP_ENTITY_ID, DUMMY_ENTITY_ID]:
@@ -158,11 +165,17 @@ class EmbeddingBasedMethod(LFramework):
                     if pred_scores[j, _e2] >= self.theta:
                         _e1 = int(e1[j])
                         _r = int(r[j])
-                        o_f.write('{}\t{}\t{}\t{}\n'.format(
-                            kg.id2entity[_e1], kg.id2entity[_e2], kg.id2relation[_r], float(pred_scores[j, _e2])))
+                        o_f.write(
+                            "{}\t{}\t{}\t{}\n".format(
+                                kg.id2entity[_e1],
+                                kg.id2entity[_e2],
+                                kg.id2relation[_r],
+                                float(pred_scores[j, _e2]),
+                            )
+                        )
                         count += 1
                         if count % 1000 == 0:
-                            print('{} fuzzy facts exported'.format(count))
+                            print("{} fuzzy facts exported".format(count))
         # Save recovered subjects
         e2_ids, r_ids = [], []
         for e2_id in rel_obj:
@@ -173,7 +186,7 @@ class EmbeddingBasedMethod(LFramework):
         for i in range(len(e2_ids)):
             r = int_fill_var_cuda(e1.size(), r_ids[i])
             e2 = int_fill_var_cuda(e1.size(), e2_ids[i])
-            pred_scores = mdl.forward_fact(e1, r, e2, kg)
+            pred_scores = embedding_module.forward_fact(e1, r, e2, kg)
             for j in range(pred_scores.size(1)):
                 if pred_scores[j] > self.theta:
                     _e1 = int(e1[j])
@@ -183,8 +196,14 @@ class EmbeddingBasedMethod(LFramework):
                     _e2 = int(e2[j])
                     if _e1 in sub_rel and _r in sub_rel[_e1]:
                         continue
-                    o_f.write('{}\t{}\t{}\t{}\n'.format(
-                        kg.id2entity[_e1], kg.id2entity[_e2], kg.id2relation[_r], float(pred_scores[j])))
+                    o_f.write(
+                        "{}\t{}\t{}\t{}\n".format(
+                            kg.id2entity[_e1],
+                            kg.id2entity[_e2],
+                            kg.id2relation[_r],
+                            float(pred_scores[j]),
+                        )
+                    )
                     count += 1
                     if count % 1000 == 0:
                         print("{} fuzzy facts exported".format(count))
