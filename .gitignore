@@ -114,3 +114,6 @@ temp.txt
 *.iml
 .idea
 .DS_Store
+data
+.direnv
+model/itl-conve-RV-xavier-200-200-0.003-32-3-0.3-0.3-0.2-0.1

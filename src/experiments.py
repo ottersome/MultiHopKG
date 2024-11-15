@@ -14,6 +14,7 @@ import itertools
 import numpy as np
 import os, sys
 import random
+import pdb
 
 import torch
 
@@ -23,9 +24,9 @@ import src.data_utils as data_utils
 import src.eval
 from src.hyperparameter_range import hp_range
 from src.knowledge_graph import KnowledgeGraph
-from src.emb.fact_network import ComplEx, ConvE, DistMult
+from src.emb.fact_network import ComplEx, ConvE, DistMult, TransE
 from src.emb.fact_network import get_conve_kg_state_dict, get_complex_kg_state_dict, get_distmult_kg_state_dict
-from src.emb.emb import EmbeddingBasedMethod
+from src.emb.emb import EmbeddingBasedMethod, OperationalEmbeddingBasedMethod
 from src.rl.graph_search.pn import GraphSearchPolicy
 from src.rl.graph_search.pg import PolicyGradient
 from src.rl.graph_search.rs_pg import RewardShapingPolicyGradient
@@ -127,7 +128,7 @@ def initialize_model_directory(args, random_seed=None):
             args.emb_dropout_rate,
             args.label_smoothing_epsilon
         )
-    elif args.model in ['conve', 'hypere', 'triplee']:
+    elif args.model in ['conve', 'hypere', 'triplee', 'transe']:
         hyperparam_sig = '{}-{}-{}-{}-{}-{}-{}-{}-{}'.format(
             args.entity_dim,
             args.relation_dim,
@@ -184,9 +185,12 @@ def construct_model(args):
     if args.model.endswith('.gc'):
         kg.load_fuzzy_facts()
 
+    # THis is their renfirocment learning thinj
     if args.model in ['point', 'point.gc']:
         pn = GraphSearchPolicy(args)
         lf = PolicyGradient(args, kg, pn)
+
+    # This is their reward shaping thing!
     elif args.model.startswith('point.rs'):
         pn = GraphSearchPolicy(args)
         fn_model = args.model.split('.')[2]
@@ -202,6 +206,10 @@ def construct_model(args):
         elif fn_model == 'conve':
             fn = ConvE(fn_args, kg.num_entities)
             fn_kg = KnowledgeGraph(fn_args)
+        elif fn_model == 'transe':
+            pdb.set_trace()
+            fn = TransE(fn_args, kg.num_entities)
+            fn_kg = KnowledgeGraph(fn_args)
         lf = RewardShapingPolicyGradient(args, kg, pn, fn_kg, fn)
     elif args.model == 'complex':
         fn = ComplEx(args)
@@ -212,6 +220,9 @@ def construct_model(args):
     elif args.model == 'conve':
         fn = ConvE(args, kg.num_entities)
         lf = EmbeddingBasedMethod(args, kg, fn)
+    elif args.model == 'transe':
+        fn = TransE(args.operational_margin, args.p_norm)
+        lf = OperationalEmbeddingBasedMethod(args, kg, fn)
     else:
         raise NotImplementedError
     return lf
@@ -561,7 +572,6 @@ def run_experiment(args):
     if args.process_data:
 
         # Process knowledge graph data
-
         process_data()
     else:
         with torch.set_grad_enabled(args.train or args.search_random_seed or args.grid_search):
@@ -595,6 +605,10 @@ def run_experiment(args):
                     initialize_model_directory(args, random_seed)
                     lf = construct_model(args)
                     lf.cuda()
+
+                    # Dump aount of parameters in lf 
+                    print('Number of parameters in model: {}'.format(sum(p.numel() for p in lf.parameters())))
+
                     train(lf)
                     metrics = inference(lf)
                     hits_at_1s[random_seed] = metrics['test']['hits_at_1']

@@ -9,12 +9,15 @@
 """
 
 import copy
+import math
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from src.knowledge_graph import KnowledgeGraph
+import pdb
+
 
 class TripleE(nn.Module):
     def __init__(self, args, num_entities):
@@ -224,6 +227,7 @@ class ConvE(nn.Module):
         stacked_inputs = torch.cat([E1, R], 2)
         stacked_inputs = self.bn0(stacked_inputs)
 
+        pdb.set_trace()
         X = self.conv1(stacked_inputs)
         # X = self.bn1(X)
         X = F.relu(X)
@@ -303,7 +307,9 @@ class DistMult(nn.Module):
         R = kg.get_relation_embeddings(r)
         E2 = kg.get_all_entity_embeddings()
         S = torch.mm(E1 * R, E2.transpose(1, 0))
+        # Predicts Entities
         S = F.sigmoid(S)
+        pdb.set_trace()
         return S
 
     def forward_fact(self, e1, r, e2, kg):
@@ -318,13 +324,31 @@ class DistMult(nn.Module):
 'Additional Models'
 
 class TransE(nn.Module):
-    def __init__(self, args):
+    """
+    Based on : https://pytorch-geometric.readthedocs.io/en/latest/_modules/torch_geometric/nn/kge/transe.html#TransE
+    """
+
+    def __init__(
+        self,
+        margin: float = 1.0,
+        p_norm: float = 1.0,
+    ):
         super(TransE, self).__init__()
+        self.p_norm = p_norm
+        self.margin = margin
 
     def forward(self, e1: Tensor, r: Tensor, kg: KnowledgeGraph) -> Tensor:        
         E1 = kg.get_entity_embeddings(e1) 
         R = kg.get_relation_embeddings(r)
         return self.forward_displacement(E1, R)
+
+    # Note: Not really used since parameters are set in KG, but for reference.
+    def reset_parameters(self):
+        bound = 6. / math.sqrt(self.hidden_channels)
+        torch.nn.init.uniform_(self.node_emb.weight, -bound, bound)
+        torch.nn.init.uniform_(self.rel_emb.weight, -bound, bound)
+        F.normalize(self.rel_emb.weight.data, p=self.p_norm, dim=-1,
+                    out=self.rel_emb.weight.data)
     
     def forward_displacement(self, E1: Tensor, R: Tensor) -> Tensor:
         """

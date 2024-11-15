@@ -20,6 +20,7 @@ from src.data_utils import DUMMY_ENTITY_ID, DUMMY_RELATION_ID
 from src.data_utils import START_RELATION_ID
 import src.utils.ops as ops
 from src.utils.ops import int_var_cuda, var_cuda
+import pdb
 
 
 class KnowledgeGraph(nn.Module):

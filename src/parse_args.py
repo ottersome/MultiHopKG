@@ -121,6 +121,10 @@ parser.add_argument('--xavier_initialization', type=bool, default=True,
                     help='Initialize all model parameters using xavier initialization (default: True)')
 parser.add_argument('--random_parameters', type=bool, default=False,
                     help='Inference with random parameters (default: False)')
+parser.add_argument('--p_norm', type=float, default=1.0,
+                    help='Norm used in TransE (default: 1.0)')
+parser.add_argument('--operational_margin', type=float, default=1.0,
+                    help='Margin used in margin bassed loss (default: 1.0)')
 
 # Fact Network
 parser.add_argument('--label_smoothing_epsilon', type=float, default=0.1,
