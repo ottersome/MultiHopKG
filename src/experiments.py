@@ -14,7 +14,6 @@ import itertools
 import numpy as np
 import os, sys
 import random
-import pdb
 
 import torch
 
@@ -34,6 +33,7 @@ from src.utils.ops import flatten
 
 from rich import traceback
 traceback.install()
+import debugpy
 
 torch.cuda.set_device(args.gpu)
 
@@ -210,7 +210,6 @@ def construct_model(args):
             fn = ConvE(fn_args, kg.num_entities)
             fn_kg = KnowledgeGraph(fn_args)
         elif fn_model == 'transe':
-            pdb.set_trace()
             fn = TransE(fn_args, kg.num_entities)
             fn_kg = KnowledgeGraph(fn_args)
         lf = RewardShapingPolicyGradient(args, kg, pn, fn_kg, fn)
@@ -779,4 +778,15 @@ def run_experiment(args):
                     export_error_cases(lf)
 
 if __name__ == '__main__':
-    run_experiment(args)
+
+    if args.debug:
+        print("\033[1;33m Waiting for debugger to attach...\033[0m")
+        debugpy.listen(('0.0.0.0', 42019))
+        debugpy.wait_for_client()
+        print("Debugger attached. Running script...")
+        # Don't do subprocess but just run run_experiment until it breaks then come back to open the port for debugging
+        run_experiment(args)
+        print("Script execution finished.")
+            
+    else:
+        run_experiment(args)

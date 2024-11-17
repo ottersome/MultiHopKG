@@ -1,0 +1,52 @@
+{
+  "configurations" :[
+    {
+      "name": "Remote, Lab",
+      "type": "python",
+      "host": "127.0.0.1",
+      "request": "attach",
+      "port": 42019,
+      "subProcess": true,
+      "pathMappings": [
+        {
+          "localRoot": "${workspaceFolder}",
+          "remoteRoot": "/home/racc/llmbi/embedding_training/"
+        }
+      ]
+    },
+    { 
+      "name": "pcap_to_csv",
+      "type": "python",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "python": "/home/ottersome/miniconda3/envs/research/bin/python",
+      "stopOnEntry": false,
+      "debugOptions": [],
+      "justMyCode": false,
+      "program": "${workspaceFolder}/pcap_to_csv.py"
+    },
+    {
+      "name": "windowed",
+      "type": "python",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "python": "/home/ottersome/miniconda3/envs/polimi/bin/python",
+      "stopOnEntry": false,
+      "debugOptions": [],
+      "program": "${workspaceFolder}/windowed.py"
+    },
+    {
+      "name": "detection",
+      "type": "python",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "python": "/home/ottersome/miniconda3/envs/polimi/bin/python",
+      "stopOnEntry": false,
+      "debugOptions": [],
+      "program": "${workspaceFolder}/scripts/ddos_detection.py"
+    }
+
+
+  ]
+}
+

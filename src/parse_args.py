@@ -43,6 +43,8 @@ parser.add_argument('--gpu', type=int, default=0,
                     help='gpu device (default: 0)')
 parser.add_argument('--checkpoint_path', type=str, default=None,
                     help='path to a pretrained checkpoint')
+parser.add_argument('--debug', action='store_true',
+                    help='debug mode (default: False)')
 
 # Data
 parser.add_argument('--test', action='store_true',
