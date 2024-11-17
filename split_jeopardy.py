@@ -25,7 +25,7 @@ def split_data(data, train_size, val_size, test_size, random_seed):
 
 def main():
     parser = argparse.ArgumentParser(description='Train-Validation-Test Split for a .txt file.')
-    parser.add_argument('--file_path', type=str, default="./data/itl/triplets_fb_wiki_v2.txttriplets_fj_wiki.txt", help='Path to the input .txt file.')
+    parser.add_argument('--file_path', type=str, default="./data/itl/raw.kb", help='Path to the input .txt file.')
     parser.add_argument('--train_size', type=float, default=0.98, help='Proportion of data to use for training.')
     parser.add_argument('--val_size', type=float, default=0.01, help='Proportion of data to use for validation.')
     parser.add_argument('--test_size', type=float, default=0.01, help='Proportion of data to use for testing.')

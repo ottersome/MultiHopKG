@@ -226,9 +226,7 @@ class OperationalEmbeddingBasedMethod(LFramework):
     def loss(self, mini_batch):
         kg, embedding_module = self.kg, self.embedding_module
         # compute object training loss
-        pdb.set_trace()
         e1, e2, r = self.format_batch(mini_batch, num_labels=kg.num_entities)
-        pdb.set_trace()
         kg.negative_sampling(e1, r, kg) # Somewhere along these lines
         e2_label = ((1 - self.label_smoothing_epsilon) * e2) + (1.0 / e2.size(1))
         pos_scores  = embedding_module.forward(e1, r, kg)

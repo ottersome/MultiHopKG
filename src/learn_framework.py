@@ -114,7 +114,6 @@ class LFramework(nn.Module):
 
                 self.optim.zero_grad()
 
-                pdb.set_trace()
                 mini_batch = train_data[example_id:example_id + self.batch_size]
                 if len(mini_batch) < self.batch_size:
                     continue
@@ -250,7 +249,6 @@ class LFramework(nn.Module):
         # Actually, no. It should still be here.
         batch_e1 = var_cuda(torch.LongTensor(batch_e1), requires_grad=False)
         batch_r = var_cuda(torch.LongTensor(batch_r), requires_grad=False)
-        pdb.set_trace()
         # It likely wont be this 
         if type(batch_e2[0]) is list:
             batch_e2 = convert_to_binary_multi_object(batch_e2)
