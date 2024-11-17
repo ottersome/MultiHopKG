@@ -10,6 +10,9 @@
 import collections
 import os
 import pickle
+import random
+from typing import List, Optional, Set, Tuple
+import time
 
 import torch
 import torch.nn as nn
@@ -47,6 +50,7 @@ class KnowledgeGraph(nn.Module):
         self.dev_objects = None
         self.all_subjects = None
         self.all_objects = None
+        self.all_entities: Optional[Set[int]] = None
         self.train_subject_vectors = None
         self.train_object_vectors = None
         self.dev_subject_vectors = None
@@ -56,7 +60,7 @@ class KnowledgeGraph(nn.Module):
 
         print('** Create {} knowledge graph **'.format(args.model))
         self.load_graph_data(args.data_dir)
-        self.load_all_answers(args.data_dir)
+        self.load_all_answers(args.data_dir, args.add_reversed_training_edges)
 
         # Define NN Modules
         self.entity_dim = args.entity_dim
@@ -222,6 +226,7 @@ class KnowledgeGraph(nn.Module):
         train_subjects, train_objects = {}, {}
         dev_subjects, dev_objects = {}, {}
         all_subjects, all_objects = {}, {}
+        all_entities = set()
         # include dummy examples
         add_subject(self.dummy_e, self.dummy_e, self.dummy_r, train_subjects)
         add_subject(self.dummy_e, self.dummy_e, self.dummy_r, dev_subjects)
@@ -236,6 +241,8 @@ class KnowledgeGraph(nn.Module):
                 for line in f:
                     e1, e2, r = line.strip().split()
                     e1, e2, r = self.triple2ids((e1, e2, r))
+                    all_entities.add(e1)
+                    all_entities.add(e2)
                     if file_name in ['raw.kb', 'train.triples']:
                         add_subject(e1, e2, r, train_subjects)
                         add_object(e1, e2, r, train_objects)
@@ -259,6 +266,7 @@ class KnowledgeGraph(nn.Module):
         self.dev_objects = dev_objects
         self.all_subjects = all_subjects
         self.all_objects = all_objects
+        self.all_entities = all_entities
        
         # change the answer set into a variable
         def answers_to_var(d_l):
@@ -333,6 +341,40 @@ class KnowledgeGraph(nn.Module):
 
     def get_relation_img_embeddings(self, r):
         return self.RDropout(self.relation_img_embeddings(r))
+
+    def negative_sampling(
+        self, mini_batch: List[Tuple[int, int, int]]
+    ) -> List[Tuple[int, int, int]]:
+        """
+        Will obtain a triplet that does not exist in the KB
+        Will only kee the relationship the same
+        """
+        if not isinstance(self.all_objects, dict) or not isinstance(
+            self.all_subjects, dict
+        ):
+            raise ValueError("Please load the knowledge graph first")
+
+        # Let me time this operation
+        start_time = time.time()
+        entity_universe = self.all_entities
+        negative_batch = []
+        for e1, e2, r in mini_batch:
+            # Head or Tail Negative Sampling happens uniformly at random>
+            if random.random() < 0.5:  # sample the objects/tail
+                possible_objects = self.all_objects[e1][r]
+                negative_sample_space = list(entity_universe - possible_objects)
+                complement_e2 = random.choice(negative_sample_space)
+                negative_batch.append((e1, complement_e2, r))
+            else:
+                possible_subjects = self.all_subjects[e2][r]
+                negative_sample_space = list(entity_universe - possible_subjects)
+                complement_e1 = random.choice(negative_sample_space)
+                negative_batch.append((complement_e1, e2, r))
+        end_time = time.time()
+        print(f"Negative Sampling takes {end_time - start_time} seconds")
+
+        return negative_batch
+
 
     def virtual_step(self, e_set, r):
         """

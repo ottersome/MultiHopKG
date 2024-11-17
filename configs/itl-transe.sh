@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
 data_dir="data/itl"
-model="transe"
+model="operational_transe"
 
 add_reversed_training_edges="True"
-group_examples_by_query="True"
+# We want simple triplets to reach the loss function:
+group_examples_by_query="False"
 entity_dim=200
 relation_dim=200
 num_rollouts=1

@@ -213,33 +213,54 @@ class OperationalEmbeddingBasedMethod(LFramework):
     Main difference with above is the use of margin loss
     """
 
-    def __init__(self, args, kg, embedding_module, secondary_kg=None, tertiary_kg=None):
-        super(OperationalEmbeddingBasedMethod, self).__init__(args, kg, embedding_module) # type: ignore
+    def __init__(self, args, kg, embedding_module, margin: float):
+        super(OperationalEmbeddingBasedMethod, self).__init__(args, kg, embedding_module)  # type: ignore
         self.num_negative_samples = args.num_negative_samples
         self.label_smoothing_epsilon = args.label_smoothing_epsilon
-        self.loss_fun = nn.MarginRankingLoss()
+        self.margin = margin
+        self.loss_fun = nn.MarginRankingLoss(margin=self.margin)
 
         self.theta = args.theta
-        self.secondary_kg = secondary_kg
-        self.tertiary_kg = tertiary_kg
 
     def loss(self, mini_batch):
         kg, embedding_module = self.kg, self.embedding_module
         # compute object training loss
-        e1, e2, r = self.format_batch(mini_batch, num_labels=kg.num_entities)
-        kg.negative_sampling(e1, r, kg) # Somewhere along these lines
-        e2_label = ((1 - self.label_smoothing_epsilon) * e2) + (1.0 / e2.size(1))
-        pos_scores  = embedding_module.forward(e1, r, kg)
-        neg_scores  = embedding_module.forward(e1, r, kg)
+        # e1, e2, r = self.format_batch(mini_batch, num_labels=kg.num_entities)
+        pos_mini_batch = mini_batch
+        neg_mini_batch = kg.negative_sampling(mini_batch)  # Somewhere along these lines
+        # Process them into tensors
+        pe1_t, pr_t, pe2_t = [], [], []
+        ne1_t, nr_t, ne2_t = [], [], []
+        for (e1, e2, r), (ne1, ne2, nr) in zip(pos_mini_batch, neg_mini_batch):
+            pe1_t.append(e1)
+            ne1_t.append(ne1)
+            pe2_t.append(e2)
+            ne2_t.append(ne2)
+            pr_t.append(r)
+            nr_t.append(r)
+
+        # TODO: Check if we actually need `var_cuda`
+        pe1_t = torch.LongTensor(pe1_t).to(self.kg.entity_embeddings.weight.device)
+        ne1_t = torch.LongTensor(ne1_t).to(self.kg.entity_embeddings.weight.device)
+        pe2_t = torch.LongTensor(pe2_t).to(self.kg.entity_embeddings.weight.device)
+        ne2_t = torch.LongTensor(ne2_t).to(self.kg.entity_embeddings.weight.device)
+        pr_t = torch.LongTensor(pr_t).to(self.kg.entity_embeddings.weight.device)
+        nr_t = torch.LongTensor(nr_t).to(self.kg.entity_embeddings.weight.device)
+
+        # Forward pass
+        pos_scores = embedding_module.forward(pe1_t, pe2_t, pr_t, self.kg)
+        neg_scores = embedding_module.forward(ne1_t, ne2_t, nr_t, self.kg)
         loss = self.loss_fun(
-            pos_score,
-            neg_score,
-            target=torch.ones_like(pos_score),
-            margin=self.margin,
+            pos_scores,
+            neg_scores,
+            target=torch.ones_like(pos_scores),
         )
-        loss_dict = {}
-        loss_dict['model_loss'] = loss
-        loss_dict['print_loss'] = float(loss)
+
+        loss_dict = {
+            "model_loss" : loss, 
+            "print_loss" : float(loss)
+        }
+
         return loss_dict
 
     # def forward_fact(self, examples):
@@ -256,17 +277,13 @@ class OperationalEmbeddingBasedMethod(LFramework):
     #     return torch.cat(pred_scores)
     
 
-    # def predict(self, mini_batch, verbose=False):
-    #     kg, embedding_module = self.kg, self.embedding_module
-    #     e1, e2, r = self.format_batch(mini_batch)
-    #     if self.model == 'hypere':
-    #         pred_scores = embedding_module.forward(e1, r, kg, [self.secondary_kg])
-    #     elif self.model == 'triplee':
-    #         pred_scores = embedding_module.forward(e1, r, kg, [self.secondary_kg, self.tertiary_kg])
-    #     else:
-    #         pred_scores = embedding_module.forward(e1, r, kg)
-    #     return pred_scores
-    
+    def predict(self, mini_batch, verbose=False):
+        kg, embedding_module = self.kg, self.embedding_module
+        e1, e2, r = self.format_batch(mini_batch)
+        pred_scores = embedding_module.forward_for_score(e1, r, kg)
+        pred_scores = pred_scores / pred_scores.sum(dim=-1, keepdim=True)
+        return pred_scores
+
     # def get_subject_mask(self, e1_space, e2, q):
     #     kg = self.kg
     #     if kg.args.mask_test_false_negatives:

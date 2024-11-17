@@ -131,7 +131,7 @@ def initialize_model_directory(args, random_seed=None):
             args.emb_dropout_rate,
             args.label_smoothing_epsilon
         )
-    elif args.model in ['conve', 'hypere', 'triplee', 'transe']:
+    elif args.model in ['conve', 'hypere', 'triplee', 'operational_transe']:
         hyperparam_sig = '{}-{}-{}-{}-{}-{}-{}-{}-{}'.format(
             args.entity_dim,
             args.relation_dim,
@@ -222,7 +222,7 @@ def construct_model(args):
     elif args.model == 'conve':
         fn = ConvE(args, kg.num_entities)
         lf = EmbeddingBasedMethod(args, kg, fn)
-    elif args.model == 'transe':
+    elif args.model == 'operational_transe':
         fn = TransE(args.operational_margin, args.p_norm)
         lf = OperationalEmbeddingBasedMethod(args, kg, fn)
     else:

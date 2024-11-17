@@ -14,7 +14,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch import Tensor
+from torch import LongTensor, Tensor
 from src.knowledge_graph import KnowledgeGraph
 import pdb
 
@@ -337,10 +337,17 @@ class TransE(nn.Module):
         self.p_norm = p_norm
         self.margin = margin
 
-    def forward(self, e1: Tensor, r: Tensor, kg: KnowledgeGraph) -> Tensor:        
-        E1 = kg.get_entity_embeddings(e1) 
-        R = kg.get_relation_embeddings(r)
-        return self.forward_displacement(E1, R)
+    def forward(self, head: LongTensor, tail: LongTensor, r: LongTensor, kg: KnowledgeGraph) -> Tensor:        
+        head_embeddings = kg.get_entity_embeddings(head)
+        rel_embeddings = kg.get_relation_embeddings(r)
+        tail_embeddings = kg.get_entity_embeddings(tail) 
+        
+        head_embeddings = F.normalize(head_embeddings, p=self.p_norm, dim=-1)
+        tail_embeddings = F.normalize(tail_embeddings, p=self.p_norm, dim=-1)
+
+        # NOTE: Not sure why the rel is not doing the same. 
+
+        return -((head_embeddings + rel_embeddings) - tail_embeddings).norm(p=self.p_norm, dim=-1)
 
     # Note: Not really used since parameters are set in KG, but for reference.
     def reset_parameters(self):
