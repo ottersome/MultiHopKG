@@ -281,8 +281,12 @@ class OperationalEmbeddingBasedMethod(LFramework):
         kg, embedding_module = self.kg, self.embedding_module
         e1, e2, r = self.format_batch(mini_batch)
         pred_scores = embedding_module.forward_for_score(e1, r, kg)
-        pred_scores = pred_scores / pred_scores.sum(dim=-1, keepdim=True)
-        return pred_scores
+        # Normalize in the last dimension
+        min_vals = pred_scores.min(dim=-1, keepdim=True)[0]
+        max_vals = pred_scores.max(dim=-1, keepdim=True)[0]
+        normed_pred_scores = (pred_scores - min_vals) / (max_vals - min_vals)
+
+        return normed_pred_scores
 
     # def get_subject_mask(self, e1_space, e2, q):
     #     kg = self.kg
