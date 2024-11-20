@@ -224,7 +224,7 @@ def construct_model(args):
         lf = EmbeddingBasedMethod(args, kg, fn)
     elif args.model == 'operational_transe':
         fn = TransE(args.operational_margin, args.p_norm)
-        lf = OperationalEmbeddingBasedMethod(args, kg, fn)
+        lf = OperationalEmbeddingBasedMethod(args, kg, fn, args.operational_margin, args.filtered_negative_sampling)
     else:
         raise NotImplementedError
     return lf
@@ -234,6 +234,7 @@ def train(lf):
     dev_path = os.path.join(args.data_dir, 'dev.triples')
     entity_index_path = os.path.join(args.data_dir, 'entity2id.txt')
     relation_index_path = os.path.join(args.data_dir, 'relation2id.txt')
+    print('Loading train triplets')
     train_data = data_utils.load_triples(
         train_path, entity_index_path, relation_index_path, group_examples_by_query=args.group_examples_by_query,
         add_reverse_relations=args.add_reversed_training_edges)
@@ -242,9 +243,14 @@ def train(lf):
         seen_entities = data_utils.load_seen_entities(adj_list_path, entity_index_path)
     else:
         seen_entities = set()
+    print('Loading dev triplets')
     dev_data = data_utils.load_triples(dev_path, entity_index_path, relation_index_path, seen_entities=seen_entities)
+    print('Checking for checkpoints')
     if args.checkpoint_path is not None:
         lf.load_checkpoint(args.checkpoint_path)
+        print('Checkpoint found, resuming training')
+
+    print('Starting training')
     lf.run_train(train_data, dev_data)
 
 def inference(lf):

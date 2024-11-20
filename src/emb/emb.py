@@ -8,7 +8,9 @@
 """
 
 import os
+from typing import Dict
 from tqdm import tqdm
+from time import time
 
 import torch
 import torch.nn as nn
@@ -49,13 +51,13 @@ class EmbeddingBasedMethod(LFramework):
         # compute object training loss
         e1, e2, r = self.format_batch(mini_batch, num_labels=kg.num_entities)
         e2_label = ((1 - self.label_smoothing_epsilon) * e2) + (1.0 / e2.size(1))
-        # Predction can be prediction_scores (traditionally is), or can be the result of operationg relation and head together.
-        prediction = embedding_module.forward(e1, r, kg)
-        loss = self.loss_fun(prediction, e2_label)
+        pred_scores = embedding_module.forward(e1, r, kg)
+        loss = self.loss_fun(pred_scores, e2_label)
         loss_dict = {}
-        loss_dict["model_loss"] = loss
-        loss_dict["print_loss"] = float(loss)
+        loss_dict['model_loss'] = loss
+        loss_dict['print_loss'] = float(loss)
         return loss_dict
+    
 
     def predict(self, mini_batch, verbose=False):
         kg, embedding_module = self.kg, self.embedding_module
@@ -213,22 +215,26 @@ class OperationalEmbeddingBasedMethod(LFramework):
     Main difference with above is the use of margin loss
     """
 
-    def __init__(self, args, kg, embedding_module, margin: float):
+    def __init__(self, args, kg, embedding_module, margin: float, filtered_negative_sampling: bool = False):
         super(OperationalEmbeddingBasedMethod, self).__init__(args, kg, embedding_module)  # type: ignore
         self.num_negative_samples = args.num_negative_samples
         self.label_smoothing_epsilon = args.label_smoothing_epsilon
         self.margin = margin
         self.loss_fun = nn.MarginRankingLoss(margin=self.margin)
+        self.filtered_negative_sampling = filtered_negative_sampling
 
         self.theta = args.theta
 
-    def loss(self, mini_batch):
+    def loss(self, mini_batch) -> Dict[str, float]:
         kg, embedding_module = self.kg, self.embedding_module
         # compute object training loss
         # e1, e2, r = self.format_batch(mini_batch, num_labels=kg.num_entities)
+        time_loss_start = time()
         pos_mini_batch = mini_batch
-        neg_mini_batch = kg.negative_sampling(mini_batch)  # Somewhere along these lines
+        neg_mini_batch = kg.negative_sampling(mini_batch, self.filtered_negative_sampling)  # Somewhere along these lines
+        time_sampling_end = time() - time_loss_start
         # Process them into tensors
+        time_start_tensor_creation = time()
         pe1_t, pr_t, pe2_t = [], [], []
         ne1_t, nr_t, ne2_t = [], [], []
         for (e1, e2, r), (ne1, ne2, nr) in zip(pos_mini_batch, neg_mini_batch):
@@ -247,7 +253,9 @@ class OperationalEmbeddingBasedMethod(LFramework):
         pr_t = torch.LongTensor(pr_t).to(self.kg.entity_embeddings.weight.device)
         nr_t = torch.LongTensor(nr_t).to(self.kg.entity_embeddings.weight.device)
 
+        time_end_tensor_creation = time() - time_start_tensor_creation
         # Forward pass
+        time_start_forward = time()
         pos_scores = embedding_module.forward(pe1_t, pe2_t, pr_t, self.kg)
         neg_scores = embedding_module.forward(ne1_t, ne2_t, nr_t, self.kg)
         loss = self.loss_fun(
@@ -260,6 +268,13 @@ class OperationalEmbeddingBasedMethod(LFramework):
             "model_loss" : loss, 
             "print_loss" : float(loss)
         }
+        time_end_forward = time() - time_start_forward
+
+        time_end_loss = time() - time_loss_start
+        print(f"Loss time is : {time_end_loss}")
+        print(f"Negative Sampling time is : {time_sampling_end}. Percentage is {time_sampling_end/time_end_loss}")
+        print(f"Tensor creation time is : {time_end_tensor_creation}. Percentage is {time_end_tensor_creation/time_end_loss}")
+        print(f"Forward time is : {time_end_forward}. Percentage is {time_end_forward/time_end_loss}")
 
         return loss_dict
 
@@ -275,7 +290,6 @@ class OperationalEmbeddingBasedMethod(LFramework):
     #         pred_score = embedding_module.forward_fact(e1, r, e2, kg)
     #         pred_scores.append(pred_score[:mini_batch_size])
     #     return torch.cat(pred_scores)
-    
 
     def predict(self, mini_batch, verbose=False):
         kg, embedding_module = self.kg, self.embedding_module
@@ -305,7 +319,7 @@ class OperationalEmbeddingBasedMethod(LFramework):
     #         subject_masks.append(subject_mask)
     #     subject_mask = torch.cat(subject_masks).view(len(e1_space), -1)
     #     return subject_mask
-    
+
     # def get_object_mask(self, e2_space, e1, q):
     #     kg = self.kg
     #     if kg.args.mask_test_false_negatives:
@@ -411,4 +425,3 @@ class OperationalEmbeddingBasedMethod(LFramework):
     #                 count += 1
     #                 if count % 1000 == 0:
     #                     print('{} fuzzy facts exported'.format(count))
-
