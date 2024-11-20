@@ -178,7 +178,8 @@ class ConvE(nn.Module):
         self.feat_dim = self.num_out_channels * h_out * w_out
         self.fc = nn.Linear(self.feat_dim, self.entity_dim)
 
-    def forward(self, e1: Tensor, r: Tensor, kg: KnowledgeGraph) -> Tensor:
+    # TOREM: Probably not used
+    def forward_geometric_maybe(self, e1: Tensor, r: Tensor, kg: KnowledgeGraph) -> Tensor:
         # Compute the displacement from E1 using relation R
         E1 = kg.get_entity_embeddings(e1).view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
         R = kg.get_relation_embeddings(r).view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
@@ -219,7 +220,7 @@ class ConvE(nn.Module):
         # The result is the approximate tail entity embedding
         return X
 
-    def forward_original(self, e1, r, kg: KnowledgeGraph):
+    def forward(self, e1, r, kg: KnowledgeGraph):
         E1 = kg.get_entity_embeddings(e1).view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
         R = kg.get_relation_embeddings(r).view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
         E2 = kg.get_all_entity_embeddings()
