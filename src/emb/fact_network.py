@@ -228,7 +228,6 @@ class ConvE(nn.Module):
         stacked_inputs = torch.cat([E1, R], 2)
         stacked_inputs = self.bn0(stacked_inputs)
 
-        pdb.set_trace()
         X = self.conv1(stacked_inputs)
         # X = self.bn1(X)
         X = F.relu(X)
@@ -310,7 +309,6 @@ class DistMult(nn.Module):
         S = torch.mm(E1 * R, E2.transpose(1, 0))
         # Predicts Entities
         S = F.sigmoid(S)
-        pdb.set_trace()
         return S
 
     def forward_fact(self, e1, r, e2, kg):
@@ -349,6 +347,23 @@ class TransE(nn.Module):
         # NOTE: Not sure why the rel is not doing the same. 
 
         return -((head_embeddings + rel_embeddings) - tail_embeddings).norm(p=self.p_norm, dim=-1)
+    def forward_for_score(self, heads: LongTensor, rs: LongTensor, kg: KnowledgeGraph) -> Tensor:
+        """
+         above but for every head given it will multiply against every entity to see which ones are the best ones. 
+        """
+        # Ensure nothing much is being collected:
+        with torch.no_grad():
+            all_possible_tails = kg.get_all_entity_embeddings().unsqueeze(0) # For all the bataches
+            head_embeddings = kg.get_entity_embeddings(heads)
+            # head_embeddings[SHAPE] = (batch_size, num_entities, entity_dim)
+            mult_head_embeddings = head_embeddings.unsqueeze(1)
+            # mult_head_embeddings[SHAPE] = (batch_size, all_possible_tails.size(0), entity_dim) 
+
+            rel_embeddings = kg.get_relation_embeddings(rs).unsqueeze(1)
+            # Then at this point we can use broadcasting to do the same operation as in `forwad` but across all these dimensions
+            calculated_score = ((mult_head_embeddings + rel_embeddings) - all_possible_tails).norm(p=self.p_norm, dim=-1)
+
+        return calculated_score
 
     # Note: Not really used since parameters are set in KG, but for reference.
     def reset_parameters(self):
