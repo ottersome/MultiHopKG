@@ -12,6 +12,7 @@ import random
 import shutil
 from tqdm import tqdm
 from typing import List, Tuple
+from time import time
 
 import numpy as np
 
@@ -110,19 +111,35 @@ class LFramework(nn.Module):
             ########################################
             ## Batching
             ########################################
+            time_batch_start = time()
+            rtime_optim = []
+            rtime_loss = []
+            rtime_back = []
+            rtime_forward = []
+            rtime_batch = []
             for example_id in tqdm(range(0, len(train_data), self.batch_size)):
 
+                time_batch_inner_start = time()
                 self.optim.zero_grad()
 
                 mini_batch = train_data[example_id:example_id + self.batch_size]
                 if len(mini_batch) < self.batch_size:
                     continue
+
+                time_loss_start = time()
                 loss = self.loss(mini_batch)
+                time_loss_end = time()
+                rtime_loss.append(time_loss_end - time_loss_start)
                 loss['model_loss'].backward()
+                time_backward_end = time()
+                rtime_back.append(time_backward_end - time_loss_end)
                 if self.grad_norm > 0:
                     clip_grad_norm_(self.parameters(), self.grad_norm)
 
+                time_start_optime = time()
                 self.optim.step()
+                time_end_optime = time()
+                rtime_optim.append(time_end_optime - time_start_optime)
 
                 batch_losses.append(loss['print_loss'])
                 if 'entropy' in loss:
@@ -138,6 +155,14 @@ class LFramework(nn.Module):
                         fns = torch.cat([fns, loss['fn']])
 
                 del loss
+                rtime_batch.append(time() - time_batch_inner_start)
+
+            # At the end of batch we print these statistics: 
+            print(f"Batch time is : {np.mean(rtime_batch)}")
+            print(f"Loss time is : {np.mean(rtime_loss)}. Thar percentage is {np.mean(rtime_loss)/np.mean(rtime_batch)}")
+            print(f"Backward time is : {np.mean(rtime_back)}. Thar percentage is {np.mean(rtime_back)/np.mean(rtime_batch)}")
+            print(f"Optim time is : {np.mean(rtime_optim)}. Thar percentage is {np.mean(rtime_optim)/np.mean(rtime_batch)}")
+
             ########################################
             # Check training statistics
             ########################################
@@ -209,9 +234,9 @@ class LFramework(nn.Module):
                         with open(fn_ratio_file, 'a') as o_f:
                             o_f.write('{}\n'.format(fn_ratio))
 
+    # Amazingly, only used in the evaluation part
     def forward(self, examples, verbose=False):
         pred_scores = []
-        pdb.set_trace()
         for example_id in tqdm(range(0, len(examples), self.batch_size)):
             mini_batch = examples[example_id:example_id + self.batch_size]
             mini_batch_size = len(mini_batch)

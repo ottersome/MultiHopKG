@@ -45,6 +45,8 @@ parser.add_argument('--checkpoint_path', type=str, default=None,
                     help='path to a pretrained checkpoint')
 parser.add_argument('--debug', action='store_true',
                     help='debug mode (default: False)')
+parser.add_argument('--filtered_negative_sampling', action='store_true',
+                    help='Filtered Negative Sampling (default: False)')
 
 # Data
 parser.add_argument('--test', action='store_true',

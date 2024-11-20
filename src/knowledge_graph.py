@@ -11,7 +11,7 @@ import collections
 import os
 import pickle
 import random
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple, Dict
 import time
 
 import torch
@@ -25,6 +25,7 @@ import src.utils.ops as ops
 from src.utils.ops import int_var_cuda, var_cuda
 import pdb
 
+IdLookUpDict = Dict[int, Dict[int, Set[int]]]
 
 class KnowledgeGraph(nn.Module):
     """
@@ -49,8 +50,9 @@ class KnowledgeGraph(nn.Module):
         self.dev_subjects = None
         self.dev_objects = None
         self.all_subjects = None
-        self.all_objects = None
+        self.all_objects: Optional[IdLookUpDict] = None
         self.all_entities: Optional[Set[int]] = None
+        self.all_entities_list: Optional[List[int]] = None
         self.train_subject_vectors = None
         self.train_object_vectors = None
         self.dev_subject_vectors = None
@@ -95,6 +97,8 @@ class KnowledgeGraph(nn.Module):
             with open(adj_list_path, 'rb') as f:
                 self.adj_list = pickle.load(f)
             self.vectorize_action_space(data_dir)
+
+        print('Loading graph data .................... ✅')
 
     def vectorize_action_space(self, data_dir):
         """
@@ -267,6 +271,7 @@ class KnowledgeGraph(nn.Module):
         self.all_subjects = all_subjects
         self.all_objects = all_objects
         self.all_entities = all_entities
+        self.all_entities_list = list(all_entities)
        
         # change the answer set into a variable
         def answers_to_var(d_l):
@@ -343,38 +348,81 @@ class KnowledgeGraph(nn.Module):
         return self.RDropout(self.relation_img_embeddings(r))
 
     def negative_sampling(
-        self, mini_batch: List[Tuple[int, int, int]]
+        self, mini_batch: List[Tuple[int, int, int]], filter: bool = False
     ) -> List[Tuple[int, int, int]]:
         """
         Will obtain a triplet that does not exist in the KB
         Will only kee the relationship the same
         """
-        if not isinstance(self.all_objects, dict) or not isinstance(
-            self.all_subjects, dict
-        ):
+        if not isinstance(self.all_objects, dict) \
+            or not isinstance( self.all_subjects, dict) \
+            or not isinstance( self.all_entities, set) \
+            or not isinstance(self.all_entities_list, list):
             raise ValueError("Please load the knowledge graph first")
 
+        if filter:
+            return self._nonvectorized_filtered_negative_sampling(mini_batch, self.all_objects, self.all_subjects, self.all_entities)
+
+        else: 
+            return self._vectorized_nonfiltered_negative_sampling(mini_batch, self.all_objects, self.all_subjects, self.all_entities_list)
+
+
+    def _nonvectorized_filtered_negative_sampling(
+        self, mini_batch: List[Tuple[int, int, int]],  all_objects_ids: IdLookUpDict, all_subjects_ids: IdLookUpDict, entity_universe_ids: Set[int], 
+    ):
         # Let me time this operation
         start_time = time.time()
-        entity_universe = self.all_entities
+        entity_universe = entity_universe_ids
         negative_batch = []
+
+
         for e1, e2, r in mini_batch:
             # Head or Tail Negative Sampling happens uniformly at random>
             if random.random() < 0.5:  # sample the objects/tail
-                possible_objects = self.all_objects[e1][r]
-                negative_sample_space = list(entity_universe - possible_objects)
-                complement_e2 = random.choice(negative_sample_space)
+                negative_sample_space = entity_universe
+                if filter:
+                    possible_objects = all_objects_ids[e1][r]
+                    negative_sample_space = entity_universe_ids - possible_objects
+                complement_e2 = random.choice(list(negative_sample_space))
                 negative_batch.append((e1, complement_e2, r))
             else:
-                possible_subjects = self.all_subjects[e2][r]
-                negative_sample_space = list(entity_universe - possible_subjects)
-                complement_e1 = random.choice(negative_sample_space)
+                negative_sample_space = entity_universe
+                if filter:
+                    possible_subjects = all_objects_ids[e2][r]
+                    negative_sample_space = entity_universe - possible_subjects
+                complement_e1 = random.choice(list(negative_sample_space))
                 negative_batch.append((complement_e1, e2, r))
-        end_time = time.time()
-        print(f"Negative Sampling takes {end_time - start_time} seconds")
+        print(f"Negative Sampling (Filtered, Nonvectorized) takes {time.time() - start_time} seconds")
 
         return negative_batch
 
+    def _vectorized_nonfiltered_negative_sampling(
+        self,
+        mini_batch: List[Tuple[int, int, int]],
+        all_objects_ids: IdLookUpDict,
+        all_subjects_ids: IdLookUpDict,
+        entity_universe_list: List[int],
+    ) -> List[Tuple[int, int, int]]:
+        """
+        Will obtain a triplet that does not exist in the KB
+        Will only kee the relationship the same
+        """
+        time_start = time.time()
+        ## Now, we will vectorize the negative sampling
+        # First sample at random from the universe
+        random_draws = torch.randint(0, len(entity_universe_list), (len(mini_batch), )).tolist()
+        # Then, decide which elements in batch get heads or tails 
+        head_or_tail = torch.randint(0, 2, (len(mini_batch), )).tolist()
+        # Then, insert them into the batch
+        negative_batch = [(0,0,0),] * len(mini_batch)
+        for i in range(len(mini_batch)):
+            if head_or_tail[i] == 0:
+                negative_batch[i] = (mini_batch[i][0], entity_universe_list[random_draws[i]], mini_batch[i][2])
+            else:
+                negative_batch[i] = (entity_universe_list[random_draws[i]], mini_batch[i][1], mini_batch[i][2])
+
+        print(f'Negative (Filtered and Vectorized) Sampling takes {time.time() - time_start} seconds')
+        return negative_batch
 
     def virtual_step(self, e_set, r):
         """
