@@ -271,10 +271,10 @@ class OperationalEmbeddingBasedMethod(LFramework):
         time_end_forward = time() - time_start_forward
 
         time_end_loss = time() - time_loss_start
-        print(f"Loss time is : {time_end_loss}")
-        print(f"Negative Sampling time is : {time_sampling_end}. Percentage is {time_sampling_end/time_end_loss}")
-        print(f"Tensor creation time is : {time_end_tensor_creation}. Percentage is {time_end_tensor_creation/time_end_loss}")
-        print(f"Forward time is : {time_end_forward}. Percentage is {time_end_forward/time_end_loss}")
+        # print(f"Loss time is : {time_end_loss}")
+        # print(f"Negative Sampling time is : {time_sampling_end}. Percentage is {time_sampling_end/time_end_loss}")
+        # print(f"Tensor creation time is : {time_end_tensor_creation}. Percentage is {time_end_tensor_creation/time_end_loss}")
+        # print(f"Forward time is : {time_end_forward}. Percentage is {time_end_forward/time_end_loss}")
 
         return loss_dict
 

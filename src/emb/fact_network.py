@@ -10,6 +10,7 @@
 
 import copy
 import math
+from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -92,7 +93,9 @@ class ComplEx(nn.Module):
 
         return E2_real_approx, E2_img_approx
 
-    def forward_displacement(self, E1_real: Tensor, R_real: Tensor, E1_img: Tensor, R_img: Tensor) -> [Tensor, Tensor]:
+    def forward_displacement(
+        self, E1_real: Tensor, R_real: Tensor, E1_img: Tensor, R_img: Tensor
+    ) -> [Tensor, Tensor]:
         """
         Compute the displacement of the head entity along the relation vector.
         .. math::
@@ -179,7 +182,9 @@ class ConvE(nn.Module):
         self.fc = nn.Linear(self.feat_dim, self.entity_dim)
 
     # TOREM: Probably not used
-    def forward_geometric_maybe(self, e1: Tensor, r: Tensor, kg: KnowledgeGraph) -> Tensor:
+    def forward_geometric_maybe(
+        self, e1: Tensor, r: Tensor, kg: KnowledgeGraph
+    ) -> Tensor:
         # Compute the displacement from E1 using relation R
         E1 = kg.get_entity_embeddings(e1).view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
         R = kg.get_relation_embeddings(r).view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
@@ -336,7 +341,9 @@ class TransE(nn.Module):
         self.p_norm = p_norm
         self.margin = margin
 
-    def forward(self, head: LongTensor, tail: LongTensor, r: LongTensor, kg: KnowledgeGraph) -> Tensor:        
+    def forward(
+        self, head: LongTensor, tail: LongTensor, r: LongTensor, kg: KnowledgeGraph
+    ) -> Tensor:
         head_embeddings = kg.get_entity_embeddings(head)
         rel_embeddings = kg.get_relation_embeddings(r)
         tail_embeddings = kg.get_entity_embeddings(tail) 
@@ -346,22 +353,31 @@ class TransE(nn.Module):
 
         # NOTE: Not sure why the rel is not doing the same. 
 
-        return -((head_embeddings + rel_embeddings) - tail_embeddings).norm(p=self.p_norm, dim=-1)
-    def forward_for_score(self, heads: LongTensor, rs: LongTensor, kg: KnowledgeGraph) -> Tensor:
+        return -((head_embeddings + rel_embeddings) - tail_embeddings).norm(
+            p=self.p_norm, dim=-1
+        )
+
+    def forward_for_score(
+        self, heads: LongTensor, rs: LongTensor, kg: KnowledgeGraph
+    ) -> Tensor:
         """
-         above but for every head given it will multiply against every entity to see which ones are the best ones. 
+        above but for every head given it will multiply against every entity to see which ones are the best ones.
         """
         # Ensure nothing much is being collected:
         with torch.no_grad():
-            all_possible_tails = kg.get_all_entity_embeddings().unsqueeze(0) # For all the bataches
+            all_possible_tails = kg.get_all_entity_embeddings().unsqueeze(
+                0
+            )  # For all the bataches
             head_embeddings = kg.get_entity_embeddings(heads)
             # head_embeddings[SHAPE] = (batch_size, num_entities, entity_dim)
             mult_head_embeddings = head_embeddings.unsqueeze(1)
-            # mult_head_embeddings[SHAPE] = (batch_size, all_possible_tails.size(0), entity_dim) 
+            # mult_head_embeddings[SHAPE] = (batch_size, all_possible_tails.size(0), entity_dim)
 
             rel_embeddings = kg.get_relation_embeddings(rs).unsqueeze(1)
             # Then at this point we can use broadcasting to do the same operation as in `forwad` but across all these dimensions
-            calculated_score = ((mult_head_embeddings + rel_embeddings) - all_possible_tails).norm(p=self.p_norm, dim=-1)
+            calculated_score = -(
+                (mult_head_embeddings + rel_embeddings) - all_possible_tails
+            ).norm(p=self.p_norm, dim=-1)
 
         return calculated_score
 
@@ -389,45 +405,60 @@ class TransE(nn.Module):
         return (E1 + R)
 
 class RotatE(nn.Module):
-    def __init__(self, args):
+    def __init__(self, margin: float = 1, p_norm: float = 1):
         super(RotatE, self).__init__()
-        
-    def forward(self, e1: Tensor, r: Tensor, kg: KnowledgeGraph) -> [Tensor, Tensor]:
+        self.margin = margin
+        self.p_norm = p_norm
+
+    def forward(
+        self, head: Tensor, tails: Tensor, relation: Tensor, kg: KnowledgeGraph
+    ) -> torch.Tensor:
         # Compute the displacement from E1 using relation R
-        E1_real = kg.get_entity_embeddings(e1)
-        E1_img = kg.get_entity_img_embeddings(e1)
-        
-        R_theta = kg.get_relation_embeddings(r)
-        R_real, R_img = torch.cos(R_theta), torch.sin(R_theta)
-        
+        head_real = kg.get_entity_embeddings(head)
+        head_img = kg.get_entity_img_embeddings(head)
+        tail_real = kg.get_entity_embeddings(tails)
+        tail_img = kg.get_entity_img_embeddings(tails)
+
+        rel_theta = kg.get_relation_embeddings(relation)
+        rel_real, rel_img = torch.cos(rel_theta), torch.sin(rel_theta)
+
         # Compute the approximate tail entity (displacement) for both real and imaginary parts
-        E2_real_approx, E2_img_approx = self.forward_displacement(E1_real, R_real, E1_img, R_img)
+        tail_approx_real, tail_approx_img = self.forward_displacement(
+            head_real, rel_real, head_img, rel_img
+        )
 
-        return E2_real_approx, E2_img_approx
+        # Difference between the real and imaginary parts of the tail entity
+        score = torch.sqrt(
+            torch.square(tail_approx_real - tail_real)
+            + torch.square(tail_approx_img - tail_img)
+        )
+        return score
 
-
-    def forward_displacement(self, E1_real: Tensor, R_real: Tensor, E1_img: Tensor, R_img: Tensor):
+    def forward_displacement(
+        self, head_real: Tensor, rel_real: Tensor, head_img: Tensor, rel_img: Tensor
+    ):
         """
-        Compute the displacement of the head entity along the relation vector.
+        compute the displacement of the head entity along the relation vector.
         .. math::
             \mathbf{e}_t \approx \mathbf{e}_h \circ \mathbf{e}_r,
 
-        Parameters:
-        E1_real (torch.Tensor): Real part of the head entity embedding (batch_size, embedding_dim).
-        R_real (torch.Tensor): Real part of the relation embedding (batch_size, embedding_dim).
-        E1_img (torch.Tensor): Imaginary part of the head entity embedding (batch_size, embedding_dim).
-        R_img (torch.Tensor): Imaginary part of the relation embedding (batch_size, embedding_dim).
+        parameters:
+        e1_real (torch.tensor): real part of the head entity embedding (batch_size, embedding_dim).
+        r_real (torch.tensor): real part of the relation embedding (batch_size, embedding_dim).
+        e1_img (torch.tensor): imaginary part of the head entity embedding (batch_size, embedding_dim).
+        r_img (torch.tensor): imaginary part of the relation embedding (batch_size, embedding_dim).
 
-        Returns:
-        torch.Tensor: Real and imaginary parts of the approximate tail entity embedding.
+        returns:
+        torch.tensor: real and imaginary parts of the approximate tail entity embedding.
         """
-        # Compute the approximate real part of the tail entity
-        E2_real_approx = E1_real * R_real - E1_img * R_img
+        # compute the approximate real part of the tail entity
+        e2_real_approx = head_real * rel_real - head_img * rel_img
 
-        # Compute the approximate imaginary part of the tail entity
-        E2_img_approx = E1_real * R_img + E1_img * R_real
+        # compute the approximate imaginary part of the tail entity
+        e2_img_approx = head_real * rel_img + head_img * rel_real
 
-        return E2_real_approx, E2_img_approx
+        return e2_real_approx, e2_img_approx
+
 
 #------------------------------------------------------------------------------
 'Functions'

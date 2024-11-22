@@ -23,7 +23,7 @@ import src.data_utils as data_utils
 import src.eval
 from src.hyperparameter_range import hp_range
 from src.knowledge_graph import KnowledgeGraph
-from src.emb.fact_network import ComplEx, ConvE, DistMult, TransE
+from src.emb.fact_network import ComplEx, ConvE, DistMult, RotatE, TransE
 from src.emb.fact_network import get_conve_kg_state_dict, get_complex_kg_state_dict, get_distmult_kg_state_dict
 from src.emb.emb import EmbeddingBasedMethod, OperationalEmbeddingBasedMethod
 from src.rl.graph_search.pn import GraphSearchPolicy
@@ -35,10 +35,8 @@ from rich import traceback
 traceback.install()
 import debugpy
 
-torch.cuda.set_device(args.gpu)
-
 torch.manual_seed(args.seed)
-torch.cuda.manual_seed_all(args.seed)
+# torch.cuda.manual_seed_all(args.seed)
 
 def process_data():
     data_dir = args.data_dir
@@ -131,7 +129,7 @@ def initialize_model_directory(args, random_seed=None):
             args.emb_dropout_rate,
             args.label_smoothing_epsilon
         )
-    elif args.model in ['conve', 'hypere', 'triplee', 'operational_transe']:
+    elif args.model in ['conve', 'hypere', 'triplee', 'operational_transe', 'operational_rotate']:
         hyperparam_sig = '{}-{}-{}-{}-{}-{}-{}-{}-{}'.format(
             args.entity_dim,
             args.relation_dim,
@@ -224,6 +222,9 @@ def construct_model(args):
         lf = EmbeddingBasedMethod(args, kg, fn)
     elif args.model == 'operational_transe':
         fn = TransE(args.operational_margin, args.p_norm)
+        lf = OperationalEmbeddingBasedMethod(args, kg, fn, args.operational_margin, args.filtered_negative_sampling)
+    elif args.model == 'operational_rotate':
+        fn = RotatE(args.operational_margin, args.p_norm)
         lf = OperationalEmbeddingBasedMethod(args, kg, fn, args.operational_margin, args.filtered_negative_sampling)
     else:
         raise NotImplementedError
@@ -365,7 +366,8 @@ def run_ablation_studies(args):
     def set_up_lf_for_inference(args):
         initialize_model_directory(args)
         lf = construct_model(args)
-        lf.cuda()
+        # lf.cuda()
+        lf.to(args.device)
         lf.batch_size = args.dev_batch_size
         lf.load_checkpoint(get_checkpoint_path(args))
         lf.eval()
@@ -609,10 +611,10 @@ def run_experiment(args):
                     print("\nRandom seed = {}\n".format(random_seed))
                     o_f.write("\nRandom seed = {}\n\n".format(random_seed))
                     torch.manual_seed(random_seed)
-                    torch.cuda.manual_seed_all(args, random_seed)
+                    # torch.cuda.manual_seed_all(args, random_seed)
                     initialize_model_directory(args, random_seed)
                     lf = construct_model(args)
-                    lf.cuda()
+                    # lf.cuda()
 
                     # Dump aount of parameters in lf 
                     print('Number of parameters in model: {}'.format(sum(p.numel() for p in lf.parameters())))
@@ -716,7 +718,8 @@ def run_experiment(args):
                         print('* {}: {}'.format(hp, value))
                     initialize_model_directory(args)
                     lf = construct_model(args)
-                    lf.cuda()
+                    # lf.cuda()
+                    lf.to(args.device)
                     train(lf)
                     metrics = inference(lf)
                     hits_at_1s[signature] = metrics['dev']['hits_at_1']
@@ -762,7 +765,8 @@ def run_experiment(args):
             else:
                 initialize_model_directory(args)
                 lf = construct_model(args)
-                lf.cuda()
+                # lf.cuda()
+                lf.to(args.device)
 
                 if args.train:
                     train(lf)

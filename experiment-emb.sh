@@ -5,7 +5,7 @@ echo $PYTHONPATH
 
 source $1
 exp=$2
-gpu=$3
+device=$3
 ARGS=${@:4}
 
 add_reversed_training_edges_flag=''
@@ -38,7 +38,7 @@ cmd="python3 -m src.experiments \
     --beam_size $beam_size \
     $group_examples_by_query_flag \
     $add_reversed_training_edges_flag \
-    --gpu $gpu \
+    --device $device \
     $ARGS"
 
 echo "Executing $cmd"

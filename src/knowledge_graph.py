@@ -361,14 +361,21 @@ class KnowledgeGraph(nn.Module):
             raise ValueError("Please load the knowledge graph first")
 
         if filter:
-            return self._nonvectorized_filtered_negative_sampling(mini_batch, self.all_objects, self.all_subjects, self.all_entities)
+            return self._nonvectorized_filtered_negative_sampling(
+                mini_batch, self.all_objects, self.all_subjects, self.all_entities
+            )
 
-        else: 
-            return self._vectorized_nonfiltered_negative_sampling(mini_batch, self.all_objects, self.all_subjects, self.all_entities_list)
-
+        else:
+            return self._vectorized_nonfiltered_negative_sampling(
+                mini_batch, self.all_objects, self.all_subjects, self.all_entities_list
+            )
 
     def _nonvectorized_filtered_negative_sampling(
-        self, mini_batch: List[Tuple[int, int, int]],  all_objects_ids: IdLookUpDict, all_subjects_ids: IdLookUpDict, entity_universe_ids: Set[int], 
+        self,
+        mini_batch: List[Tuple[int, int, int]],
+        all_objects_ids: IdLookUpDict,
+        all_subjects_ids: IdLookUpDict,
+        entity_universe_ids: Set[int],
     ):
         # Let me time this operation
         start_time = time.time()
@@ -392,7 +399,7 @@ class KnowledgeGraph(nn.Module):
                     negative_sample_space = entity_universe - possible_subjects
                 complement_e1 = random.choice(list(negative_sample_space))
                 negative_batch.append((complement_e1, e2, r))
-        print(f"Negative Sampling (Filtered, Nonvectorized) takes {time.time() - start_time} seconds")
+        # print(f"Negative Sampling (Filtered, Nonvectorized) takes {time.time() - start_time} seconds")
 
         return negative_batch
 
@@ -410,18 +417,30 @@ class KnowledgeGraph(nn.Module):
         time_start = time.time()
         ## Now, we will vectorize the negative sampling
         # First sample at random from the universe
-        random_draws = torch.randint(0, len(entity_universe_list), (len(mini_batch), )).tolist()
-        # Then, decide which elements in batch get heads or tails 
-        head_or_tail = torch.randint(0, 2, (len(mini_batch), )).tolist()
+        random_draws = torch.randint(
+            0, len(entity_universe_list), (len(mini_batch),)
+        ).tolist()
+        # Then, decide which elements in batch get heads or tails
+        head_or_tail = torch.randint(0, 2, (len(mini_batch),)).tolist()
         # Then, insert them into the batch
-        negative_batch = [(0,0,0),] * len(mini_batch)
+        negative_batch = [
+            (0, 0, 0),
+        ] * len(mini_batch)
         for i in range(len(mini_batch)):
             if head_or_tail[i] == 0:
-                negative_batch[i] = (mini_batch[i][0], entity_universe_list[random_draws[i]], mini_batch[i][2])
+                negative_batch[i] = (
+                    mini_batch[i][0],
+                    entity_universe_list[random_draws[i]],
+                    mini_batch[i][2],
+                )
             else:
-                negative_batch[i] = (entity_universe_list[random_draws[i]], mini_batch[i][1], mini_batch[i][2])
+                negative_batch[i] = (
+                    entity_universe_list[random_draws[i]],
+                    mini_batch[i][1],
+                    mini_batch[i][2],
+                )
 
-        print(f'Negative (Filtered and Vectorized) Sampling takes {time.time() - time_start} seconds')
+        # print(f'Negative (Filtered and Vectorized) Sampling takes {time.time() - time_start} seconds')
         return negative_batch
 
     def virtual_step(self, e_set, r):
@@ -433,7 +452,9 @@ class KnowledgeGraph(nn.Module):
         e_set_1D = e_set.view(-1)
         r_space = self.action_space[0][0][e_set_1D]
         e_space = self.action_space[0][1][e_set_1D]
-        e_space = (r_space.view(batch_size, -1) == r.unsqueeze(1)).long() * e_space.view(batch_size, -1)
+        e_space = (
+            r_space.view(batch_size, -1) == r.unsqueeze(1)
+        ).long() * e_space.view(batch_size, -1)
         e_set_out = []
         for i in range(len(e_space)):
             e_set_out_b = var_cuda(unique(e_space[i].data))
@@ -452,12 +473,16 @@ class KnowledgeGraph(nn.Module):
     def define_modules(self):
         if not self.args.relation_only:
             self.entity_embeddings = nn.Embedding(self.num_entities, self.entity_dim)
-            if self.args.model == 'complex':
-                self.entity_img_embeddings = nn.Embedding(self.num_entities, self.entity_dim)
+            if self.args.model == "complex" or self.args.model == "operational_rotate":
+                self.entity_img_embeddings = nn.Embedding(
+                    self.num_entities, self.entity_dim
+                )
             self.EDropout = nn.Dropout(self.emb_dropout_rate)
         self.relation_embeddings = nn.Embedding(self.num_relations, self.relation_dim)
-        if self.args.model == 'complex':
-            self.relation_img_embeddings = nn.Embedding(self.num_relations, self.relation_dim)
+        if self.args.model == "complex" or self.args.model == "operational_transe":
+            self.relation_img_embeddings = nn.Embedding(
+                self.num_relations, self.relation_dim
+            )
         self.RDropout = nn.Dropout(self.emb_dropout_rate)
 
     def initialize_modules(self):

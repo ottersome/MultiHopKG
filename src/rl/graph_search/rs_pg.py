@@ -98,7 +98,8 @@ class RewardShapingPolicyGradient(PolicyGradient):
         return self.model.split('.')[2]
 
 def forward_fact_oracle(e1, r, e2, kg):
-    oracle = zeros_var_cuda([len(e1), kg.num_entities]).cuda()
+    kg_device = kg.entity_embeddings.weight.device
+    oracle = zeros_var_cuda([len(e1), kg.num_entities]).to(kg_device)
     for i in range(len(e1)):
         _e1, _r = int(e1[i]), int(r[i])
         if _e1 in kg.all_object_vectors and _r in kg.all_object_vectors[_e1]:

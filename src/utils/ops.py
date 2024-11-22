@@ -101,24 +101,33 @@ def format_rule(rule, kg):
     return rule_str
 
 
-def ones_var_cuda(s, requires_grad=False):
-    return Variable(torch.ones(s), requires_grad=requires_grad).cuda()
+def ones_var_cuda(s, requires_grad=False, device=None):
+    if device is None:
+        device = 'cpu'
+    return Variable(torch.ones(s), requires_grad=requires_grad).to(device)
+    # return Variable(torch.ones(s), requires_grad=requires_grad).to
 
 
-def zeros_var_cuda(s, requires_grad=False):
-    return Variable(torch.zeros(s), requires_grad=requires_grad).cuda()
+def zeros_var_cuda(s, requires_grad=False, device=None):
+    if device is None:
+        device = 'cpu'
+    return Variable(torch.zeros(s), requires_grad=requires_grad).to(device)
 
 
 def int_fill_var_cuda(s, value, requires_grad=False):
     return int_var_cuda((torch.zeros(s) + value), requires_grad=requires_grad)
 
 
-def int_var_cuda(x, requires_grad=False):
-    return Variable(x, requires_grad=requires_grad).long().cuda()
+def int_var_cuda(x, requires_grad=False, device=None):
+    if device is None:
+        device = 'cpu'
+    return Variable(x, requires_grad=requires_grad).to(torch.int32).to(device)
 
 
-def var_cuda(x, requires_grad=False):
-    return Variable(x, requires_grad=requires_grad).cuda()
+def var_cuda(x, requires_grad=False, device=None):
+    if device is None:
+        device = 'cpu'
+    return Variable(x, requires_grad=requires_grad).to(device)
 
 
 def var_to_numpy(x):

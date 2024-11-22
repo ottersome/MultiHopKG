@@ -39,8 +39,10 @@ parser.add_argument('--model_root_dir', type=str, default=os.path.join(os.path.d
                     help='root directory where the model parameters are stored (default: None)')
 parser.add_argument('--model_dir', type=str, default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'model'),
                     help='directory where the model parameters are stored (default: None)')
-parser.add_argument('--gpu', type=int, default=0,
-                    help='gpu device (default: 0)')
+# parser.add_argument('--gpu', type=int, default=0,
+#                     help='gpu device (default: 0)')
+parser.add_argument('--device', type=str, default='cpu',
+                    help='device to use (default: cpu, if you want gpu type: \'0\')')
 parser.add_argument('--checkpoint_path', type=str, default=None,
                     help='path to a pretrained checkpoint')
 parser.add_argument('--debug', action='store_true',
@@ -235,4 +237,15 @@ parser.add_argument('--tune', type=str, default='',
 parser.add_argument('--grid_search', action='store_true',
                     help='Conduct grid search of hyperparameters')
 
-args = parser.parse_args()
+
+parsed_args = parser.parse_args()
+
+# Check on the arags for a bit
+
+if not parsed_args.device == 'cpu':
+    # Should be int in a string format. Check if not through IO error
+    if not parsed_args.device.isdigit():
+        raise ValueError('Unrecognized device type: {}'.format(parsed_args.device))
+    parsed_args.device = int(parsed_args.device)
+
+args = parsed_args
