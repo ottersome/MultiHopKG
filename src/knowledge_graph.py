@@ -8,6 +8,7 @@
 """
 
 import collections
+from functools import cmp_to_key
 import os
 import pickle
 import random
@@ -21,6 +22,7 @@ from src.data_utils import load_index
 from src.data_utils import NO_OP_ENTITY_ID, NO_OP_RELATION_ID
 from src.data_utils import DUMMY_ENTITY_ID, DUMMY_RELATION_ID
 from src.data_utils import START_RELATION_ID
+from src.utils.logs import create_logger
 import src.utils.ops as ops
 from src.utils.ops import int_var_cuda, var_cuda
 import pdb
@@ -61,6 +63,7 @@ class KnowledgeGraph(nn.Module):
         self.all_object_vectors = None
 
         print('** Create {} knowledge graph **'.format(args.model))
+        self.model = args.model
         self.load_graph_data(args.data_dir)
         self.load_all_answers(args.data_dir, args.add_reversed_training_edges)
 
@@ -75,6 +78,9 @@ class KnowledgeGraph(nn.Module):
         self.relation_img_embeddings = None
         self.EDropout = None
         self.RDropout = None
+
+        # Create the logger for sanity checking
+        self.logger = create_logger(__class__.__name__)
         
         self.define_modules()
         self.initialize_modules()
@@ -327,25 +333,92 @@ class KnowledgeGraph(nn.Module):
         return r_id + 1
 
     def get_all_entity_embeddings(self):
-        return self.EDropout(self.entity_embeddings.weight)
+        return self.EDropout(self.entity_embeddings.weight.data)
 
     def get_entity_embeddings(self, e):
         return self.EDropout(self.entity_embeddings(e))
 
     def get_all_relation_embeddings(self):
-        return self.RDropout(self.relation_embeddings.weight)
+        return self.RDropout(self.relation_embeddings)
 
     def get_relation_embeddings(self, r):
         return self.RDropout(self.relation_embeddings(r))
 
     def get_all_entity_img_embeddings(self):
-        return self.EDropout(self.entity_img_embeddings.weight)
+        return self.EDropout(self.entity_img_embeddings)
 
     def get_entity_img_embeddings(self, e):
         return self.EDropout(self.entity_img_embeddings(e))
 
     def get_relation_img_embeddings(self, r):
         return self.RDropout(self.relation_img_embeddings(r))
+
+    def constrain_radius_on_complex_embeddings(self):
+        assert (
+            self.model == "operational_rotate"
+        ), "normalized_embeddings works under assumption of RotatE"
+        
+        with torch.no_grad():
+            # Only normalize if both real and imaginary parts exist
+            if isinstance(self.entity_embeddings, nn.Embedding) and isinstance(self.entity_img_embeddings, nn.Embedding):
+                self.entity_embeddings.weight.data, self.entity_img_embeddings.weight.data = project_to_unit_circle(
+                    self.entity_embeddings.weight.data,
+                    self.entity_img_embeddings.weight.data
+                )
+                
+            if isinstance(self.relation_embeddings, nn.Embedding) and isinstance(self.relation_img_embeddings, nn.Embedding):
+                self.relation_embeddings.weight.data, self.relation_img_embeddings.weight.data = project_to_unit_circle(
+                    self.relation_embeddings.weight.data,
+                    self.relation_img_embeddings.weight.data
+                )
+
+    def clip_embeddings(self, max_norm: float):
+        assert (
+            self.model == "operational_rotate"
+        ), "normalized_embeddings works under assumption of RotatE"
+        "B4 you use this make sure your model is compatible."
+
+        # Now we check for all the embeddins
+        all_embeddings = {
+                "entity_embeddings" : self.entity_embeddings,
+                "relation_embeddings" : self.relation_embeddings,
+                "entity_img_embeddings" : self.entity_img_embeddings,
+                # "relation_img_embeddings" : self.relation_img_embeddings,
+            }
+
+        if torch.any(torch.isnan(self.entity_embeddings.weight)):
+            # pdb.set_trace()
+            pass
+        for k,e in all_embeddings.items():
+            assert isinstance(e, nn.Embedding), f"Embedding {k} is not an Embedding"
+            minv,maxv = torch.min(e.weight), torch.max(e.weight)
+            self.logger.debug(f"B4 Clipping Embedding {k} min {minv} and max {maxv}")
+            torch.nn.utils.clip_grad_norm_(e.weight, max_norm)
+            minv,maxv = torch.min(e.weight), torch.max(e.weight)
+            self.logger.debug(f"After Clippping Embedding {k} min {minv} and max {maxv}")
+         
+    def log_gradients(self):
+        # Now we check for all the embeddins
+        all_embeddings = {
+                "entity_embeddings" : self.entity_embeddings,
+                "relation_embeddings" : self.relation_embeddings,
+                "entity_img_embeddings" : self.entity_img_embeddings,
+                # "relation_img_embeddings" : self.relation_img_embeddings, # Only tryign RotatE now so not needed
+            }
+        for i,(k,e) in enumerate(all_embeddings.items()):
+            assert isinstance(e, nn.Embedding), f"Embedding {k} is not an Embedding"
+            assert e.weight.grad is not None, f"Embedding {k} has no gradient"
+
+            # Compute the min and max of the gradients
+            minv,maxv = torch.min(e.weight.grad), torch.max(e.weight.grad)
+            mean =  torch.mean(e.weight.grad)
+            uniformly_random_mask = torch.rand(e.weight.grad.size())
+            biased_random_mask = uniformly_random_mask < 0.001
+            samples = e.weight.grad[biased_random_mask].detach().flatten()
+            self.logger.debug(f"{i}: Log Gradient ) Embedding {k} min {minv} and max {maxv} and mean {mean}") 
+            self.logger.debug(f"{i}: Log Gradient ) We have {len(samples)} samples looking like {samples}")
+
+        
 
     def negative_sampling(
         self, mini_batch: List[Tuple[int, int, int]], filter: bool = False
@@ -479,16 +552,64 @@ class KnowledgeGraph(nn.Module):
                 )
             self.EDropout = nn.Dropout(self.emb_dropout_rate)
         self.relation_embeddings = nn.Embedding(self.num_relations, self.relation_dim)
-        if self.args.model == "complex" or self.args.model == "operational_transe":
+        if self.args.model == "complex":
             self.relation_img_embeddings = nn.Embedding(
                 self.num_relations, self.relation_dim
             )
         self.RDropout = nn.Dropout(self.emb_dropout_rate)
 
     def initialize_modules(self):
+        # TODO: Clear this mess
+        
         if not self.args.relation_only:
-            nn.init.xavier_normal_(self.entity_embeddings.weight)
-        nn.init.xavier_normal_(self.relation_embeddings.weight)
+            # nn.init.xavier_normal_(self.entity_embeddings.weight)
+            nn.init.uniform_(self.entity_embeddings.weight)
+        else:
+            raise RuntimeError(
+                "This for LG to ensure that the relation embedding is initialized"
+                "You may delete it"
+            )
+        # nn.init.xavier_normal_(self.relation_embeddings.weight)
+        nn.init.uniform_(self.relation_embeddings.weight)
+
+        # DEFAULT: Not really doing anything with this atm
+        self.relation_img_embeddings = None
+
+        if self.args.model == "complex" or self.args.model == "operational_rotate":
+            self.entity_img_embeddings = nn.Embedding(
+                self.num_entities, self.entity_dim
+            )
+            nn.init.xavier_normal_(self.entity_img_embeddings.weight)
+            nn.init.uniform_(self.entity_img_embeddings.weight)
+        else: 
+            raise RuntimeError("This for LG to ensure that the entity image embedding is initialized")
+
+        if self.args.model == "operational_rotate":
+            assert all([
+                isinstance(self.entity_embeddings, nn.Embedding),
+                isinstance(self.entity_img_embeddings, nn.Embedding),
+                isinstance(self.relation_embeddings, nn.Embedding),
+            ])
+            entity_embeddings_tensor, entity_img_embeddings_tensor = project_to_unit_circle(self.entity_embeddings.weight.data, self.entity_img_embeddings.weight.data)
+            self.entity_embeddings.weight.data = entity_embeddings_tensor
+            self.entity_img_embeddings.weight.data = entity_img_embeddings_tensor
+            # TODO: maybe lock the rotate here? to below 2pi
+
+        ########################################
+        # Lets log a snippet of the embeddings for initialization
+        ########################################
+        self.logger.debug("\n" + "="*50 + "\nENTITY EMBEDDINGS\n" + "="*50)
+        for i in range(min(10, self.num_entities)):
+            self.logger.debug(f"Entity [{i:3d}]: {self.entity_embeddings.weight[i].tolist()}")
+        
+        self.logger.debug("\n" + "="*50 + "\nRELATION EMBEDDINGS\n" + "="*50)
+        for i in range(min(10, self.num_relations)):
+            self.logger.debug(f"Relation [{i:3d}]: {self.relation_embeddings.weight[i].tolist()}")
+        
+        self.logger.debug("\n" + "="*50 + "\nENTITY IMAGE EMBEDDINGS\n" + "="*50)
+        for i in range(min(10, self.num_entities)):
+            self.logger.debug(f"Entity Image [{i:3d}]: {self.entity_img_embeddings.weight[i].tolist()}")
+
 
     @property
     def num_entities(self):
@@ -517,3 +638,22 @@ class KnowledgeGraph(nn.Module):
     @property
     def dummy_start_r(self):
         return START_RELATION_ID
+    
+def project_to_unit_circle(real_tensor: torch.Tensor, img_tensor: torch.Tensor):
+    with torch.no_grad():
+        # Calculate magnitude of complex numbers
+        magnitude = torch.sqrt(real_tensor**2 + img_tensor**2)
+        
+        # Create mask for non-zero magnitudes
+        non_zero_mask = magnitude > 0
+        
+        # Initialize output tensors
+        real_normalized = torch.ones_like(real_tensor)
+        img_normalized = torch.zeros_like(img_tensor)
+        
+        # Normalize non-zero elements
+        real_normalized[non_zero_mask] = real_tensor[non_zero_mask] / magnitude[non_zero_mask]
+        img_normalized[non_zero_mask] = img_tensor[non_zero_mask] / magnitude[non_zero_mask]
+        
+        return real_normalized, img_normalized
+

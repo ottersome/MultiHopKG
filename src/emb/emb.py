@@ -1,6 +1,6 @@
 """
  Copyright (c) 2018, salesforce.com, inc.
- All rights reserved.
+ All rights reserved.yor
  SPDX-License-Identifier: BSD-3-Clause
  For full license text, see the LICENSE file in the repo root or https://opensource.org/licenses/BSD-3-Clause
  
@@ -19,6 +19,7 @@ import pdb
 from src.learn_framework import LFramework
 from src.data_utils import NO_OP_ENTITY_ID, DUMMY_ENTITY_ID
 from src.utils.ops import var_cuda, int_var_cuda, int_fill_var_cuda
+from src.utils.logs import create_logger
 
 
 class EmbeddingBasedMethod(LFramework):
@@ -222,17 +223,21 @@ class OperationalEmbeddingBasedMethod(LFramework):
         self.margin = margin
         self.loss_fun = nn.MarginRankingLoss(margin=self.margin)
         self.filtered_negative_sampling = filtered_negative_sampling
+        self.logger = create_logger(__class__.__name__)
 
         self.theta = args.theta
 
     def loss(self, mini_batch) -> Dict[str, float]:
         kg, embedding_module = self.kg, self.embedding_module
+        pdb.set_trace()
+        print("Try KG embeddings here")
         # compute object training loss
-        # e1, e2, r = self.format_batch(mini_batch, num_labels=kg.num_entities)
         time_loss_start = time()
         pos_mini_batch = mini_batch
+
+        # Perform Negative Sampling
         neg_mini_batch = kg.negative_sampling(mini_batch, self.filtered_negative_sampling)  # Somewhere along these lines
-        time_sampling_end = time() - time_loss_start
+
         # Process them into tensors
         time_start_tensor_creation = time()
         pe1_t, pr_t, pe2_t = [], [], []
@@ -244,8 +249,6 @@ class OperationalEmbeddingBasedMethod(LFramework):
             ne2_t.append(ne2)
             pr_t.append(r)
             nr_t.append(r)
-
-        # TODO: Check if we actually need `var_cuda`
         pe1_t = torch.LongTensor(pe1_t).to(self.kg.entity_embeddings.weight.device)
         ne1_t = torch.LongTensor(ne1_t).to(self.kg.entity_embeddings.weight.device)
         pe2_t = torch.LongTensor(pe2_t).to(self.kg.entity_embeddings.weight.device)
@@ -253,21 +256,57 @@ class OperationalEmbeddingBasedMethod(LFramework):
         pr_t = torch.LongTensor(pr_t).to(self.kg.entity_embeddings.weight.device)
         nr_t = torch.LongTensor(nr_t).to(self.kg.entity_embeddings.weight.device)
 
+        # Check if any of these tensors have nan in them
+        all_tensors = [pe1_t, ne1_t, pe2_t, ne2_t, pr_t, nr_t]
+        if any([torch.any(torch.isnan(t)) for t in all_tensors]):
+            pdb.set_trace()
+
         time_end_tensor_creation = time() - time_start_tensor_creation
         # Forward pass
         time_start_forward = time()
+        pdb.set_trace()
+        print("Try KG embeddings here")
         pos_scores = embedding_module.forward(pe1_t, pe2_t, pr_t, self.kg)
         neg_scores = embedding_module.forward(ne1_t, ne2_t, nr_t, self.kg)
-        loss = self.loss_fun(
-            pos_scores,
-            neg_scores,
-            target=torch.ones_like(pos_scores),
-        )
+
+        if torch.any(torch.isnan(pos_scores)):
+            pdb.set_trace() 
+        if torch.any(torch.isnan(neg_scores)):
+            pdb.set_trace()
+
+        # loss_nmean = self.loss_fun(
+        #     pos_scores,
+        #     neg_scores,
+        #     target=torch.ones_like(pos_scores),
+        # )
+        # pdb.set_trace()
+         
+        eps = 1e-15
+        # pos_term = (-1)*torch.log(torch.sigmoid((self.margin - pos_scores)) + eps)
+        # neg_term = torch.log(torch.sigmoid((pos_scores - self.margin))  +eps)
+        pdb.set_trace()
+        loss_nmean = self.margin + pos_scores - neg_scores
+
+        
+        if torch.any(torch.isnan(loss_nmean)):
+            # pdb.set_trace()
+            pass
+            print('We got a problem with the loss in non-mean')
+
+        # Let me see what loss is like here.
+        max_loss = torch.max(loss_nmean.detach())
+        min_loss = torch.min(loss_nmean.detach())
+        self.logger.debug(f"The max loss is : {max_loss} the min loss is {min_loss} ")
+
+        loss_mean = torch.mean(loss_nmean)
 
         loss_dict = {
-            "model_loss" : loss, 
-            "print_loss" : float(loss)
+            "model_loss" : loss_mean, 
+            "print_loss" : float(loss_mean)
         }
+        if torch.isnan(loss_mean):
+            # pdb.set_trace()
+            pass
         time_end_forward = time() - time_start_forward
 
         time_end_loss = time() - time_loss_start
@@ -292,8 +331,13 @@ class OperationalEmbeddingBasedMethod(LFramework):
     #     return torch.cat(pred_scores)
 
     def predict(self, mini_batch, verbose=False):
-        kg, embedding_module = self.kg, self.embedding_module
+        kg, embedding_module, device = self.kg, self.embedding_module, self.kg.entity_embeddings.weight.device
         e1, e2, r = self.format_batch(mini_batch)
+        e1, e2, r = (
+            e1.to(device).to(torch.int64),
+            e2.to(device).to(torch.int64),
+            r.to(device).to(torch.int64),
+        )
         pred_scores = embedding_module.forward_for_score(e1, r, kg)
         # Normalize in the last dimension
         min_vals = pred_scores.min(dim=-1, keepdim=True)[0]
