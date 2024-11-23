@@ -229,7 +229,7 @@ class OperationalEmbeddingBasedMethod(LFramework):
 
     def loss(self, mini_batch) -> Dict[str, float]:
         kg, embedding_module = self.kg, self.embedding_module
-        pdb.set_trace()
+        # pdb.set_trace()
         print("Try KG embeddings here")
         # compute object training loss
         time_loss_start = time()
@@ -264,7 +264,7 @@ class OperationalEmbeddingBasedMethod(LFramework):
         time_end_tensor_creation = time() - time_start_tensor_creation
         # Forward pass
         time_start_forward = time()
-        pdb.set_trace()
+        # pdb.set_trace()
         print("Try KG embeddings here")
         pos_scores = embedding_module.forward(pe1_t, pe2_t, pr_t, self.kg)
         neg_scores = embedding_module.forward(ne1_t, ne2_t, nr_t, self.kg)
@@ -274,18 +274,18 @@ class OperationalEmbeddingBasedMethod(LFramework):
         if torch.any(torch.isnan(neg_scores)):
             pdb.set_trace()
 
-        # loss_nmean = self.loss_fun(
-        #     pos_scores,
-        #     neg_scores,
-        #     target=torch.ones_like(pos_scores),
-        # )
-        # pdb.set_trace()
+        loss_nmean = self.loss_fun(
+            pos_scores,
+            neg_scores,
+            target=torch.ones_like(pos_scores),
+        )
+        pdb.set_trace()
          
-        eps = 1e-15
+        # eps = 1e-15
         # pos_term = (-1)*torch.log(torch.sigmoid((self.margin - pos_scores)) + eps)
         # neg_term = torch.log(torch.sigmoid((pos_scores - self.margin))  +eps)
-        pdb.set_trace()
-        loss_nmean = self.margin + pos_scores - neg_scores
+        # pdb.set_trace()
+        # loss_nmean = self.margin + pos_scores - neg_scores
 
         
         if torch.any(torch.isnan(loss_nmean)):

@@ -479,7 +479,7 @@ class RotatE(nn.Module):
         )
 
         # Difference between the real and imaginary parts of the tail entity
-        pdb.set_trace()
+        # pdb.set_trace()
         score = torch.norm(
             torch.stack([tail_approx_real - tail_real, tail_approx_img - tail_img], dim=-1), dim=-1
         )
@@ -488,6 +488,7 @@ class RotatE(nn.Module):
         #     (tail_approx_real - tail_real),
         #     (tail_approx_img - tail_img)
         # )
+
         if torch.any(torch.isnan(score)): 
             pdb.set_trace() 
             pass

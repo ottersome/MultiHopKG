@@ -154,7 +154,7 @@ class LFramework(nn.Module):
                     pdb.set_trace()
                     print('all Along it has been the LOSS')
 
-                pdb.set_trace()
+                # pdb.set_trace()
                 self.optim.step()
                 
                 new_embeddings_nanness = any([
