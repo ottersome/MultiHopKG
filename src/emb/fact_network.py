@@ -437,6 +437,7 @@ class RotatE(nn.Module):
     def forward(
         self, head: Tensor, tails: Tensor, relation: Tensor, kg: KnowledgeGraph
     ) -> torch.Tensor:
+
         # Compute the displacement from E1 using relation R
         head_real = kg.get_entity_embeddings(head)
         head_img = kg.get_entity_img_embeddings(head)
@@ -446,34 +447,43 @@ class RotatE(nn.Module):
         rel_theta = kg.get_relation_embeddings(relation)
         rel_real, rel_img = torch.cos(rel_theta), torch.sin(rel_theta)
 
-        # And fromm this we continue let me see something really quick
-
         # Compute the approximate tail entity (displacement) for both real and imaginary parts
         tail_approx_real, tail_approx_img = self.forward_displacement(
             head_real, rel_real, head_img, rel_img
         )
 
-        score = torch.norm(
-            torch.stack([tail_approx_real - tail_real, tail_approx_img - tail_img], dim=-1), dim=-1
+        score = self._score_function(
+            tail_approx_real, tail_real, tail_approx_img, tail_img
         )
-
         # score = torch.hypot(
         #     (tail_approx_real - tail_real),
         #     (tail_approx_img - tail_img)
         # )
 
-        if torch.any(torch.isnan(score)): 
-            pdb.set_trace() 
+        if torch.any(torch.isnan(score)):
+            pdb.set_trace()
             pass
 
         return score
+
+    def _score_function(
+        self,
+        tail_approx_real: torch.Tensor,
+        tail_real: nn.Embedding,
+        tail_approx_img: torch.Tensor,
+        tail_img: nn.Embedding,
+    ):
+        real_diff = tail_approx_real - tail_real
+        img_diff = tail_approx_img - tail_img
+        modulus = torch.abs(real_diff + 1j * img_diff)
+        return torch.norm(modulus, dim=-1)
 
     def forward_displacement(
         self, head_real: Tensor, rel_real: Tensor, head_img: Tensor, rel_img: Tensor
     ):
         """
         compute the displacement of the head entity along the relation vector.
-        .. math::
+        .. math::A
             \mathbf{e}_t \approx \mathbf{e}_h \circ \mathbf{e}_r,
 
         parameters:
@@ -497,20 +507,34 @@ class RotatE(nn.Module):
         self, heads: LongTensor, rs: LongTensor, kg: KnowledgeGraph
     ) -> Tensor:
         """
-        above but for every head given it will multiply against every entity to see which ones are the best ones.
+        Forward for evaluation.
         """
         # Ensure nothing much is being collected:
         with torch.no_grad():
-            all_possible_tails = kg.get_all_entity_embeddings().unsqueeze(
-                0
-            )  # For all the bataches
-            calculated_score = self(
-                heads, all_possible_tails, rs, kg
+            # TODO: Perhaps no droput for this ?
+            all_possible_tails = kg.get_all_entity_embeddings().unsqueeze(0)
+            all_possible_tails_img = kg.get_all_entity_img_embeddings().unsqueeze(0)
+            head_embeddings = kg.get_entity_embeddings(heads)
+            head_img_embeddings = kg.get_entity_img_embeddings(heads)
+            rel_theta = kg.get_relation_embeddings(rs)
+            rel_real, rel_img = torch.cos(rel_theta), torch.sin(rel_theta)
+
+            # Actually run the rotation operation
+            tail_approx_real, tail_approx_img = self.forward_displacement(
+                head_embeddings, rel_real, head_img_embeddings, rel_img
             )
 
+            # Once we have where we end up we just have to calculate the distance to all other places
+            tail_approx_real_expanded = tail_approx_real.unsqueeze(1)
+            tail_approx_img_expanded = tail_approx_img.unsqueeze(1)
+
+            calculated_score = self._score_function(
+                tail_approx_real_expanded,
+                all_possible_tails,
+                tail_approx_img_expanded,
+                all_possible_tails_img,
+            )
         return calculated_score
-
-
 
 
 def get_conve_nn_state_dict(state_dict):

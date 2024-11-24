@@ -333,9 +333,14 @@ class KnowledgeGraph(nn.Module):
         return r_id + 1
 
     def get_all_entity_embeddings(self):
-        return self.EDropout(self.entity_embeddings.weight.data)
+        return self.EDropout(self.entity_embeddings.weight)
+
+    def get_all_entity_ids(self):
+        return torch.arange(self.num_entities)
 
     def get_entity_embeddings(self, e):
+        if e.dtype != torch.int64:
+            pdb.set_trace()
         return self.EDropout(self.entity_embeddings(e))
 
     def get_all_relation_embeddings(self):
@@ -345,7 +350,7 @@ class KnowledgeGraph(nn.Module):
         return self.RDropout(self.relation_embeddings(r))
 
     def get_all_entity_img_embeddings(self):
-        return self.EDropout(self.entity_img_embeddings)
+        return self.EDropout(self.entity_img_embeddings.weight)
 
     def get_entity_img_embeddings(self, e):
         return self.EDropout(self.entity_img_embeddings(e))
@@ -561,15 +566,15 @@ class KnowledgeGraph(nn.Module):
         # TODO: Clear this mess
         
         if not self.args.relation_only:
-            # nn.init.xavier_normal_(self.entity_embeddings.weight)
-            nn.init.uniform_(self.entity_embeddings.weight)
+            nn.init.xavier_normal_(self.entity_embeddings.weight)
+            # nn.init.uniform_(self.entity_embeddings.weight)
         else:
             raise RuntimeError(
                 "This for LG to ensure that the relation embedding is initialized"
                 "You may delete it"
             )
-        # nn.init.xavier_normal_(self.relation_embeddings.weight)
-        nn.init.uniform_(self.relation_embeddings.weight)
+        nn.init.xavier_normal_(self.relation_embeddings.weight)
+        # nn.init.uniform_(self.relation_embeddings.weight)
 
         # DEFAULT: Not really doing anything with this atm
         self.relation_img_embeddings = None
@@ -579,9 +584,7 @@ class KnowledgeGraph(nn.Module):
                 self.num_entities, self.entity_dim
             )
             nn.init.xavier_normal_(self.entity_img_embeddings.weight)
-            nn.init.uniform_(self.entity_img_embeddings.weight)
-        else: 
-            raise RuntimeError("This for LG to ensure that the entity image embedding is initialized")
+            # nn.init.uniform_(self.entity_img_embeddings.weight)
 
         if self.args.model == "operational_rotate":
             assert all([
