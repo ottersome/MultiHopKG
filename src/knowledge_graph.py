@@ -410,7 +410,8 @@ class KnowledgeGraph(nn.Module):
                 # "relation_img_embeddings" : self.relation_img_embeddings, # Only tryign RotatE now so not needed
             }
         for i,(k,e) in enumerate(all_embeddings.items()):
-            assert isinstance(e, nn.Embedding), f"Embedding {k} is not an Embedding"
+            if not isinstance(e, nn.Embedding):
+                continue
             assert e.weight.grad is not None, f"Embedding {k} has no gradient"
 
             # Compute the min and max of the gradients
@@ -609,8 +610,9 @@ class KnowledgeGraph(nn.Module):
             self.logger.debug(f"Relation [{i:3d}]: {self.relation_embeddings.weight[i].tolist()}")
         
         self.logger.debug("\n" + "="*50 + "\nENTITY IMAGE EMBEDDINGS\n" + "="*50)
-        for i in range(min(10, self.num_entities)):
-            self.logger.debug(f"Entity Image [{i:3d}]: {self.entity_img_embeddings.weight[i].tolist()}")
+        if isinstance(self.entity_img_embeddings, nn.Embedding):
+            for i in range(min(10, self.num_entities)):
+                self.logger.debug(f"Entity Image [{i:3d}]: {self.entity_img_embeddings.weight[i].tolist()}")
 
 
     @property

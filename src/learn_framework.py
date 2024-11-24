@@ -137,33 +137,7 @@ class LFramework(nn.Module):
                 # Lets log a snapshot of theh gradients, its min and max and also average
                 self.kg.log_gradients()
 
-
-
-                # Gradient Clipping
-                # self.kg.clip_embeddings(1.0)
-
-                ########################################
-
-                old_embeddings_nanness = any([
-                    torch.any(torch.isnan(self.kg.entity_embeddings.weight)),
-                    torch.any(torch.isnan(self.kg.relation_embeddings.weight)),
-                    torch.any(torch.isnan(self.kg.entity_img_embeddings.weight)),
-                ])
-
-                if torch.any(torch.isnan(loss['model_loss'])):
-                    pdb.set_trace()
-
-                # pdb.set_trace()
                 self.optim.step()
-                
-                new_embeddings_nanness = any([
-                    torch.any(torch.isnan(self.kg.entity_embeddings.weight)),
-                    torch.any(torch.isnan(self.kg.relation_embeddings.weight)),
-                    torch.any(torch.isnan(self.kg.entity_img_embeddings.weight)),
-                ])
-
-                if not old_embeddings_nanness and new_embeddings_nanness:
-                    pdb.set_trace()
 
                 # Make sure you normalize rotatE
                 if self.model == "operational_rotate":
