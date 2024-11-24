@@ -448,38 +448,11 @@ class RotatE(nn.Module):
 
         # And fromm this we continue let me see something really quick
 
-        # ########################################
-        # # Start: debugging
-        # ########################################
-        # # Add all of the weights of the embeddings into a single scalar mean and variance.
-        # head_rel_mean = torch.mean(head_real)
-        # head_img_mean = torch.mean(head_img)
-        # tail_rel_mean = torch.mean(tail_real)
-        # tail_img_mean = torch.mean(tail_img)
-        # rel_mean = torch.mean(rel_theta)
-        # # Now variances
-        # head_rel_var = torch.var(head_real)
-        # head_img_var = torch.var(head_img)
-        # tail_rel_var = torch.var(tail_real)
-        # tail_img_var = torch.var(tail_img)
-        # rel_var = torch.var(rel_theta)
-        # self.logger.debug(
-        #     f"head_rel_mean: {head_rel_mean}, head_img_mean: {head_img_mean}, tail_rel_mean: {tail_rel_mean}, tail_img_mean: {tail_img_mean}, rel_mean: {rel_mean}"
-        # )
-        # self.logger.debug(
-        #     f"head_rel_var: {head_rel_var}, head_img_var: {head_img_var}, tail_rel_var: {tail_rel_var}, tail_img_var: {tail_img_var}, rel_var: {rel_var}"
-        # )
-        ########################################
-        # End: debugging
-        ########################################
-
         # Compute the approximate tail entity (displacement) for both real and imaginary parts
         tail_approx_real, tail_approx_img = self.forward_displacement(
             head_real, rel_real, head_img, rel_img
         )
 
-        # Difference between the real and imaginary parts of the tail entity
-        # pdb.set_trace()
         score = torch.norm(
             torch.stack([tail_approx_real - tail_real, tail_approx_img - tail_img], dim=-1), dim=-1
         )

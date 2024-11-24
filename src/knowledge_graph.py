@@ -387,8 +387,7 @@ class KnowledgeGraph(nn.Module):
             }
 
         if torch.any(torch.isnan(self.entity_embeddings.weight)):
-            # pdb.set_trace()
-            pass
+            pdb.set_trace()
         for k,e in all_embeddings.items():
             assert isinstance(e, nn.Embedding), f"Embedding {k} is not an Embedding"
             minv,maxv = torch.min(e.weight), torch.max(e.weight)

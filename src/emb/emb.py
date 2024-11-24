@@ -229,8 +229,6 @@ class OperationalEmbeddingBasedMethod(LFramework):
 
     def loss(self, mini_batch) -> Dict[str, float]:
         kg, embedding_module = self.kg, self.embedding_module
-        # pdb.set_trace()
-        print("Try KG embeddings here")
         # compute object training loss
         time_loss_start = time()
         pos_mini_batch = mini_batch
@@ -264,7 +262,6 @@ class OperationalEmbeddingBasedMethod(LFramework):
         time_end_tensor_creation = time() - time_start_tensor_creation
         # Forward pass
         time_start_forward = time()
-        # pdb.set_trace()
         print("Try KG embeddings here")
         pos_scores = embedding_module.forward(pe1_t, pe2_t, pr_t, self.kg)
         neg_scores = embedding_module.forward(ne1_t, ne2_t, nr_t, self.kg)
@@ -279,7 +276,6 @@ class OperationalEmbeddingBasedMethod(LFramework):
             neg_scores,
             target=torch.ones_like(pos_scores),
         )
-        pdb.set_trace()
          
         # eps = 1e-15
         # pos_term = (-1)*torch.log(torch.sigmoid((self.margin - pos_scores)) + eps)
@@ -289,9 +285,7 @@ class OperationalEmbeddingBasedMethod(LFramework):
 
         
         if torch.any(torch.isnan(loss_nmean)):
-            # pdb.set_trace()
-            pass
-            print('We got a problem with the loss in non-mean')
+            pdb.set_trace()
 
         # Let me see what loss is like here.
         max_loss = torch.max(loss_nmean.detach())
@@ -305,8 +299,7 @@ class OperationalEmbeddingBasedMethod(LFramework):
             "print_loss" : float(loss_mean)
         }
         if torch.isnan(loss_mean):
-            # pdb.set_trace()
-            pass
+            pdb.set_trace()
         time_end_forward = time() - time_start_forward
 
         time_end_loss = time() - time_loss_start

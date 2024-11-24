@@ -152,7 +152,6 @@ class LFramework(nn.Module):
 
                 if torch.any(torch.isnan(loss['model_loss'])):
                     pdb.set_trace()
-                    print('all Along it has been the LOSS')
 
                 # pdb.set_trace()
                 self.optim.step()
@@ -164,8 +163,7 @@ class LFramework(nn.Module):
                 ])
 
                 if not old_embeddings_nanness and new_embeddings_nanness:
-                    # pdb.set_trace()
-                    pass
+                    pdb.set_trace()
 
                 # Make sure you normalize rotatE
                 if self.model == "operational_rotate":
