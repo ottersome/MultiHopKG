@@ -280,7 +280,8 @@ class OperationalEmbeddingBasedMethod(LFramework):
         # eps = 1e-15
         # pos_term = (-1)*torch.log(torch.sigmoid((self.margin - pos_scores)) + eps)
         # neg_term = torch.log(torch.sigmoid((pos_scores - self.margin))  +eps)
-        # pdb.set_trace()
+        # loss_nmean  = pos_term - neg_term
+
         # loss_nmean = self.margin + pos_scores - neg_scores
 
         
@@ -300,9 +301,7 @@ class OperationalEmbeddingBasedMethod(LFramework):
         }
         if torch.isnan(loss_mean):
             pdb.set_trace()
-        time_end_forward = time() - time_start_forward
 
-        time_end_loss = time() - time_loss_start
         # print(f"Loss time is : {time_end_loss}")
         # print(f"Negative Sampling time is : {time_sampling_end}. Percentage is {time_sampling_end/time_end_loss}")
         # print(f"Tensor creation time is : {time_end_tensor_creation}. Percentage is {time_end_tensor_creation/time_end_loss}")

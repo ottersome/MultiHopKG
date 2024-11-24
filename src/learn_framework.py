@@ -132,10 +132,10 @@ class LFramework(nn.Module):
                 # Compute Gradients
                 ########################################
                 loss['model_loss'].backward()
-                # if self.grad_norm > 0:
-                #     clip_grad_norm_(self.parameters(), self.grad_norm)
+                if self.grad_norm > 0:
+                    clip_grad_norm_(self.parameters(), self.grad_norm)
                 # Lets log a snapshot of theh gradients, its min and max and also average
-                self.kg.log_gradients()
+                # self.kg.log_gradients()
 
                 self.optim.step()
 

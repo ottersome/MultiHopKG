@@ -15,10 +15,11 @@ num_wait_epochs=100
 batch_size=512  
 train_batch_size=512
 dev_batch_size=64
-learning_rate=0.0003
+learning_rate=0.003
 grad_norm=0
 emb_dropout_rate=0.3
 beam_size=128
+filtered_negative_sampling=True
 
 num_negative_samples=100
 margin=12

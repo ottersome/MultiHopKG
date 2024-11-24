@@ -377,6 +377,12 @@ class KnowledgeGraph(nn.Module):
                     self.relation_img_embeddings.weight.data
                 )
 
+        # NOTE: THis worked last time I checked but we no longer need it.
+        # Calculate the Magnitude:
+        # magnitude = torch.abs(self.entity_embeddings.weight + 1j * self.entity_img_embeddings.weight)
+        # min_man, max_man = magnitude.min(), magnitude.max()
+        # self.logger.debug(f"We report entity min {min_man} and max {max_man}")
+
     def clip_embeddings(self, max_norm: float):
         assert (
             self.model == "operational_rotate"
@@ -439,6 +445,7 @@ class KnowledgeGraph(nn.Module):
             raise ValueError("Please load the knowledge graph first")
 
         if filter:
+            self.logger.debug("Filtered Negative Sampling is enabled")
             return self._nonvectorized_filtered_negative_sampling(
                 mini_batch, self.all_objects, self.all_subjects, self.all_entities
             )
@@ -567,8 +574,8 @@ class KnowledgeGraph(nn.Module):
         # TODO: Clear this mess
         
         if not self.args.relation_only:
-            nn.init.xavier_normal_(self.entity_embeddings.weight)
-            # nn.init.uniform_(self.entity_embeddings.weight)
+            # nn.init.xavier_normal_(self.entity_embeddings.weight)
+            nn.init.uniform_(self.entity_embeddings.weight)
         else:
             raise RuntimeError(
                 "This for LG to ensure that the relation embedding is initialized"
@@ -584,8 +591,8 @@ class KnowledgeGraph(nn.Module):
             self.entity_img_embeddings = nn.Embedding(
                 self.num_entities, self.entity_dim
             )
-            nn.init.xavier_normal_(self.entity_img_embeddings.weight)
-            # nn.init.uniform_(self.entity_img_embeddings.weight)
+            # nn.init.xavier_normal_(self.entity_img_embeddings.weight)
+            nn.init.uniform_(self.entity_img_embeddings.weight)
 
         if self.args.model == "operational_rotate":
             assert all([
