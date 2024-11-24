@@ -23,8 +23,7 @@
       # Thisis the only thing that can make my environment run.
       devShells.default = (pkgs.buildFHSUserEnv {
         name = "cuda-env";
-        targetPkgs = pkgs: with pkgs; [
-		  zsh
+        targetPkgs = pkgs: with pkgs; [ 
           git
           gitRepo
           gnupg
