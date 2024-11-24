@@ -77,7 +77,7 @@ def batch_loop_dev(
     nav_agent: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
     steps_in_episode: int,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
     Specifically for computing any extra metrics on the dev set.
     Otherwise, this is the same as `batch_loop`.
@@ -95,13 +95,14 @@ def batch_loop_dev(
     answer_ids_padded_tensor = collate_token_ids_batch(answers).to(torch.int32)
 
     logger.warn(f"About to go into rollout")
-    log_probs, rewards, extras = rollout(
+    log_probs, rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         hunch_llm,
         env,
         question_embeddings,
         answer_ids_padded_tensor,
+        dev_mode=True,
     )
 
     ########################################
@@ -120,7 +121,7 @@ def batch_loop_dev(
 
     logger.info(f"Does pg_loss require grad? {pg_loss.requires_grad}")
 
-    return pg_loss
+    return pg_loss, eval_extras
 
 def batch_loop(
     env: ITLGraphEnvironment,
@@ -189,6 +190,8 @@ def evaluate_training(
         "dev/pg_loss": []
     }
 
+    eval_extras = {}
+
     with torch.no_grad():
         for batch_id in range(num_batches):
             # TODO: Get the rollout working
@@ -198,26 +201,12 @@ def evaluate_training(
             if len(mini_batch) < batch_size: # We dont want to evaluate on incomplete batches
                 continue
 
-            pg_loss = batch_loop_dev(
+            pg_loss,eval_extras = batch_loop_dev(
                 env, mini_batch, nav_agent, hunch_llm, steps_in_episode
             )
             logger.info("Finishing inner looop of batch")
             metrics['dev/pg_loss'].append(pg_loss.mean().item())
         logger.info("Done with all batches")
-
-        ########################################
-        # Textual Evaluation 
-        ########################################
-        last_batch_id = num_batches-1
-        mini_batch = dev_df[last_batch_id*batch_size:(last_batch_id+1)*batch_size]
-        if not isinstance(mini_batch, pd.DataFrame): # For the lsp to give me a break
-            raise RuntimeError(f"The mini batch is not a pd.DataDFrame, but a {type(mini_batch)}. Please check the data loading code.")
-        table = wandb.Table(columns=["Question","Path Taken","Real Answer","Given Answer"])
-        pg_loss = batch_loop_dev(
-            env, mini_batch, nav_agent, hunch_llm, steps_in_episode
-        )
-    
-
 
     # Average out all metrics in side metrics
     for k,v in metrics.items():
@@ -225,6 +214,18 @@ def evaluate_training(
 
     if wandb_run is not None:
         wandb_run.log(metrics)
+        if len(eval_extras) > 0:
+            ########################################
+            # Textual Evaluation 
+            ########################################
+            table = wandb.Table(columns=["Question","Path Taken","Real Answer","Given Answer"])
+            pg_loss = batch_loop_dev(
+                env, mini_batch, nav_agent, hunch_llm, steps_in_episode
+            )
+    
+
+
+
 
     nav_agent.train()
     hunch_llm.train()
@@ -395,7 +396,7 @@ def rollout(
         # TODO:Make sure we are gettign rewards from the environment.
         observations = env.step(sampled_actions)
 
-        positions, states = (observations.position, observations.state)
+        visited_embeddings, states = (observations.position, observations.state)
         # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
 
@@ -417,11 +418,13 @@ def rollout(
         ########################################
         # Stuff that we will only use for evaluation
         ########################################
-        if in_dev_mode:
+        if dev_mode:
             dev_dictionary["sampled_actions"].append(sampled_actions)
-            dev_dictionary["visited_position"].append(observations.position)
+            dev_dictionary["visited_embeddings"].append(visited_embeddings)
             meep = observations.position
 
+    if dev_mode:
+        pdb.set_trace()
     dev_dictionary = { k: torch.stack(v) for k,v in dev_dictionary.items()}
     # dev_dictionary["sampled_actions"] = torch.stack(dev_dictionary["sampled_actions"])
     # dev_dictionary["visited_position"] = torch.stack(dev_dictionary["visited_position"])
@@ -496,6 +499,13 @@ def main():
     dim_entity = knowledge_graph.get_entity_dim()
     dim_relation = knowledge_graph.get_relation_dim()
     logger.info("You have reached the exit")
+
+    # Paths for triples
+    train_triplets_path = os.path.join(args.data_dir, "train.triples")
+    dev_triplets_path   = os.path.join(args.data_dir, "dev.triples")
+    entity_index_path   = os.path.join(args.data_dir, "entity2id.txt")
+    relation_index_path = os.path.join(args.data_dir, 'relation2id.txt')
+
 
     # Get the Module for Approximate Nearest Neighbor Search
     ########################################
@@ -584,9 +594,14 @@ def main():
 
     # TODO: Load the validation data
     # dev_path = os.path.join(args.data_dir, "dev.triples")
-    # dev_data = data_utils.load_triples(
-    #     dev_path, entity_index_path, relation_index_path, seen_entities=seen_entities
-    # )
+    data_triple_split_dict: Dict[str, Any] = data_utils.load_triples_and_dict(
+        [train_triplets_path, dev_triplets_path], # TODO: Load the test_data
+        entity_index_path,
+        relation_index_path,
+        group_examples_by_query=False,
+        add_reverse_relations=False,
+    )
+
     # TODO: Make it take check for a checkpoint and decide what start_epoch
     # if args.checkpoint_path is not None:
     #     # TODO: Add it here to load the checkpoint separetely

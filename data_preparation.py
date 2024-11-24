@@ -13,6 +13,7 @@ from transformers import AutoTokenizer, AutoModel
 from multihopkg.logging import setup_logger
 from multihopkg.utils.setup import get_git_root
 from torch import nn
+import pdb
 
 def process_traditional_kb_data(data_dir:str, test:bool, model:str, add_reverse_relations: bool):
     # NOTE: Their code here
@@ -23,22 +24,33 @@ def process_traditional_kb_data(data_dir:str, test:bool, model:str, add_reverse_
     data_utils.prepare_kb_envrioment(raw_kb_path, train_path, dev_path, test_path, test, add_reverse_relations)
 
 
-def process_qa_data(raw_data_dir: str,  cache_data_dir: str, text_tokenizer: str, aggregate_question_embeddings: bool):
+def process_qa_data(
+    raw_data_path: str,
+    cache_data_dir: str,
+    cached_triples_basename: str,
+    text_tokenizer: str,
+    aggregate_question_embeddings: bool,
+):
     # Load the Transformers Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(text_tokenizer)
     # Load the data
     logger.info(
         "Loading the data with parameters:\n"
-        f"---> raw_data_dir: {raw_data_dir}\n"
+        f"---> raw_data_dir: {raw_data_path}\n"
         f"---> cache_data_dir: {cache_data_dir}\n"
         f"---> text_tokenizer: {text_tokenizer}\n"
     )
 
-    _, metadata = data_utils.process_qa_data(
-        raw_data_dir,
+    df_split, metadata = data_utils.process_qa_data(
+        raw_data_path,
         cache_data_dir,
         tokenizer,
     )
+
+    train_path, dev_path, test_path = metadata["saved_paths"]
+    # Prepare the triplet dictionaries
+    data_utils.prepare_triple_dicts(df_split)
+
     logger.info(f"Done. Result dumped at : \n\033[93m\033[4m{metadata['saved_path']}\033[0m")
 
 
@@ -93,8 +105,14 @@ def all_arguments(valid_operations: list) -> argparse.Namespace:
     ap.add_argument(
         "--cached_QAPathData_path",
         type=str,
-        default=os.path.join(repo_root, ".cache/itl/itl_data-tok_{}-maxpathlen_{}.parquet"),
+        default=os.path.join(repo_root, ".cache/itl/{}_triples-tok_{}-maxpathlen_{}.parquet"),
         help="Directory where the knowledge graph data is stored (default: None)",
+    )
+    ap.add_argument(
+        "--cached_triples_basename",
+        type=str,
+        default=os.path.join(repo_root, "itl_data-tok_{}-maxpathlen_{}.parquet"),
+        help="Name given to triples data",
     )
     ap.add_argument(
         "--text_tokenizer",
@@ -141,7 +159,7 @@ def main(args: argparse.Namespace, valid_operations: dict):
     if args.operation == "process_data":
         operation(args.data_dir, args.test, args.model, args.add_reverse_relations)
     elif args.operation == "process_qa_data":
-        operation(args.raw_QAPathData_path, args.cached_QAPathData_path, args.text_tokenizer, args.aggregate_question_embeddings)
+        operation(args.raw_QAPathData_path, args.cached_QAPathData_path, args.cached_triples_basename, args.text_tokenizer, args.aggregate_question_embeddings)
     else:
         raise NotImplementedError
 
@@ -149,7 +167,7 @@ def all(args: argparse.Namespace):
     # First prepare the traditinal KB data
     process_traditional_kb_data(args.data_dir, args.test, args.model, args.add_reverse_relations)
     # Then prepare the QA data
-    process_qa_data(args.raw_QAPathData_path, args.cached_QAPathData_path, args.text_tokenizer, args.aggregate_question_embeddings)
+    process_qa_data(args.raw_QAPathData_path, args.cached_QAPathData_path, args.text_tokenizer, args.aggregate_question_embeddings, args.cached_triples_basename)
 
 if __name__ == "__main__":
     adadaddadad = {

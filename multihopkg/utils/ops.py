@@ -103,27 +103,27 @@ def format_rule(rule, kg):
 
 
 def ones_var_cuda(s, requires_grad=False):
-    return Variable(torch.ones(s), requires_grad=requires_grad).cuda()
-
+    return torch.ones(s, requires_grad=requires_grad, device='cuda')
 
 def zeros_var_cuda(s, requires_grad=False):
-    return Variable(torch.zeros(s), requires_grad=requires_grad).cuda()
-
+    return torch.zeros(s, requires_grad=requires_grad, device='cuda')
 
 def int_fill_var_cuda(s, value, requires_grad=False):
-    return int_var_cuda((torch.zeros(s) + value), requires_grad=requires_grad)
+    raise NotImplementedError("LG: Look mate this should be good but just warning you in case you use it: It might not be")
+    return torch.full(s, value, dtype=torch.long, requires_grad=requires_grad, device='cuda')
 
 
 def int_var_cuda(x, requires_grad=False):
-    return Variable(x, requires_grad=requires_grad).long().cuda()
+    return x.to(device='cuda', dtype=torch.long, requires_grad=requires_grad)
 
 
 def var_cuda(x, requires_grad=False):
-    return Variable(x, requires_grad=requires_grad).cuda()
+    return x.to(device='cuda', requires_grad=requires_grad)
 
 
 def var_to_numpy(x):
-    return x.data.cpu().numpy()
+    return x.detach().cpu().numpy()
+
 
 
 def pad_and_cat(
