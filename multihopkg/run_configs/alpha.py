@@ -29,6 +29,16 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--gpu", type=int, default=0)
     ap.add_argument("--seed", type=int, default=420, metavar="S")
     ap.add_argument("--tokenizer_name", type=str, default="bert-base-uncased")
+    ap.add_argument("--debug", action="store_true", help="Debug mode")
+    ap.add_argument('--data_dir', type=str, default="./data/FB15k",
+                    help='directory where the knowledge graph data is stored (default: None)')
+    ap.add_argument('--model', type=str, default='operational_rotate',
+                    help='Foundational Operational Model')
+    ap.add_argument('--graph_embed_model_name', type=str,default="RotatE",
+                    help='The name of the graph embedding model to use')
+    ap.add_argument('--gamma', type=float, default=1,
+                    help='The gamma parameter for the graph embedding model')
+    ap.add_argument('--freebaseqa_path', type=str, default="./data/freebaseqa", help="The path to the freebaseqa data")
 
     # New Paremters introduced by the new model
     ap.add_argument("--pretrained_embedding_type",type=str,default="conve",help="The type of pretrained embedding to use")
@@ -47,7 +57,8 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--epochs',type=int,default=200,help='Epochs for training')
     # TODO: tinker with this value
     ap.add_argument('--rnn_hidden',type=int,default=400,help='RNN hidden dimension')
-    ap.add_argument('--raw_QAData_path', type=str, default="data/itl/multihop_ds_datasets_FbWiki_TriviaQA.parquet", help="Directory where the QA knowledge graph data is stored (default: None)")
+    # ap.add_argument('--raw_QAData_path', type=str, default="data/itl/multihop_ds_datasets_FbWiki_TriviaQA.parquet", help="Directory where the QA knowledge graph data is stored (default: None)")
+    ap.add_argument('--raw_QAData_path', type=str, default="./data/triviaQA/FbWiki_TriviaQA_clean.csv", help="Directory where the QA knowledge graph data is stored (default: None)")
     ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/itl_data-tok_bert-base-uncased-maxpathlen_5.json", help="Path for precomputed QA knowledge graph data. Precomputing is mostly tokenizaiton.")
     # TODO: (eventually) We might want to add option of locally trained models.
     ap.add_argument('--question_embedding_model', type=str, default="bert-base-uncased", help="The Question embedding model to use (default: bert-base-uncased)")
@@ -57,6 +68,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--further_train_hunchs_llm',  action="store_true", help="Whether to further pretrain the language model or not (default: False)")
     ap.add_argument('--pretrained_llm_for_hunch', type=str, default="bert-base-uncased", help="The pretrained language model to use (default: bert-base-uncased)")
     ap.add_argument('--pretrained_llm_transformer_ckpnt_path', type=str, default="models/itl/pretrained_transformer_e1_s9176.ckpt", help="The path to the pretrained language model transformer weights (default: models/itl/pretrained_transformer_e1_s9176.ckpt)")
+    ap.add_argument('--pretrained_sun_model', type=str, default="models/sun", help="The path to the pretrained language model transformer weights (default: models/itl/pretrained_transformer_e1_s9176.ckpt)")
 
     # Wand DB Modell
     ap.add_argument("-w", "--wandb", action="store_true")
@@ -83,14 +95,10 @@ def get_args() -> argparse.Namespace:
         
     ap.add_argument('--run_analysis', action='store_true',
                     help='run algorithm analysis and print intermediate results (default: False)')
-    ap.add_argument('--data_dir', type=str, default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data'),
-                    help='directory where the knowledge graph data is stored (default: None)')
     ap.add_argument('--model_root_dir', type=str, default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'model'),
                     help='root directory where the model parameters are stored (default: None)')
     ap.add_argument('--model_dir', type=str, default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'model'),
                     help='directory where the model parameters are stored (default: None)')
-    ap.add_argument('--model', type=str, default='point',
-                    help='knowledge graph QA model (default: point)')
     ap.add_argument('--use_action_space_bucketing', action='store_true',
                     help='bucket adjacency list by outgoing degree to avoid memory blow-up (default: False)')
     ap.add_argument('--train_entire_graph', type=bool, default=False,
@@ -132,8 +140,8 @@ def get_args() -> argparse.Namespace:
                     help='maximum path length (default: 3)')
     ap.add_argument('--beta', type=float, default=0.0,
                     help='entropy regularization weight (default: 0.0)')
-    ap.add_argument('--gamma', type=float, default=1,
-                    help='moving average weight (default: 1)')
+    # ap.add_argument('--gamma', type=float, default=1,
+    #                 help='moving average weight (default: 1)')
     ap.add_argument('--baseline', type=str, default='n/a',
                     help='baseline used by the policy gradient algorithm (default: n/a)')
     ap.add_argument('--beam_size', type=int, default=100,

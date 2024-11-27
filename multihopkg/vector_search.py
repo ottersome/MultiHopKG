@@ -93,7 +93,7 @@ class ANN_IndexMan():
         # Get the Actual Embeddings her
         resulting_embeddings = self.embedding_vectors[indices.squeeze(), :]
 
-        return resulting_embeddings
+        return resulting_embeddings, indices
     
     def calculate_hits_at_n(self, ground_truth: np.ndarray, indices: np.ndarray, topk: int) -> float:
         assert topk <= indices.shape[1], 'Topk must be smaller or equal than the size of index length'

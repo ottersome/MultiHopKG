@@ -17,6 +17,7 @@ scikit-learn = "^1.5.2"
 pyarrow = "^18.0.0"
 faiss-cpu = "1.9.0"
 wandb = "^0.18.6"
+dataloader = "^2.0"
 
 
 [[tool.poetry.source]]
@@ -27,6 +28,7 @@ priority = "explicit"
 
 [tool.poetry.group.dev.dependencies]
 rich = "^13.9.3"
+debugpy = "^1.8.9"
 
 [build-system]
 requires = ["poetry-core"]

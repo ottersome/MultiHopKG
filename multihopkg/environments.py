@@ -3,13 +3,15 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+import numpy as np
 import torch
 
 
 @dataclass
 class Observation:
-    position: torch.Tensor
-    state: torch.Tensor
+    position: np.ndarray # Debugging
+    position_id: np.ndarray # Debuggin
+    state: torch.Tensor # Part of computation Graph
 
 class Environment(ABC):
 
