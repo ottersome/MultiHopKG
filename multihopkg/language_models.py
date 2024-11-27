@@ -9,9 +9,28 @@ from torch import nn
 from torch.nn import Embedding
 
 from multihopkg.logging import setup_logger
+from transformers import BartForConditionalGeneration, BartTokenizer
 
 
-class HunchLLM(torch.nn.Module):
+class HunchBart(nn.Module):
+    def __init__(self, pretrained_bart_model, custom_encoder):
+        super(HunchBart, self).__init__()
+        self.bart = BartForConditionalGeneration.from_pretrained(pretrained_bart_model)
+        self.bart.encoder = custom_encoder  # Replace the encoder
+    
+    def forward(self, graph_embeddings, decoder_input_ids, labels=None):
+        # Pass graph embeddings through custom encoder
+        encoder_outputs = self.bart.encoder(graph_embeddings)
+        # Pass the outputs to BART decoder
+        outputs = self.bart(
+            inputs_embeds=encoder_outputs,
+            decoder_input_ids=decoder_input_ids,
+            labels=labels
+        )
+        return outputs
+
+
+class ExpensiveHunchLLM(torch.nn.Module):
     """
     Encoder with Cross Attention.
     Meant to be trained on embeddings from graph space and iteratively output new guesses at the answer.

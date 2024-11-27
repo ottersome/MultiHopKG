@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from src.knowledge_graph import KnowledgeGraph
+from multihopkg.knowledge_graph import KnowledgeGraph
 
 class TripleE(nn.Module):
     def __init__(self, args, num_entities):

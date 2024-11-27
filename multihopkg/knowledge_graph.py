@@ -10,6 +10,7 @@
 import collections
 import os
 import pickle
+import json
 
 import torch
 import torch.nn as nn
@@ -19,11 +20,10 @@ from multihopkg.data_utils import NO_OP_ENTITY_ID, NO_OP_RELATION_ID
 from multihopkg.data_utils import DUMMY_ENTITY_ID, DUMMY_RELATION_ID
 from multihopkg.data_utils import START_RELATION_ID
 from multihopkg.logging import setup_logger
+from multihopkg.exogenous.sun_models import KGEModel
 import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import int_var_cuda, var_cuda
-from typing import Dict, List, Tuple, Optional
-from multihopkg.emb.fact_network import get_conve_nn_state_dict, get_conve_kg_state_dict, \
-    get_complex_kg_state_dict, get_distmult_kg_state_dict
+from typing import Dict, List, Tuple, Optional, Union
 import pdb
 
 
@@ -423,6 +423,17 @@ class KnowledgeGraph(nn.Module):
             nn.init.xavier_normal_(self.entity_embeddings.weight)
         nn.init.xavier_normal_(self.relation_embeddings.weight)
 
+    def negative_sampling(self, e1, r, kg):
+        e2_space = kg.all_object_vectors[e1]
+        e2_space = e2_space.view(-1, 1)
+        r_space = kg.all_relation_vectors[r]
+        r_space = r_space.view(1, -1)
+        negative_e2_space = torch.cat([e2_space, r_space], dim=0)
+        negative_e2_space = negative_e2_space.view(-1, 1)
+        pdb.set_trace()
+        print("Looking into negative sampling")
+        return negative_e2_space
+
     @property
     def num_entities(self):
         return len(self.entity2id)
@@ -502,6 +513,7 @@ class ITLKnowledgeGraph(nn.Module):
             f"Loading pretrained embedding weights from {pretrained_embedding_weights_path}"
         )
         trained_embeddings = torch.load(pretrained_embedding_weights_path)
+        pdb.set_trace()
         relation_embeddings = trained_embeddings["state_dict"][
             "kg.relation_embeddings.weight"
         ]
@@ -565,12 +577,114 @@ class ITLKnowledgeGraph(nn.Module):
         assert self.entity_embeddings is not None # Again, lsp
         return self.entity_embeddings.weight
 
-
-
-        
-
-
-
-def calculate_entity_centroid(embeddings: nn.Embedding):
-    entity_centroid = torch.mean(embeddings.weight, dim=0)
+def calculate_entity_centroid(embeddings: Union[nn.Embedding, nn.Parameter]):
+    if isinstance(embeddings, nn.Parameter):
+        entity_centroid = torch.mean(embeddings.data, dim=0)
+    elif isinstance(embeddings, nn.Embedding):
+        entity_centroid = torch.mean(embeddings.weight.data, dim=0)
     return entity_centroid
+
+
+class SunKnowledgeGraph(nn.Module):
+    """
+    ITLKnowledgeGraph is a environment defined as a knowledge graph that is used *NOT* for training embeddings but rather for navigation.
+    Letting know the user where it is via ANN, and calculating reward based on how close the user gets to the right answer.
+    """
+
+    def __init__(
+        self,
+        model: str,
+        pretrained_sun_model_path: str,
+        data_path: str, 
+        graph_embed_model_name: str,
+        gamma: float
+    ):
+        super(SunKnowledgeGraph, self).__init__()
+         
+        if model != "operational_rotate":
+            # I am mostly starting with very specific assumptions so I wont claim I support all models
+            raise NotImplementedError(f"The model {model} is not implemented")
+
+        self.relation2id, self.id2relation = {}, {}
+        self.type2id, self.id2type = {}, {}
+        self.entity2typeid = {}
+        self.unique_r_space = None
+
+        self.logger = setup_logger(__name__)
+        self.gamma = gamma
+
+        print("** Create {} knowledge graph **".format(model))
+        # TODO: Implement when we find them needed
+        # self.load_graph_data(data_dir)
+        # self.load_all_answers(data_dir)
+
+        # These are exclusively loaded
+        
+        self.logger.info(
+            f"Loading pretrained embedding weights from {pretrained_sun_model_path}"
+        )
+
+        self.id2entity, self.entit2id = self._load_token_dict(os.path.join(data_path, "entities.dict"))
+        self.id2relation, self.relation2id = self._load_token_dict(os.path.join(data_path, "relations.dict"))
+        self.metadata = json.load(open(os.path.join(pretrained_sun_model_path, "config.json")))
+
+        self.num_entities = len(self.id2entity)
+        self.num_relations = len(self.id2relation)
+        self.logger.info(f"Pretrained weights contain number of entities: {self.num_entities}")
+        self.logger.info(f"Pretrained weights contain number of relations: {self.num_relations}")
+
+        # Careful: This might only work for conve
+        self.double_entity_dim = bool(self.metadata["double_entity_embedding"])
+        self.double_relation_dim = bool(self.metadata["double_relation_embedding"])
+        self.entity_dim = self.metadata["hidden_dim"]
+        self.relation_dim = self.metadata["hidden_dim"]
+        assert self.entity_dim == self.relation_dim, "The entity and relation dimensions must be the same. At least in RotatE."
+
+        state_dict = torch.load(os.path.join(pretrained_sun_model_path, "checkpoint"))
+        self.sun_model = KGEModel(
+            graph_embed_model_name,
+            self.num_entities,
+            self.num_relations,
+            self.entity_dim,
+            gamma,
+            double_entity_embedding=self.metadata["double_entity_embedding"],
+            double_relation_embedding=self.metadata["double_relation_embedding"],
+        )
+        self.sun_model.load_state_dict(state_dict['model_state_dict'])
+        self.sun_model_config: Dict = json.load(open(os.path.join(pretrained_sun_model_path, "config.json")))
+
+        # TOTWEAK: not sure if centroid is the correct approach but seemed like the first naive idea.
+        self.centroid = calculate_entity_centroid(self.sun_model.entity_embedding)
+
+        # Load the dictionary here.
+        # NOTE: If using embedding types other than conve, we need to implement that ourselves
+        # See rs_pg.py in that case
+
+
+    def _load_token_dict(self, path) -> Tuple[Dict[int, str], Dict[str,int]]: 
+        id2entity = {}
+        entity2id = {}
+        with open(path) as f:
+            # File is a two column tsv file
+            for line in f: 
+                id, idx = line.strip().split('\t') 
+                id2entity[idx] = int(id)
+                entity2id[int(id)] = idx # Yeah I know how this looks.
+                 
+        return id2entity, entity2id
+
+    def get_entity_dim(self):
+        return self.entity_dim
+
+    def get_relation_dim(self):
+        return self.relation_dim
+
+    def get_centroid(self) -> torch.Tensor:
+        return self.centroid
+
+    def get_all_entity_embeddings_wo_dropout(self) -> torch.Tensor:
+        assert isinstance(self.sun_model.entity_embedding, nn.Parameter)\
+            or isinstance(
+                self.sun_model.entity_embedding, nn.Embedding
+            ), "The entity embedding must be either a nn.Parameter or nn.Embedding"
+        return self.sun_model.entity_embedding.data

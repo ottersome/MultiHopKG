@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 
 from multihopkg.learn_framework import LFramework
 from multihopkg.data_utils import NO_OP_ENTITY_ID, DUMMY_ENTITY_ID

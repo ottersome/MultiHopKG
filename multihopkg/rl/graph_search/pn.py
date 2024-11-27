@@ -597,7 +597,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # ANN mostly for debugging for now
         ########################################
         new_pos = detached_curpos + detached_actions
-        ann_matches = self.ann_index_manager.search(new_pos, topk=1)
+        matched_embeddings, corresponding_indices  = self.ann_index_manager.search(new_pos, topk=1)
         # self.current_position = ann_matches # Either
         self.current_position = new_pos # Or
 
@@ -611,7 +611,9 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # concatenations_w_sequence = concatenations.unsqueeze(1) 
         # cur_state, _ = self.path_encoder(concatenations)
 
-        observation = Observation(position=new_pos, state=projected_state)
+        pdb.set_trace()
+        # Corresponding indices is a list of indices of the matched embeddings (batch_size, topk=1)
+        observation = Observation(position=matched_embeddings, position_id=corresponding_indices, state=projected_state)
 
         return observation
 
@@ -692,7 +694,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         )
 
         observation = Observation(
-            position=self.current_position, state=projected_state
+            position=self.current_position.detach().numpy(), position_id=np.zeros((self.current_position.shape[0])), state=projected_state
         )
 
         return observation

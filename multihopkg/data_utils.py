@@ -8,19 +8,24 @@
 """
 
 import collections
+from functools import cmp_to_key
 import json
 import os
 import pdb
 import pickle
 from datetime import datetime
+from typing import Any, Dict, Optional, Sequence, List, Tuple
 
 import numpy as np
 import pandas as pd
 from rich import traceback
 from torch.nn import Embedding as nn_Embedding
 from transformers import PreTrainedTokenizer
+from sklearn.model_selection import train_test_split
 
-from  multihopkg.utils.setup import get_git_root
+from multihopkg.utils.setup import get_git_root
+from multihopkg.itl_typing import Triple
+from multihopkg.itl_typing import DFSplit
 
 traceback.install()
 
@@ -143,66 +148,77 @@ def load_triples_with_label(
 
 
 def load_triples(
-    data_path,
-    entity_index_path,
-    relation_index_path,
-    group_examples_by_query=False,
-    add_reverse_relations=False,
-    seen_entities=None,
-    verbose=False,
-):
-    """
-    Convert triples stored on disc into indices.
-    """
-    entity2id, _ = load_index(entity_index_path)
-    relation2id, _ = load_index(relation_index_path)
-
-    def triple2ids(e1, e2, r):
-        return entity2id[e1], entity2id[e2], relation2id[r]
-
+    data_path: str,
+    entity2id: Dict[str, int],
+    relation2id: Dict[str, int],
+    add_reverse_relations: bool = False,
+    group_examples_by_query: bool = False,
+) -> List[Triple]:
     triples = []
-    if group_examples_by_query:
-        triple_dict = {}
     with open(data_path) as f:
         num_skipped = 0
         for line in f:
             e1, e2, r = line.strip().split()
-            if seen_entities and (not e1 in seen_entities or not e2 in seen_entities):
-                num_skipped += 1
-                if verbose:
-                    print(
-                        "Skip triple ({}) with unseen entity: {}".format(
-                            num_skipped, line.strip()
-                        )
-                    )
-                continue
-            # if r in ['concept:agentbelongstoorganization', 'concept:teamplaysinleague']:
-            #     continue
-            if group_examples_by_query:
-                e1_id, e2_id, r_id = triple2ids(e1, e2, r)
-                if e1_id not in triple_dict:
-                    triple_dict[e1_id] = {}
-                if r_id not in triple_dict[e1_id]:
-                    triple_dict[e1_id][r_id] = set()
-                triple_dict[e1_id][r_id].add(e2_id)
-                if add_reverse_relations:
-                    r_inv = r + "_inv"
-                    e2_id, e1_id, r_inv_id = triple2ids(e2, e1, r_inv)
-                    if e2_id not in triple_dict:
-                        triple_dict[e2_id] = {}
-                    if r_inv_id not in triple_dict[e2_id]:
-                        triple_dict[e2_id][r_inv_id] = set()
-                    triple_dict[e2_id][r_inv_id].add(e1_id)
-            else:
-                triples.append(triple2ids(e1, e2, r))
-                if add_reverse_relations:
-                    triples.append(triple2ids(e2, e1, r + "_inv"))
+
+            # TODO: Stuff was cut from the original funciton like seen_entities and group_examples_by_query
+            # Think if you want to reincoporate this
+            triples.append(triple2ids(e1, e2, r, entity2id, relation2id))
+            if add_reverse_relations:
+                triples.append(triple2ids(e2, e1, r + "_inv", entity2id, relation2id))
+            
+    # TODO: Again
+    # if group_examples_by_query:
+    #     for e1_id in triple_dict:
+    #         for r_id in triple_dict[e1_id]:
+    #             triples.append((e1_id, list(triple_dict[e1_id][r_id]), r_id))
+    triples = []
     if group_examples_by_query:
-        for e1_id in triple_dict:
-            for r_id in triple_dict[e1_id]:
-                triples.append((e1_id, list(triple_dict[e1_id][r_id]), r_id))
-    print("{} triples loaded from {}".format(len(triples), data_path))
+        triple_dict = {}
     return triples
+
+
+def triple2ids(
+    e1, e2, r, entity2id: Dict[str, int], relation2id: Dict[str, int]
+) -> Triple:
+    return entity2id[e1], entity2id[e2], relation2id[r]
+    
+
+def load_triples_and_dict(
+    data_paths: Sequence[str],
+    entity_index_path: str,
+    relation_index_path: str,
+    group_examples_by_query: bool=False,
+    add_reverse_relations: bool = False,
+    seen_entities: Optional[Any] = None, # TODO: Replace Any 
+    verbose: bool = False,
+) -> Dict[str, List[Triple]]:
+    """
+    Convert triples stored on disc into indices.
+    Args:
+        - data_path (Sequence[str]): Paths to the triples file (e.g. [**/train.triples, **/dev.triples])
+        - entity_index_path (str): Path to the entity index file (e.g. entity2id.txt)
+        - relation_index_path (str): Path to the relation index file (e.g. relation2id.txt)
+        - group_examples_by_query (bool): If set, group examples by query relation
+        - add_reverse_relations (bool): If set, add reverse relations to the KB environment
+        - seen_entities (Optional[Any]): If set, only include triples where the entities are in seen_entities
+        - verbose (bool): If set, print the number of triples loaded
+    Returns:
+        - triplets (Dict[str, Triples]): A dictionary of triples, keyed by the data_path. Correspondance is usually based on splits.
+    """
+    ########################################
+    # Load up dictionaries between str and int idxs
+    ########################################
+    entity2id, _ = load_index(entity_index_path)
+    relation2id, _ = load_index(relation_index_path)
+    
+    ########################################
+    # Load up the Triplets
+    ########################################
+    triplets_dict = { k: load_triples(k, entity2id, relation2id, add_reverse_relations, group_examples_by_query) for k in data_paths}
+    for k,triplets in triplets_dict.items():
+        print("{} triples loaded from {}".format(len(triplets), k))
+
+    return triplets_dict
 
 
 def load_entity_hist(input_path):
@@ -223,7 +239,36 @@ def load_index(input_path):
             rev_index[i] = v
     return index, rev_index
 
+def prepare_triple_dicts(
+    df_split: DFSplit,
+):
+    """
+    Similar to prepare_kb_envrioment but for our ITL approach.
+    """
+    # Merge the splits
+    raw_kb_triples = pd.concat([df_split.train, df_split.dev, df_split.test])
+    pdb.set_trace()
 
+    # Create entity and relation indices
+    entity_hist = collections.defaultdict(int)
+    relation_hist = collections.defaultdict(int)
+    type_hist = collections.defaultdict(int)
+
+    # # Index entities and relations
+    # # TODO: Previous code considered 'types'. Maybe need?
+    # for line in set(raw_kb_triples + keep_triples + removed_triples):
+    #     e1, e2, r = line.strip().split()
+    #     ########################################
+    #     # Count them frequencies for later sorting
+    #     ########################################
+    #     entity_hist[e1] += 1
+    #     entity_hist[e2] += 1
+    #     relation_hist[r] += 1
+    #     if add_reverse_relations:
+    #         inv_r = r + "_inv"
+    #         relation_hist[inv_r] += 1
+    
+  
 def prepare_kb_envrioment(
     raw_kb_path, train_path, dev_path, test_path, test_mode, add_reverse_relations=True
 ):
@@ -241,21 +286,12 @@ def prepare_kb_envrioment(
     """
     data_dir = os.path.dirname(raw_kb_path)
 
-    def get_type(e_name):
-        if e_name == DUMMY_ENTITY:
-            return DUMMY_ENTITY
-        if "nell-995" in data_dir.lower():
-            if "_" in e_name:
-                return e_name.split("_")[1]
-            else:
-                return "numerical"
-        else:
-            return "entity"
-
     def hist_to_vocab(_dict):
         return sorted(
             sorted(_dict.items(), key=lambda x: x[0]), key=lambda x: x[1], reverse=True
         )
+
+    pdb.set_trace()
 
     # Create entity and relation indices
     entity_hist = collections.defaultdict(int)
@@ -270,6 +306,8 @@ def prepare_kb_envrioment(
     with open(test_path) as f:
         test_triples = [l.strip() for l in f.readlines()]
 
+    pdb.set_trace()
+
     if test_mode:
         keep_triples = train_triples + dev_triples
         removed_triples = test_triples
@@ -278,48 +316,58 @@ def prepare_kb_envrioment(
         removed_triples = dev_triples + test_triples
 
     # Index entities and relations
+    # TODO: Previous code considered 'types'. Maybe need?
     for line in set(raw_kb_triples + keep_triples + removed_triples):
         e1, e2, r = line.strip().split()
+        ########################################
+        # Count them frequencies for later sorting
+        ########################################
         entity_hist[e1] += 1
         entity_hist[e2] += 1
-        if "nell-995" in data_dir.lower():
-            t1 = e1.split("_")[1] if "_" in e1 else "numerical"
-            t2 = e2.split("_")[1] if "_" in e2 else "numerical"
-        else:
-            t1 = get_type(e1)
-            t2 = get_type(e2)
-        type_hist[t1] += 1
-        type_hist[t2] += 1
         relation_hist[r] += 1
+
         if add_reverse_relations:
             inv_r = r + "_inv"
             relation_hist[inv_r] += 1
+
+    pdb.set_trace()
+    ########################################
+    # Dump the collected frequencies.
+    # id's are row numbers
+    ########################################
     # Save the entity and relation indices sorted by decreasing frequency
     with open(os.path.join(data_dir, "entity2id.txt"), "w") as o_f:
-        o_f.write("{}\t{}\n".format(DUMMY_ENTITY, DUMMY_ENTITY_ID))
-        o_f.write("{}\t{}\n".format(NO_OP_ENTITY, NO_OP_ENTITY_ID))
         for e, freq in hist_to_vocab(entity_hist):
             o_f.write("{}\t{}\n".format(e, freq))
     with open(os.path.join(data_dir, "relation2id.txt"), "w") as o_f:
-        o_f.write("{}\t{}\n".format(DUMMY_RELATION, DUMMY_RELATION_ID))
-        o_f.write("{}\t{}\n".format(START_RELATION, START_RELATION_ID))
-        o_f.write("{}\t{}\n".format(NO_OP_RELATION, NO_OP_RELATION_ID))
         for r, freq in hist_to_vocab(relation_hist):
             o_f.write("{}\t{}\n".format(r, freq))
     with open(os.path.join(data_dir, "type2id.txt"), "w") as o_f:
         for t, freq in hist_to_vocab(type_hist):
             o_f.write("{}\t{}\n".format(t, freq))
+    pdb.set_trace()
+
     print("{} entities indexed".format(len(entity_hist)))
     print("{} relations indexed".format(len(relation_hist)))
     print("{} types indexed".format(len(type_hist)))
+
     entity2id, id2entity = load_index(os.path.join(data_dir, "entity2id.txt"))
     relation2id, id2relation = load_index(os.path.join(data_dir, "relation2id.txt"))
-    type2id, id2type = load_index(os.path.join(data_dir, "type2id.txt"))
+    # TODO: I am not sure if I need types. 
+    # type2id, id2type = load_index(os.path.join(data_dir, "type2id.txt"))
 
-    removed_triples = set(removed_triples)
+    pdb.set_trace()
+
+    ########################################
+    # TF is this doing ?
+    # * Creating Adjacency list
+    # * Creating type2id
+    ########################################
+    removed_triples : bool =  set(removed_triples)
     adj_list = collections.defaultdict(collections.defaultdict)
     entity2typeid = [0 for i in range(len(entity2id))]
     num_facts = 0
+
     for line in set(raw_kb_triples + keep_triples):
         e1, e2, r = line.strip().split()
         triple_signature = "{}\t{}\t{}".format(e1, e2, r)
@@ -331,21 +379,33 @@ def prepare_kb_envrioment(
         t2_id = type2id[t2]
         entity2typeid[e1_id] = t1_id
         entity2typeid[e2_id] = t2_id
+
+        ########################################
+        # Only add triplets that are not deemed "removed"
+        # Create adjacency list
+        ########################################
         if not triple_signature in removed_triples:
             r_id = relation2id[r]
+
             if not r_id in adj_list[e1_id]:
                 adj_list[e1_id][r_id] = set()
-            if e2_id in adj_list[e1_id][r_id]:
-                print(
-                    "Duplicate fact: {} ({}, {}, {})!".format(
-                        line.strip(),
-                        id2entity[e1_id],
-                        id2relation[r_id],
-                        id2entity[e2_id],
-                    )
-                )
+
+            # if e2_id in adj_list[e1_id][r_id]:
+            #     print(
+            #         "Duplicate fact: {} ({}, {}, {})!".format(
+            #             line.strip(),
+            #             id2entity[e1_id],
+            #             id2relation[r_id],
+            #             id2entity[e2_id],
+            #         )
+            #     )
+
             adj_list[e1_id][r_id].add(e2_id)
             num_facts += 1
+
+            ########################################
+            # In case of reverse relationships
+            ########################################
             if add_reverse_relations:
                 inv_r = r + "_inv"
                 inv_r_id = relation2id[inv_r]
@@ -362,6 +422,7 @@ def prepare_kb_envrioment(
                     )
                 adj_list[e2_id][inv_r_id].add(e1_id)
                 num_facts += 1
+
     print("{} facts processed".format(num_facts))
     # Save adjacency list
     adj_list_path = os.path.join(data_dir, "adj_list.pkl")
@@ -509,15 +570,15 @@ def load_configs(args, config_path):
     return args
 
 
-def process_qa_data(
+def process_triviaqa_data(
     raw_QAPathData_path: str,
-    cached_QAPathData_path: str,
+    cached_toked_qatriples_path: str,
     text_tokenizer: PreTrainedTokenizer,
-):
+) -> Tuple[DFSplit, Dict] :
     """
     Args:
         raw_triples_loc (str) : Place where the unprocessed triples are
-        triples_cache_loc (str) : Place where processed triples are
+        cached_toked_qatriples_path (str) : Place where processed triples are meante to go. You must format them.
         idx_2_graphEnc (Dict[str, np.array]) : The encoding of the tripleshttps://www.youtube.com/watch?v=f-sRcVkZ9yg
         text_tokenizer (AutoTokenizer) : The tokenizer for the text
     Returns:
@@ -530,17 +591,6 @@ def process_qa_data(
     LG: We might change this assumption to a whole graph later on:
     """
 
-    ## TODO: CACHE Checking
-    # if (
-    #     os.path.exists(triples_cache_loc)
-    #     and os.path.isfile(triples_cache_loc)
-    #     and triples_cache_loc[-4] == ".csv"
-    # ):
-    #     # Then we simply load it and then exit
-    #     metadata = json.load(open(triples_cache_loc.replace(".csv", ".json")))
-    #     return pd.read_csv(triples_cache_loc), metadata
-    
-   
     ## NOTE:  ---
     ## Old Data Loading has been moved elsewhere
     ## ----------
@@ -551,6 +601,10 @@ def process_qa_data(
     ), "The CSV file should have at least 5 columns. One triplet and one QA pair"
     question_col_idx = len(csv_df.columns) - 2
 
+    # Ensure directory exists
+    dir_name = os.path.dirname(cached_toked_qatriples_path)
+    os.makedirs(dir_name, exist_ok=True)
+
     ## Prepare specific triplets/path
     paths = csv_df.iloc[:, :question_col_idx]
     qna = csv_df.iloc[:, question_col_idx:]  # Both Q and A
@@ -558,13 +612,30 @@ def process_qa_data(
 
     ## Prepare the language data
     qna = qna.map(lambda x: text_tokenizer.encode(x, add_special_tokens=False))
-    specific_name = cached_QAPathData_path.format(text_tokenizer.name_or_path,num_path_cols )
+    specific_names: Dict[str, str] = {
+        name: cached_toked_qatriples_path.format(name, text_tokenizer.name_or_path,num_path_cols )
+        for name in ["train", "dev", "test"]
+    }
 
     repo_root = get_git_root()
     if repo_root is None:
         raise ValueError("Cannot get the git root path. Please make sure you are running a clone of the repo")
+
     # remove prefix before git_root to get the path relative to the git root
-    specific_name = specific_name.replace(repo_root + "/", "")
+    specific_names = {key : val.replace(repo_root + "/", "") for key,val in specific_names.items()}
+    no_splitlabel_name = specific_names["train"].replace("train_", "")
+
+    # Start amalgamating the data into its final form
+    # TODO: test set
+    new_df = pd.concat([paths, qna], axis=1)
+    new_df = new_df.sample(frac=1).reset_index(drop=True)
+    train_df, test_df = train_test_split(new_df, test_size=0.2, random_state=42)
+    dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=42)
+    if not isinstance(train_df, pd.DataFrame) or not isinstance(dev_df, pd.DataFrame) or not isinstance(test_df, pd.DataFrame):
+        raise RuntimeError("The data was not loaded properly. Please check the data loading code.")
+
+    for name,df in {"train": train_df, "dev": dev_df, "test": test_df}.items():
+        df.to_parquet(specific_names[name], index=False)
 
     ## Prepare metadata for export
     # Tokenize the text by applying a pandas map function
@@ -575,17 +646,43 @@ def process_qa_data(
         "question_column": question_col_idx,
         "0-index_column": True,
         "date_processed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "saved_path": specific_name,
+        "saved_paths": specific_names,
     }
 
-    new_df = pd.concat([paths, qna], axis=1)
-
-    dir_name = os.path.dirname(specific_name)
-    os.makedirs(dir_name, exist_ok=True)
-
-    # Hyper Parametsrs name_{value}
-    new_df.to_parquet(specific_name, index=False)
-    with open(specific_name.replace(".parquet", ".json"), "w") as f:
+    with open(no_splitlabel_name.replace(".parquet", ".json"), "w") as f:
         json.dump(metadata, f)
 
-    return new_df, metadata
+    return DFSplit(train=train_df, dev=dev_df, test=test_df), metadata
+
+def data_loading_router(
+    raw_QAPathData_path: str,
+    cached_toked_qatriples_path: str,
+    text_tokenizer: PreTrainedTokenizer,
+):
+    if "freebaseqa" in raw_QAPathData_path:
+        return process_freebaseqa_data(
+            raw_QAPathData_path,
+            cached_toked_qatriples_path,
+            text_tokenizer,
+        )
+    elif "triviaqa" in raw_QAPathData_path:
+        return process_triviaqa_data(
+            raw_QAPathData_path,
+            cached_toked_qatriples_path,
+            text_tokenizer,
+        )
+    else:
+        raise ValueError("The data loading router could not find a matching data loader for the data path")
+
+
+def process_freebaseqa_data(
+    raw_QAPathData_path: str,
+    cached_toked_qatriples_path: str,
+    text_tokenizer: PreTrainedTokenizer,
+):
+    # Start Loading the data  s
+    files = ["train.parquet","dev.parquet","test.parquet"]
+    for file in files:
+        if not os.path.exists(os.path.join(raw_QAPathData_path, file)):
+            raise ValueError(f"The file {file} does not exist in the raw data path {raw_QAPathData_path}")
+        pdb.set_trace()
