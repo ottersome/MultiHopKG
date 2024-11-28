@@ -50,7 +50,7 @@ model = BartWithCustomEncoder(pretrained_bart_model, custom_encoder)
 # Step 5: Example usage
 tokenizer = BartTokenizer.from_pretrained(pretrained_bart_model)
 
-# Dummy graph embeddings (batch_size=2, input_dim=128)
+# Dummy graph embeddings (batch_size=2, sequence_length=3, input_dim=
 dummy_graph_embeddings = torch.rand(2, 10, graph_embedding_dim)  # Batch size, sequence length, input_dim
 
 # Dummy decoder inputs

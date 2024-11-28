@@ -14,7 +14,7 @@ import torch.nn.functional as F
 
 import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import var_cuda, zeros_var_cuda
-from multihopkg.knowledge_graph import ITLKnowledgeGraph
+from multihopkg.knowledge_graph import ITLKnowledgeGraph, SunKnowledgeGraph
 from multihopkg.vector_search import ANN_IndexMan
 from multihopkg.environments import Environment, Observation
 from typing import Tuple, List, Optional
@@ -490,10 +490,10 @@ class ITLGraphEnvironment(Environment, nn.Module):
         ff_dropout_rate: float,
         history_dim: int,
         history_num_layers: int,
-        knowledge_graph: ITLKnowledgeGraph,
+        knowledge_graph: SunKnowledgeGraph,
         relation_dim: int,
         ann_index_manager: ANN_IndexMan,
-        steps_in_episode: int
+        steps_in_episode: int,
     ):
         super(ITLGraphEnvironment, self).__init__()
         # Should be injected via information extracted from Knowledge Grap
@@ -512,13 +512,14 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.ann_index_manager = ann_index_manager
         self.steps_in_episode = steps_in_episode
 
-
         ########################################
         # Core States (4/5)
         ########################################
-        self.current_questions_emb : Optional[torch.Tensor] = None
+        self.current_questions_emb: Optional[torch.Tensor] = None
         self.current_position: Optional[torch.Tensor] = None
-        self.current_step_no = self.steps_in_episode # This value denotes being at "reset" state. As in, when episode is done
+        self.current_step_no = (
+            self.steps_in_episode
+        )  # This value denotes being at "reset" state. As in, when episode is done
 
         ########################################
         # Get the actual torch modules defined
@@ -542,7 +543,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
                 self.question_dim,
             )
         )
-
 
     def get_llm_embeddings(self, questions: List[np.ndarray]) -> torch.Tensor:
         """
@@ -596,27 +596,36 @@ class ITLGraphEnvironment(Environment, nn.Module):
         ########################################
         # ANN mostly for debugging for now
         ########################################
-        new_pos = detached_curpos + detached_actions
-        matched_embeddings, corresponding_indices  = self.ann_index_manager.search(new_pos, topk=1)
+        # new_pos = detached_curpos + detached_actions
+        new_pos = self.knowledge_graph.sun_model.flexible_forward_rotate(
+            detached_curpos, detached_actions
+        )
+        matched_embeddings, corresponding_indices = self.ann_index_manager.search(
+            new_pos, topk=1
+        )
         # self.current_position = ann_matches # Either
-        self.current_position = new_pos # Or
+        self.current_position = new_pos  # Or
 
         ########################################
         # Projections
         ########################################
-        concatenations = torch.cat([self.current_questions_emb, self.current_position], dim=-1)
+        concatenations = torch.cat(
+            [self.current_questions_emb, self.current_position], dim=-1
+        )
         projected_state = self.concat_projector(concatenations)
 
         # TODO: Think about this, we have a transformer so I dont think we need to do this.
-        # concatenations_w_sequence = concatenations.unsqueeze(1) 
+        # concatenations_w_sequence = concatenations.unsqueeze(1)
         # cur_state, _ = self.path_encoder(concatenations)
 
-        pdb.set_trace()
         # Corresponding indices is a list of indices of the matched embeddings (batch_size, topk=1)
-        observation = Observation(position=matched_embeddings, position_id=corresponding_indices, state=projected_state)
+        observation = Observation(
+            position=matched_embeddings,
+            position_id=corresponding_indices,
+            state=projected_state,
+        )
 
         return observation
-
 
     def _define_modules(
         self,
@@ -632,23 +641,26 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # input_dim = history_dim + entity_dim + relation_dim
         # We assume action_dim is relation_dim
         action_dim = relation_dim
-        input_dim = action_dim + question_dim
+        # input_dim = action_dim + question_dim
+        # input_dim = action_dim + question_dim
+        input_dim = entity_dim + relation_dim + question_dim
 
         # W1 = nn.Linear(input_dim, action_dim)
         # W2 = nn.Linear(action_dim, action_dim)
         W1 = nn.Linear(input_dim, history_dim)
-        W2 = nn.Linear(history_dim, action_dim) # We ignore this for now, leave it so that file runs
+        W2 = nn.Linear(
+            history_dim, action_dim
+        )  # We ignore this for now, leave it so that file runs
         W1Dropout = nn.Dropout(p=ff_dropout_rate)
-        W2Dropout = nn.Dropout(p=ff_dropout_rate) # Same ignore here
+        W2Dropout = nn.Dropout(p=ff_dropout_rate)  # Same ignore here
 
         # # TODO: Check if we actually want to use lstm, we have a tranformer with positional encoding so I dont think we need this.
         path_encoder = nn.LSTM(
             input_size=action_dim + question_dim,
-            hidden_size=history_dim, # AFAIK equiv this output size 
+            hidden_size=history_dim,  # AFAIK equiv this output size
             num_layers=history_num_layers,
             batch_first=True,
         )
-
 
         # State Variables for holding rollout information
         # I might regret this
@@ -675,13 +687,16 @@ class ITLGraphEnvironment(Environment, nn.Module):
             )
         ## Values
         # Local Alias: initial_states_info is just a name we stick to in order to comply with inheritance of Environment.
-        self.current_questions_emb = initial_states_info # (batch_size, emb_dim)
+        self.current_questions_emb = initial_states_info  # (batch_size, emb_dim)
         self.current_step_no = 0
 
         # Create more complete representation of state
         centroid = self.knowledge_graph.get_centroid()
         tiled_centroids = centroid.unsqueeze(0).repeat(len(initial_states_info), 1)
-        concatenations = torch.cat([self.current_questions_emb, tiled_centroids], dim=-1)
+        # concatenations = torch.cat([self.current_questions_emb, tiled_centroids], dim=-1)
+        concatenations = torch.cat(
+            [tiled_centroids, self.current_questions_emb], dim=-1
+        )
         projected_concat = self.concat_projector(concatenations)
         # NOTE: We were using path encoder here before and are not sure if removing is good idea.
 
@@ -694,7 +709,9 @@ class ITLGraphEnvironment(Environment, nn.Module):
         )
 
         observation = Observation(
-            position=self.current_position.detach().numpy(), position_id=np.zeros((self.current_position.shape[0])), state=projected_state
+            position=self.current_position.detach().numpy(),
+            position_id=np.zeros((self.current_position.shape[0])),
+            state=projected_state,
         )
 
         return observation
