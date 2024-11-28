@@ -93,7 +93,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--further_train_hunchs_llm',  action="store_true", help="Whether to further pretrain the language model or not (default: False)")
     ap.add_argument('--pretrained_llm_for_hunch', type=str, default="facebook/bart-base", help="The pretrained language model to use (default: bert-base-uncased)")
     ap.add_argument('--pretrained_llm_transformer_ckpnt_path', type=str, default="models/itl/pretrained_transformer_e1_s9176.ckpt", help="The path to the pretrained language model transformer weights (default: models/itl/pretrained_transformer_e1_s9176.ckpt)")
-    ap.add_argument('--pretrained_sun_model_loc', type=str, default="models/sun", help="The path to the pretrained language model transformer weights (default: models/itl/pretrained_transformer_e1_s9176.ckpt)")
+    ap.add_argument('--pretrained_sun_model', type=str, default="models/sun", help="The path to the pretrained language model transformer weights (default: models/itl/pretrained_transformer_e1_s9176.ckpt)")
 
     # Wand DB Modell
     ap.add_argument("-w", "--wandb", action="store_true")
@@ -171,6 +171,10 @@ def get_args() -> argparse.Namespace:
                     help='baseline used by the policy gradient algorithm (default: n/a)')
     ap.add_argument('--beam_size', type=int, default=100,
                     help='size of beam used in beam search inference (default: 100)')
+    ap.add_argument('--num_epochs_till_eval', type=int, default=100,
+                    help='Number of epochs to run before running evaluation')
+
+    ap.add_argument('--configuration_file', type=str, default="configs/my_config.yaml", help="The path to the configuration file (default: configs/sun.json)")
 
 
     return ap.parse_args()

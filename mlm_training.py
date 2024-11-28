@@ -58,6 +58,8 @@ def initialize_model_directory(args, random_seed=None):
 def initial_setup() -> Tuple[argparse.Namespace, PreTrainedTokenizer, logging.Logger]:
     global logger
     args = alpha.get_args()
+    args = alpha.overload_parse_defaults_with_yaml(args.preferred_config, args)
+
     set_seeds(args.seed)
     logger = setup_logger("__MAIN__")
 
@@ -274,6 +276,7 @@ def train_multihopkg(
     # Epoch Loop
     ########################################
     for epoch_id in range(start_epoch, epochs):
+
         logger.info("Epoch {}".format(epoch_id))
         # TODO: Perhaps evaluate the epochs?
 
@@ -287,6 +290,20 @@ def train_multihopkg(
         ##############################
         # TODO: update the parameters.
         for sample_offset_idx in tqdm(range(0, len(train_data), batch_size)):
+            ########################################
+            # Evaluation
+            ########################################
+            if batch_count % mbatches_b4_eval == 0:
+                evaluate_training(
+                    env,
+                    dev_df,
+                    nav_agent,
+                    hunch_llm,
+                    steps_in_episode,
+                    batch_size,
+                    batch_count,
+                )
+
             ########################################
             # Training
             ########################################
@@ -310,21 +327,7 @@ def train_multihopkg(
 
             batch_count += 1
 
-            ########################################
-            # Evaluation
-            ########################################
-            logger.warn("Entering evaluation")
-            if batch_count % mbatches_b4_eval == 0:
-                evaluate_training(
-                    env,
-                    dev_df,
-                    nav_agent,
-                    hunch_llm,
-                    steps_in_episode,
-                    batch_size,
-                    batch_count,
-                )
-
+        
 
 def initialize_path(questions: torch.Tensor):
     # Questions must be turned into queries
@@ -357,7 +360,7 @@ def calculate_reward(
     reward = -loss
 
     # Reshape the reward to the batch size
-    reward = reward.view(batch_size, -1)
+    reward = reward.view(batch_size, -1) 
 
     # Get indices of the max value of the final output
     answers_inf_ids = torch.argmax(logits, dim=-1)
@@ -510,7 +513,6 @@ def load_qa_data(cached_metadata_path: str, raw_QAData_path, tokenizer_name: str
         shuffled_train_df, test_size=0.2, random_state=42
     )
     return train_df, val_df, train_metadata
-
 
 def main():
     # By default we run the config
