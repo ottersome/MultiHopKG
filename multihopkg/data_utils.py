@@ -183,6 +183,13 @@ def triple2ids(
     return entity2id[e1], entity2id[e2], relation2id[r]
     
 
+def sun_load_triples_and_dict(
+    data_path: str,
+) -> Dict[str, List[Triple]]:
+    config = json.load(open(os.path.join(data_path, "config.json")))
+    print(config)
+    return config
+
 def load_triples_and_dict(
     data_paths: Sequence[str],
     entity_index_path: str,
@@ -613,7 +620,7 @@ def process_triviaqa_data(
     ## Prepare the language data
     qna = qna.map(lambda x: text_tokenizer.encode(x, add_special_tokens=False))
     specific_names: Dict[str, str] = {
-        name: cached_toked_qatriples_path.format(name, text_tokenizer.name_or_path,num_path_cols )
+        name: cached_toked_qatriples_path.replace("json", f"parquet").format(name, text_tokenizer.name_or_path,num_path_cols )
         for name in ["train", "dev", "test"]
     }
 
@@ -631,6 +638,7 @@ def process_triviaqa_data(
     new_df = new_df.sample(frac=1).reset_index(drop=True)
     train_df, test_df = train_test_split(new_df, test_size=0.2, random_state=42)
     dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=42)
+
     if not isinstance(train_df, pd.DataFrame) or not isinstance(dev_df, pd.DataFrame) or not isinstance(test_df, pd.DataFrame):
         raise RuntimeError("The data was not loaded properly. Please check the data loading code.")
 

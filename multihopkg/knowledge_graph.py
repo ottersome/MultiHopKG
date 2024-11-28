@@ -626,6 +626,10 @@ class SunKnowledgeGraph(nn.Module):
 
         self.id2entity, self.entit2id = self._load_token_dict(os.path.join(data_path, "entities.dict"))
         self.id2relation, self.relation2id = self._load_token_dict(os.path.join(data_path, "relations.dict"))
+        ########################################
+        # Load the Sun Model Config. 
+        # Always super useful
+        ########################################
         self.metadata = json.load(open(os.path.join(pretrained_sun_model_path, "config.json")))
 
         self.num_entities = len(self.id2entity)
@@ -641,6 +645,7 @@ class SunKnowledgeGraph(nn.Module):
         assert self.entity_dim == self.relation_dim, "The entity and relation dimensions must be the same. At least in RotatE."
 
         state_dict = torch.load(os.path.join(pretrained_sun_model_path, "checkpoint"))
+
         self.sun_model = KGEModel(
             graph_embed_model_name,
             self.num_entities,
@@ -653,7 +658,7 @@ class SunKnowledgeGraph(nn.Module):
         self.sun_model.load_state_dict(state_dict['model_state_dict'])
         self.sun_model_config: Dict = json.load(open(os.path.join(pretrained_sun_model_path, "config.json")))
 
-        # TOTWEAK: not sure if centroid is the correct approach but seemed like the first naive idea.
+        # NOTE: not sure if centroid is the correct approach but seemed like the first naive idea.
         self.centroid = calculate_entity_centroid(self.sun_model.entity_embedding)
 
         # Load the dictionary here.
@@ -682,6 +687,7 @@ class SunKnowledgeGraph(nn.Module):
     def get_centroid(self) -> torch.Tensor:
         return self.centroid
 
+    # WE ARE USING THIS ONE
     def get_all_entity_embeddings_wo_dropout(self) -> torch.Tensor:
         assert isinstance(self.sun_model.entity_embedding, nn.Parameter)\
             or isinstance(

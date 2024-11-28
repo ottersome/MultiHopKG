@@ -5,26 +5,37 @@ from typing import List, Optional
 import os
 
 import numpy as np
-from torch import nn
+from torch import exp, nn
 from torch.nn import Embedding
 
 from multihopkg.logging import setup_logger
 from transformers import BartForConditionalGeneration, BartTokenizer
 
+class GraphEncoder(nn.Module):
+    """
+    Simple Projection Idea for now
+    """
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(GraphEncoder, self).__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
+        self.activation = nn.ReLU()
+    
+    def forward(self, graph_embeddings):
+        x = self.activation(self.fc1(graph_embeddings))
+        return self.fc2(x)
 
 class HunchBart(nn.Module):
-    def __init__(self, pretrained_bart_model, custom_encoder):
+    def __init__(self, pretrained_bart_model):
         super(HunchBart, self).__init__()
         self.bart = BartForConditionalGeneration.from_pretrained(pretrained_bart_model)
-        self.bart.encoder = custom_encoder  # Replace the encoder
     
     def forward(self, graph_embeddings, decoder_input_ids, labels=None):
         # Pass graph embeddings through custom encoder
-        encoder_outputs = self.bart.encoder(graph_embeddings)
         # Pass the outputs to BART decoder
         outputs = self.bart(
-            inputs_embeds=encoder_outputs,
-            decoder_input_ids=decoder_input_ids,
+            inputs_embeds=graph_embeddings,
+            decoder_input_ids=decoder_input_ids, #For teacher forcing. 
             labels=labels
         )
         return outputs

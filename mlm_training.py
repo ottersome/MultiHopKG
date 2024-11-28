@@ -34,7 +34,7 @@ from transformers import (
 import multihopkg.data_utils as data_utils
 from multihopkg.environments import Observation
 from multihopkg.knowledge_graph import ITLKnowledgeGraph, SunKnowledgeGraph
-from multihopkg.language_models import HunchLLM, collate_token_ids_batch
+from multihopkg.language_models import HunchBart, collate_token_ids_batch, GraphEncoder
 from multihopkg.logging import setup_logger
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
@@ -160,8 +160,8 @@ def batch_loop(
     ########################################
     # Compute policy gradient
     num_steps = len(log_probs)
-    rewards_t = torch.stack(rewards).sum(dim=1)
-    log_probs_t = torch.stack(log_probs).sum(dim=1)
+    rewards_t = torch.stack(rewards).sum(dim=-1)
+    log_probs_t = torch.stack(log_probs).sum(dim=-1)
 
     pg_loss = -1 * rewards_t * log_probs_t
 
@@ -291,7 +291,7 @@ def train_multihopkg(
             # Training
             ########################################
             mini_batch = train_data[sample_offset_idx : sample_offset_idx + batch_size]
-            pdb.set_trace()
+            # pdb.set_trace()
             assert isinstance(
                 mini_batch, pd.DataFrame
             )  # For the lsp to give me a break
@@ -301,7 +301,7 @@ def train_multihopkg(
             )
             if torch.isnan(pg_loss).any():
                 logger.error("NaN detected in the loss. Aborting training.")
-                pdb.set_trace()
+                # pdb.set_trace()
             reinforce_terms_mean = pg_loss.mean()
 
             batch_rewards.append(reinforce_terms_mean.item())
@@ -342,22 +342,17 @@ def calculate_reward(
     seq_max_len = answers_ids.size(1)
 
     # From the obtained_state we will try to find an answer
-    answers_inf_softmax = hunch_llm(obtained_state, answers_ids)
+    conditioning_labels = answers_ids[:,1:].contiguous().to(dtype=torch.int64)
+    teacher_forcing_labels = answers_ids[:,:-1].contiguous().to(dtype=torch.int64)
+    answers_inf_softmax = hunch_llm(obtained_state, conditioning_labels, labels=teacher_forcing_labels)
+
+    loss, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
+    reward = -loss
+
     # Get indices of the max value of the final output
-    answers_inf_ids = torch.argmax(answers_inf_softmax, dim=-1)
-    answers_inf_embeddings = hunch_llm.decoder_embedding(
-        answers_inf_ids.unsqueeze(1)
-    ).reshape(batch_size, seq_max_len, -1)
-    # attempt_at_answer.shape = (batch_size, seq_len, vocab_size)
+    answers_inf_ids = torch.argmax(logits, dim=-1)
 
-    # Compare with the correct answer
-    answers_embeddings = hunch_llm.decoder_embedding(answers_ids)
-    answer_scores = torch.nn.functional.cosine_similarity(
-        answers_inf_embeddings, answers_embeddings, dim=-1
-    )
-    answer_score = answer_scores.mean(-1)
-
-    return answer_score
+    return reward
 
 
 def rollout(
@@ -414,15 +409,19 @@ def rollout(
 
         # TODO:Make sure we are gettign rewards from the environment.
         observations = env.step(sampled_actions)
+        # Ah ssampled_actions are the ones that have to go against the knowlde garph.
 
         visited_embeddings, states = (observations.position, observations.state)
         # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
 
+        # VISITED EMBEDDINGS IS THE ENCODER
+
         ########################################
         # Calculate the Reward
         ########################################
         stacked_states = torch.stack(states_so_far).permute(1, 0, 2)
+        # Calculate how close we are 
         similarity_scores = calculate_reward(hunch_llm, stacked_states, answers_ids)
         rewards.append(similarity_scores)
 
@@ -444,9 +443,12 @@ def rollout(
 
     if dev_mode:
         pdb.set_trace()
+
     dev_dictionary = {k: torch.stack(v) for k, v in dev_dictionary.items()}
     # dev_dictionary["sampled_actions"] = torch.stack(dev_dictionary["sampled_actions"])
     # dev_dictionary["visited_position"] = torch.stack(dev_dictionary["visited_position"])
+
+    # Return Rewards of Rollout as a Tensor
 
     return log_action_probs, rewards, dev_dictionary
 
@@ -469,6 +471,9 @@ def load_qa_data(cached_metadata_path: str, raw_QAData_path, tokenizer_name: str
             f"Loaded cached data from \033[93m\033[4m{json.dumps(cached_metadata_path,indent=4)} \033[0m"
         )
     else:
+        ########################################
+        # Actually compute the data.
+        ########################################
         logger.info(
             f"\033[93m Did not find cache for the QA data {cached_metadata_path}. Will now process it from {raw_QAData_path} \033[0m"
         )
@@ -525,9 +530,11 @@ def main():
 
     ## Agent needs a Knowledge graph as well as the environment
     logger.info(":: Setting up the knowledge graph")
+
+    # TODO: Load the weighs ?
     knowledge_graph = SunKnowledgeGraph(
         model=args.model,
-        pretrained_sun_model_path=args.pretrained_sun_model,
+        pretrained_sun_model_path=args.pretrained_sun_model_loc,
         data_path=args.data_dir,
         graph_embed_model_name=args.graph_embed_model_name,
         gamma=args.gamma
@@ -568,19 +575,9 @@ def main():
         f"The hidden dimension of the embedding layer is {embedding_hidden_size} and its vocab size is {embedding_vocab_size}"
     )
 
+    # We prepare our custom encoder for Bart Here
     hunch_llm = HunchBart(
-        pretrained_transformer_weights_path=args.pretrained_llm_transformer_ckpnt_path,
-        xattn_left_dim=args.history_dim,
-        llm_model_dim=args.llm_model_dim,
-        llm_num_heads=args.llm_num_heads,
-        llm_num_layers=args.llm_num_layers,
-        llm_ff_dim=args.llm_ff_dim,
-        llm_max_seq_length=args.max_seq_length,
-        xattn_left_max_seq_length=args.steps_in_episode,
-        dropout=args.llm_dropout_rate,
-        embedding_padding_id=bart_padding_token_id,
-        embedding_dim=embedding_hidden_size,
-        embedding_vocab_size=embedding_vocab_size,
+        pretrained_bart_model=args.pretrained_llm_for_hunch,
     )
 
     if args.further_train_hunchs_llm:
@@ -638,13 +635,16 @@ def main():
 
     # TODO: Load the validation data
     # dev_path = os.path.join(args.data_dir, "dev.triples")
-    data_triple_split_dict: Dict[str, Any] = data_utils.load_triples_and_dict(
-        [train_triplets_path, dev_triplets_path],  # TODO: Load the test_data
-        entity_index_path,
-        relation_index_path,
-        group_examples_by_query=False,
-        add_reverse_relations=False,
+    data_triple_split_dict: Dict[str, Any] = data_utils.sun_load_triples_and_dict(
+        args.pretrained_sun_model_loc
     )
+    # data_triple_split_dict: Dict[str, Any] = data_utils.load_triples_and_dict(
+    #     [train_triplets_path, dev_triplets_path],  # TODO: Load the test_data
+    #     entity_index_path,
+    #     relation_index_path,
+    #     group_examples_by_query=False,
+    #     add_reverse_relations=False,
+    # )
 
     # TODO: Make it take check for a checkpoint and decide what start_epoch
     # if args.checkpoint_path is not None:

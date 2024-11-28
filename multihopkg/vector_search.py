@@ -84,7 +84,9 @@ class ANN_IndexMan():
         Returns:
             resulting_embeddings (np.ndarray): entity embeddings retrieved using ANN
         """
-        assert len(target_embeddings.shape) == 2, "Target embeddings must be a 2D array"
+        # assert len(target_embeddings.shape) == 2, "Target embeddings must be a 2D array"
+        if len(target_embeddings.shape) == 3:
+            target_embeddings = target_embeddings.view(target_embeddings.shape[0], -1)
         assert isinstance(target_embeddings, torch.Tensor), "Target embeddings must be a torch.Tensor"
 
         # TODO: Check that we are acutally passing the right shape of input
