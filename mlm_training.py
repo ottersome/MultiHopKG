@@ -340,14 +340,24 @@ def calculate_reward(
     """
     batch_size = answers_ids.size(0)
     seq_max_len = answers_ids.size(1)
+    hidden_dim = obtained_state.shape[-1]
 
     # From the obtained_state we will try to find an answer
     conditioning_labels = answers_ids[:,1:].contiguous().to(dtype=torch.int64)
     teacher_forcing_labels = answers_ids[:,:-1].contiguous().to(dtype=torch.int64)
-    answers_inf_softmax = hunch_llm(obtained_state, conditioning_labels, labels=teacher_forcing_labels)
 
-    loss, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
+    answers_inf_softmax = hunch_llm(
+        graph_embeddings=obtained_state, decoder_input_ids=conditioning_labels
+    )
+    _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
+
+    loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
+
+    loss = loss_fn(logits.view(-1, logits.shape[-1]), teacher_forcing_labels.view(-1))
     reward = -loss
+
+    # Reshape the reward to the batch size
+    reward = reward.view(batch_size, -1)
 
     # Get indices of the max value of the final output
     answers_inf_ids = torch.argmax(logits, dim=-1)
