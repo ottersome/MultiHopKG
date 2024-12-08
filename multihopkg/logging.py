@@ -32,8 +32,9 @@ def setup_logger(
     Helper function for setting up logger both in stdout and file
     """
     # Measures necessary to take for us to be able to do multiprocess logging
-    localpid = os.getpid()
-    logger_name_local = f"pid({localpid})" + logger_name
+    # localpid = os.getpid()
+    # logger_name_local = f"pid({localpid})" + logger_name
+    logger_name_local = logger_name
 
     # logger_name = "SUPADEBUG"
     logger = logging.getLogger(logger_name_local)
