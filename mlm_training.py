@@ -162,8 +162,8 @@ def batch_loop(
     ########################################
     # Compute policy gradient
     num_steps = len(log_probs)
-    rewards_t = torch.stack(rewards).sum(dim=-1)
-    log_probs_t = torch.stack(log_probs).sum(dim=-1)
+    rewards_t = torch.stack(rewards).mean(dim=-1).sum(dim=0, keepdim=True) # TODO: I think I need to add the gamma here
+    log_probs_t = torch.stack(log_probs)
 
     pg_loss = -1 * rewards_t * log_probs_t
 
