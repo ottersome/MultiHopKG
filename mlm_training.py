@@ -176,12 +176,12 @@ def evaluate_training(
     nav_agent: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
     steps_in_episode: int,
-    batch_size: int,
+    batch_size_dev: int,
     batch_count: int,
 ):
 
     global in_dev_mode
-    num_batches = len(dev_df) // batch_size
+    num_batches = len(dev_df) // batch_size_dev
     nav_agent.eval()
     hunch_llm.eval()
     in_dev_mode = True  # TOREM: This is only for debugging
@@ -198,7 +198,7 @@ def evaluate_training(
     with torch.no_grad():
         for batch_id in range(num_batches):
             # TODO: Get the rollout working
-            mini_batch = dev_df[batch_id * batch_size : (batch_id + 1) * batch_size]
+            mini_batch = dev_df[batch_id * batch_size_dev : (batch_id + 1) * batch_size_dev]
             if not isinstance(
                 mini_batch, pd.DataFrame
             ):  # For the lsp to give me a break
@@ -206,7 +206,7 @@ def evaluate_training(
                     f"The mini batch is not a pd.DataFrame, but a {type(mini_batch)}. Please check the data loading code."
                 )
             if (
-                len(mini_batch) < batch_size
+                len(mini_batch) < batch_size_dev
             ):  # We dont want to evaluate on incomplete batches
                 continue
 
@@ -230,7 +230,7 @@ def evaluate_training(
             table = wandb.Table(
                 columns=["Question", "Path Taken", "Real Answer", "Given Answer"]
             )
-            pg_loss = batch_loop_dev(
+            pg_loss, eval_extras = batch_loop_dev(
                 env, mini_batch, nav_agent, hunch_llm, steps_in_episode
             )
 
@@ -244,6 +244,7 @@ def evaluate_training(
 
 def train_multihopkg(
     batch_size: int,
+    batch_size_dev: int, 
     epochs: int,
     nav_agent: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
@@ -300,7 +301,7 @@ def train_multihopkg(
                     nav_agent,
                     hunch_llm,
                     steps_in_episode,
-                    batch_size,
+                    batch_size_dev,
                     batch_count,
                 )
 
@@ -399,7 +400,7 @@ def rollout(
     ########################################
     log_action_probs = []
     rewards = []
-    dev_dictionary = DefaultDict(list)
+    eval_metrics = DefaultDict(list)
 
     # Dummy nodes ? TODO: Figur eout what they do.
     # TODO: Perhaps here we can enter through the centroid.
@@ -450,20 +451,20 @@ def rollout(
         # Stuff that we will only use for evaluation
         ########################################
         if dev_mode:
-            dev_dictionary["sampled_actions"].append(sampled_actions)
-            dev_dictionary["visited_embeddings"].append(visited_embeddings)
+            eval_metrics["sampled_actions"].append(sampled_actions)
+            eval_metrics["visited_embeddings"].append(visited_embeddings)
             meep = observations.position
 
     if dev_mode:
         pdb.set_trace()
 
-    dev_dictionary = {k: torch.stack(v) for k, v in dev_dictionary.items()}
+    eval_metrics = {k: torch.stack(v) for k, v in eval_metrics.items()}
     # dev_dictionary["sampled_actions"] = torch.stack(dev_dictionary["sampled_actions"])
     # dev_dictionary["visited_position"] = torch.stack(dev_dictionary["visited_position"])
 
     # Return Rewards of Rollout as a Tensor
 
-    return log_action_probs, rewards, dev_dictionary
+    return log_action_probs, rewards, eval_metrics
 
 
 def load_qa_data(cached_metadata_path: str, raw_QAData_path, tokenizer_name: str):
@@ -670,6 +671,7 @@ def main():
     logger.info(":: Training the model")
     train_multihopkg(
         batch_size=args.batch_size,
+        batch_size_dev=args.batch_size_dev,
         epochs=args.epochs,
         nav_agent=nav_agent,
         hunch_llm=hunch_llm,
