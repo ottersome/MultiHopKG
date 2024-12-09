@@ -115,8 +115,8 @@ def batch_loop_dev(
     ########################################
     logger.warn(f"We just left dev rollout")
     # Compute policy gradient
-    rewards_t = torch.stack(rewards).sum(dim=1)
-    log_probs_t = torch.stack(log_probs).sum(dim=1)
+    rewards_t = torch.stack(rewards).mean(dim=-1).sum(dim=0, keepdim=True)
+    log_probs_t = torch.stack(log_probs)
 
     assert (
         not torch.isnan(rewards_t).any() and not torch.isnan(log_probs_t).any()
@@ -124,7 +124,7 @@ def batch_loop_dev(
 
     pg_loss = -1 * rewards_t * log_probs_t
 
-    logger.info(f"Does pg_loss require grad? {pg_loss.requires_grad}")
+    # logger.info(f"Does pg_loss require grad? {pg_loss.requires_grad}")
 
     return pg_loss, eval_extras
 
@@ -166,6 +166,14 @@ def batch_loop(
     log_probs_t = torch.stack(log_probs)
 
     pg_loss = -1 * rewards_t * log_probs_t
+    
+    # TOREM: Maybe we don't need this visualization
+    # ########################################
+    # # Adding TorchViz Dot here
+    # ########################################
+    # dot = make_dot(pg_loss.sum())
+    # dot.render("model_graph", format="png")
+
 
     return pg_loss, eval_extras
 
@@ -178,6 +186,7 @@ def evaluate_training(
     steps_in_episode: int,
     batch_size_dev: int,
     batch_count: int,
+    verbose: bool,
 ):
 
     global in_dev_mode
@@ -213,7 +222,7 @@ def evaluate_training(
             pg_loss, eval_extras = batch_loop_dev(
                 env, mini_batch, nav_agent, hunch_llm, steps_in_episode
             )
-            logger.info("Finishing inner looop of batch")
+            # logger.info("Finishing inner looop of batch")
             metrics["dev/pg_loss"].append(pg_loss.mean().item())
         logger.info("Done with all batches")
 
@@ -225,7 +234,7 @@ def evaluate_training(
         wandb_run.log(metrics)
         if len(eval_extras) > 0:
             ########################################
-            # Textual Evaluation
+            # Text Evaluation
             ########################################
             table = wandb.Table(
                 columns=["Question", "Path Taken", "Real Answer", "Given Answer"]
@@ -233,6 +242,26 @@ def evaluate_training(
             pg_loss, eval_extras = batch_loop_dev(
                 env, mini_batch, nav_agent, hunch_llm, steps_in_episode
             )
+
+            ########################################
+            # Local logging
+            ########################################
+            logger.info(f"The loss is {pg_loss}")
+            wandb.log({"dev/pg_loss": pg_loss}) 
+
+    ########################################
+    # Evaluation Dump
+    ########################################
+    if verbose and logger: 
+        logger.debug("--------Evaluation Metrics--------")
+        for k,v in metrics.items():
+            logger.debug(f"{k}: {v}")
+        # Now for eval_extras
+        for k,v in eval_extras.items():
+            logger.debug(f"{k}: {v}")
+        logger.debug("--------End Evaluation Metrics--------")
+
+        
 
     nav_agent.train()
     hunch_llm.train()
@@ -255,6 +284,7 @@ def train_multihopkg(
     train_data: pd.DataFrame,
     dev_df: pd.DataFrame,
     mbatches_b4_eval: int,
+    verbose: bool
 ):
     # TODO: Get the rollout working
 
@@ -303,6 +333,7 @@ def train_multihopkg(
                     steps_in_episode,
                     batch_size_dev,
                     batch_count,
+                    verbose
                 )
 
             ########################################
@@ -425,7 +456,9 @@ def rollout(
         observations = env.step(sampled_actions)
         # Ah ssampled_actions are the ones that have to go against the knowlde garph.
 
-        visited_embeddings, states = (observations.position, observations.state)
+        states =  observations.state
+        visited_embeddings = torch.from_numpy(observations.position)
+        position_ids = torch.from_numpy(observations.position_id)
         # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
 
@@ -453,12 +486,14 @@ def rollout(
         if dev_mode:
             eval_metrics["sampled_actions"].append(sampled_actions)
             eval_metrics["visited_embeddings"].append(visited_embeddings)
+            eval_metrics["position_ids"].append(position_ids)
             meep = observations.position
 
-    if dev_mode:
-        pdb.set_trace()
+    # if dev_mode:
+    #     pdb.set_trace()
 
-    eval_metrics = {k: torch.stack(v) for k, v in eval_metrics.items()}
+    if dev_mode: 
+        eval_metrics = {k: torch.stack(v) for k, v in eval_metrics.items()}
     # dev_dictionary["sampled_actions"] = torch.stack(dev_dictionary["sampled_actions"])
     # dev_dictionary["visited_position"] = torch.stack(dev_dictionary["visited_position"])
 
@@ -648,16 +683,18 @@ def main():
 
     # TODO: Load the validation data
     # dev_path = os.path.join(args.data_dir, "dev.triples")
-    data_triple_split_dict: Dict[str, Any] = data_utils.sun_load_triples_and_dict(
-        args.pretrained_sun_model_loc
+    # data_triple_split_dict = data_utils.sun_load_triples_and_dict( args.pretrained_sun_model_loc)
+
+    data_triple_split_dict, id2entity, id2relation = data_utils.load_triples_and_dict(
+        [train_triplets_path, dev_triplets_path],  # TODO: Load the test_data
+        entity_index_path,
+        relation_index_path,
+        group_examples_by_query=False,
+        add_reverse_relations=False,
     )
-    # data_triple_split_dict: Dict[str, Any] = data_utils.load_triples_and_dict(
-    #     [train_triplets_path, dev_triplets_path],  # TODO: Load the test_data
-    #     entity_index_path,
-    #     relation_index_path,
-    #     group_examples_by_query=False,
-    #     add_reverse_relations=False,
-    # )
+
+    print("Let me get the head of id2entity:")
+    print(id2entity[0])
 
     # TODO: Make it take check for a checkpoint and decide what start_epoch
     # if args.checkpoint_path is not None:
@@ -682,6 +719,7 @@ def main():
         train_data=train_df,
         dev_df=dev_df,
         mbatches_b4_eval=args.batches_b4_eval,
+        verbose=args.verbose
     )
     logger.info("Done with everything. Exiting...")
 

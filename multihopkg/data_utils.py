@@ -198,7 +198,7 @@ def load_triples_and_dict(
     add_reverse_relations: bool = False,
     seen_entities: Optional[Any] = None, # TODO: Replace Any 
     verbose: bool = False,
-) -> Dict[str, List[Triple]]:
+) -> Tuple[Dict[str, List[Triple]], Dict[int, str], Dict[int, str]]:
     """
     Convert triples stored on disc into indices.
     Args:
@@ -215,8 +215,8 @@ def load_triples_and_dict(
     ########################################
     # Load up dictionaries between str and int idxs
     ########################################
-    entity2id, _ = load_index(entity_index_path)
-    relation2id, _ = load_index(relation_index_path)
+    entity2id, id2entity = load_index(entity_index_path)
+    relation2id, id2relation = load_index(relation_index_path)
     
     ########################################
     # Load up the Triplets
@@ -225,7 +225,7 @@ def load_triples_and_dict(
     for k,triplets in triplets_dict.items():
         print("{} triples loaded from {}".format(len(triplets), k))
 
-    return triplets_dict
+    return triplets_dict, id2entity, id2relation
 
 
 def load_entity_hist(input_path):
