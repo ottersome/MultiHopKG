@@ -513,7 +513,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.steps_in_episode = steps_in_episode
 
         ########################################
-        # Core States (4/5)
+        # Core States (3/5)
         ########################################
         self.current_questions_emb: Optional[torch.Tensor] = None
         self.current_position: Optional[torch.Tensor] = None
