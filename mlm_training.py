@@ -18,6 +18,7 @@ import ast
 import numpy as np
 import pandas as pd
 import torch
+from transformers.models.oneformer.image_processing_oneformer import convert_segmentation_map_to_binary_masks
 import wandb
 from rich import traceback
 from sklearn.model_selection import train_test_split
@@ -187,6 +188,7 @@ def evaluate_training(
     batch_size_dev: int,
     batch_count: int,
     verbose: bool,
+    tokenizer: PreTrainedTokenizer,
 ):
 
     global in_dev_mode
@@ -200,68 +202,74 @@ def evaluate_training(
         not env.question_embedding_module.training
     ), "The question embedding module must not be in training mode"
 
-    metrics = {"dev/batch_count": [batch_count], "dev/pg_loss": []}
-
-    eval_extras = {}
+    
+    batch_cumulative_metrics = {"dev/batch_count": [batch_count], "dev/pg_loss": []} # For storing results from all batches
+    current_evaluations = {} # For storing results from last batch. Otherwise too much info
 
     with torch.no_grad():
         for batch_id in range(num_batches):
             # TODO: Get the rollout working
             mini_batch = dev_df[batch_id * batch_size_dev : (batch_id + 1) * batch_size_dev]
-            if not isinstance(
+            if not isinstance( # TODO: Remove this assertion once it is never ever met again
                 mini_batch, pd.DataFrame
             ):  # For the lsp to give me a break
                 raise RuntimeError(
                     f"The mini batch is not a pd.DataFrame, but a {type(mini_batch)}. Please check the data loading code."
                 )
-            if (
-                len(mini_batch) < batch_size_dev
-            ):  # We dont want to evaluate on incomplete batches
+            if (len(mini_batch) < batch_size_dev):  # We dont want to evaluate on incomplete batches
                 continue
 
-            pg_loss, eval_extras = batch_loop_dev(
-                env, mini_batch, nav_agent, hunch_llm, steps_in_episode
-            )
-            # logger.info("Finishing inner looop of batch")
-            metrics["dev/pg_loss"].append(pg_loss.mean().item())
-        logger.info("Done with all batches")
+            current_evaluations["reference_questions"] = mini_batch["question"]
+            current_evaluations["true_answer"] = mini_batch["answer"] 
 
-    # Average out all metrics in side metrics
-    for k, v in metrics.items():
-        metrics[k] = np.mean(v)
-
-    if wandb_run is not None:
-        wandb_run.log(metrics)
-        if len(eval_extras) > 0:
-            ########################################
-            # Text Evaluation
-            ########################################
-            table = wandb.Table(
-                columns=["Question", "Path Taken", "Real Answer", "Given Answer"]
-            )
+            # Get the Metrics
             pg_loss, eval_extras = batch_loop_dev(
                 env, mini_batch, nav_agent, hunch_llm, steps_in_episode
             )
 
-            ########################################
-            # Local logging
-            ########################################
-            logger.info(f"The loss is {pg_loss}")
-            wandb.log({"dev/pg_loss": pg_loss}) 
+            # Accumlate the metrics
+            batch_cumulative_metrics["dev/pg_loss"].append(pg_loss.mean().item())
 
     ########################################
-    # Evaluation Dump
+    # Take `current_evaluations` as 
+    # a sample of batches and dump its results
+    ########################################
+    kg = env.knowledge_graph
+    if verbose and logger:
+        just_dump_it_here = "./logs/evaluation_dumps.log"
+        questions = current_evaluations["reference_questions"]
+        answers = current_evaluations["true_answer"]
+        dump_evaluation_metrics(
+            path_to_log = just_dump_it_here,
+            evaluation_metrics_dictionary = current_evaluations,
+            possible_relation_embeddings = kg.sun_model.relation_embedding,
+            vector_searcher = env.ann_index_manager,
+            tokenizer = tokenizer,
+            id2entity = kg.id2entity,
+            id2relations = kg.id2relation,
+        )
+
+        # TODO: Also dump this to wandb if we find it desirable.
+
+    ########################################
+    # Average out all metrics across batches
+    # The dump to wandb
+    ########################################
+    if wandb_run is not None:
+        for k, v in batch_cumulative_metrics.items():
+            mean_metric = torch.stack(v).mean()
+            # Now actually log the metrics
+            wandb.log({k : mean_metric}) 
+            # TODO: Maybe dump the language metrics in wandb ?
+            # table = wandb.Table(
+            #     columns=["Question", "Path Taken", "Real Answer", "Given Answer"]
+            # )
+
     ########################################
     if verbose and logger: 
         logger.debug("--------Evaluation Metrics--------")
         for k,v in metrics.items():
             logger.debug(f"{k}: {v}")
-        # Now for eval_extras
-        for k,v in eval_extras.items():
-            logger.debug(f"{k}: {v}")
-        logger.debug("--------End Evaluation Metrics--------")
-
-        
 
     nav_agent.train()
     hunch_llm.train()
@@ -269,6 +277,65 @@ def evaluate_training(
     dev_mode = False
     logger.info("Done with Evaluation")
     # TODO: Implement this
+
+
+def dump_evaluation_metrics(
+    path_to_log: str,
+    evaluation_metrics_dictionary: Dict[str, Any],
+    possible_relation_embeddings: torch.Tensor,
+    vector_searcher: ANN_IndexMan,
+    tokenizer: PreTrainedTokenizer,
+    id2entity: Dict[int, str],
+    id2relations: Dict[int, str],
+):
+    """
+    Will output all of theh metrics in a very detailed way for each specific key
+    """
+
+    assertions = [
+        "sampled_actions" in evaluation_metrics_dictionary,
+        "position_ids" in evaluation_metrics_dictionary,
+        "hunch_llm_final_guesses" in evaluation_metrics_dictionary,
+    ]
+    if not all(assertions):
+        raise ValueError("Evaluation metrics dictionary is missing some keys")
+
+    log_file = open(path_to_log, "w")
+
+    batch_size = evaluation_metrics_dictionary["sampled_actions"].shape[0]
+    log_file.write(f"Batch size: {batch_size}\n")
+
+    final_str_output = ""
+
+    with open(path_to_log) as f:
+        for element_id in range(batch_size):
+
+            log_file.write(f"Evaluation for {element_id}\n")
+
+            # The main values to work with 
+            sampled_actions = evaluation_metrics_dictionary["sampled_actions"]
+            position_ids = evaluation_metrics_dictionary["position_ids"]
+            hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"]
+
+            # Reconstruct the language output
+            language_output = tokenizer.batch_decode(hunch_llm_final_guesses)
+
+            # Match the relation that are closest to positions we visit
+            matched_vectors, relation_indices = vector_searcher.search(
+                possible_relation_embeddings, sampled_actions
+            )
+            relations_names = [id2relations[index] for index in relation_indices]
+
+            # Similarily log the entities visited.
+            entities_position_ids = evaluation_metrics_dictionary["position_ids"]
+            entities_names = [id2entity[index] for index in position_ids]
+
+            # Craft the string for the final final output
+            final_str_output = ""
+
+
+    # TODO: Some other  metrics ? 
+        
 
 
 def train_multihopkg(
@@ -284,7 +351,8 @@ def train_multihopkg(
     train_data: pd.DataFrame,
     dev_df: pd.DataFrame,
     mbatches_b4_eval: int,
-    verbose: bool
+    verbose: bool,
+    tokenizer: PreTrainedTokenizer,
 ):
     # TODO: Get the rollout working
 
@@ -333,7 +401,8 @@ def train_multihopkg(
                     steps_in_episode,
                     batch_size_dev,
                     batch_count,
-                    verbose
+                    verbose,
+                    tokenizer
                 )
 
             ########################################
@@ -368,7 +437,7 @@ def initialize_path(questions: torch.Tensor):
 
 def calculate_reward(
     hunch_llm: nn.Module, obtained_state: torch.Tensor, answers_ids: torch.Tensor
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, torch.Tensor] :
     """
     Will take the answers and give an idea of how close we were.
     This will of course require us to have a language model that will start giving us the  answer.
@@ -397,7 +466,7 @@ def calculate_reward(
     # Get indices of the max value of the final output
     answers_inf_ids = torch.argmax(logits, dim=-1)
 
-    return reward
+    return reward, logits
 
 
 def rollout(
@@ -452,6 +521,7 @@ def rollout(
         # State is meant to summrized path history.
         sampled_actions, log_probs, entropies = nav_agent(cur_state)
 
+
         # TODO:Make sure we are gettign rewards from the environment.
         observations = env.step(sampled_actions)
         # Ah ssampled_actions are the ones that have to go against the knowlde garph.
@@ -469,7 +539,7 @@ def rollout(
         ########################################
         stacked_states = torch.stack(states_so_far).permute(1, 0, 2)
         # Calculate how close we are 
-        similarity_scores = calculate_reward(hunch_llm, stacked_states, answers_ids)
+        similarity_scores, logits = calculate_reward(hunch_llm, stacked_states, answers_ids)
         rewards.append(similarity_scores)
 
         # TODO: Make obseervations not rely on the question
@@ -487,7 +557,7 @@ def rollout(
             eval_metrics["sampled_actions"].append(sampled_actions)
             eval_metrics["visited_embeddings"].append(visited_embeddings)
             eval_metrics["position_ids"].append(position_ids)
-            meep = observations.position
+            eval_metrics["hunch_llm_final_guesses"].append(logits.argmax(dim=-1))
 
     # if dev_mode:
     #     pdb.set_trace()
@@ -558,7 +628,7 @@ def main():
 
     if args.debug:
         logger.info("\033[1;33m Waiting for debugger to attach...\033[0m")
-        debugpy.listen(("0.0.0.0", 42019))
+        debugpy.listen(("0.0.0.0", 42020))
         debugpy.wait_for_client()
 
         # USe debugpy to listen
@@ -719,7 +789,8 @@ def main():
         train_data=train_df,
         dev_df=dev_df,
         mbatches_b4_eval=args.batches_b4_eval,
-        verbose=args.verbose
+        verbose=args.verbose,
+        tokenizer=tokenizer,
     )
     logger.info("Done with everything. Exiting...")
 
