@@ -493,6 +493,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         knowledge_graph: SunKnowledgeGraph,
         relation_dim: int,
         ann_index_manager: ANN_IndexMan,
+        ann_index_manager_rel: ANN_IndexMan,
         steps_in_episode: int,
     ):
         super(ITLGraphEnvironment, self).__init__()
@@ -510,6 +511,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.path = None
         self.relation_dim = relation_dim
         self.ann_index_manager = ann_index_manager
+        self.ann_index_manager_rel = ann_index_manager_rel
         self.steps_in_episode = steps_in_episode
 
         ########################################
@@ -600,6 +602,9 @@ class ITLGraphEnvironment(Environment, nn.Module):
         new_pos = self.knowledge_graph.sun_model.flexible_forward_rotate(
             detached_curpos, detached_actions
         )
+
+        print(f"new_pos.type: {type(new_pos)}")
+        print(f"new_pos.shape: {new_pos.shape}")
         matched_embeddings, corresponding_indices = self.ann_index_manager.search(
             new_pos, topk=1
         )
