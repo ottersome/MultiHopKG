@@ -30,14 +30,16 @@ import torch
 import faiss
 import pdb
 from typing import Tuple
+import sys
 
-class ANN_IndexMan():
+
+class ANN_IndexMan:
     """
     A class for managing approximate nearest neighbor (ANN) search and exact nearest neighbor search for
-    embeddings from Freebase and Wikidata data. The class can initialize an index with either exact or 
-    approximate search capabilities, conduct similarity searches, map search results to data properties, 
+    embeddings from Freebase and Wikidata data. The class can initialize an index with either exact or
+    approximate search capabilities, conduct similarity searches, map search results to data properties,
     and calculate hit@N scores.
-    
+
     Attributes:
         data_df (pd.DataFrame): DataFrame loaded from the specified data path, containing the properties for each embedding.
         embedding_vectors (np.ndarray): Array of embedding vectors loaded from the specified embedding path.
@@ -45,10 +47,15 @@ class ANN_IndexMan():
         index (faiss.Index): The FAISS index for performing similarity searches.
     """
 
-    def __init__(self, embeddings_weigths:torch.Tensor , exact_computation: bool = True, nlist = 100):
+    def __init__(
+        self,
+        embeddings_weigths: torch.Tensor,
+        exact_computation: bool = True,
+        nlist=100,
+    ):
         """
         Initializes the ANN_IndexMan class, loading data, creating embeddings, and setting up the FAISS index.
-        
+
         Args:
             embeddings_path (str): Path to the embedding CSV file, containing embedding vectors.
             exact_computation (bool): If True, initializes an exact L2 search index; if False, initializes an approximate IVF index.
@@ -57,48 +64,61 @@ class ANN_IndexMan():
         # Ensure that vectors are in float32 for the sake of faise
         self.embedding_vectors = embeddings_weigths.detach().numpy().astype(np.float32)
         nlist = nlist
-        
+
         if exact_computation:
-            self.index = faiss.IndexFlatL2(self.embedding_vectors.shape[1])  # L2 distance (Euclidean distance)
+            self.index = faiss.IndexFlatL2(
+                self.embedding_vectors.shape[1]
+            )  # L2 distance (Euclidean distance)
             self.index.add(self.embedding_vectors)  # type: ignore
         else:
-            self.index = faiss.IndexIVFFlat(faiss.IndexFlatL2(self.embedding_vectors.shape[1]),
-                                           self.embedding_vectors.shape[1],
-                                           nlist)
+            self.index = faiss.IndexIVFFlat(
+                faiss.IndexFlatL2(self.embedding_vectors.shape[1]),
+                self.embedding_vectors.shape[1],
+                nlist,
+            )
 
             # Train the index (necessary for IVF indices)
-            self.index.train(self.embedding_vectors) # type: ignore
+            self.index.train(self.embedding_vectors)  # type: ignore
 
             # Add vectors to the index
-            self.index.add(self.embedding_vectors) # type: ignore
+            self.index.add(self.embedding_vectors)  # type: ignore
 
-    
-    def search(self, target_embeddings: torch.Tensor, topk) -> Tuple[np.ndarray, np.ndarray]:
+    def search(
+        self, target_embeddings: torch.Tensor, topk
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Searches for the top-K nearest neighbors for a given set of target embeddings.
-        
+
         Args:
             target_embeddings (np.ndarray): Array of embeddings to search against the index.
             topk (int): Number of nearest neighbors to retrieve.
-        
+
         Returns:
             resulting_embeddings (np.ndarray): entity embeddings retrieved using ANN
         """
         # assert len(target_embeddings.shape) == 2, "Target embeddings must be a 2D array"
         if len(target_embeddings.shape) == 3:
             target_embeddings = target_embeddings.view(target_embeddings.shape[0], -1)
-        assert isinstance(target_embeddings, torch.Tensor), "Target embeddings must be a torch.Tensor"
+        assert isinstance(
+            target_embeddings, torch.Tensor
+        ), "Target embeddings must be a torch.Tensor"
 
         # TODO: Check that we are acutally passing the right shape of input
-        distances, indices = self.index.search(target_embeddings, topk) # type: ignore
+        distances, indices = self.index.search(target_embeddings, topk)  # type: ignore
 
-        # Get the Actual Embeddings her
+        # TODO: Add them back later the exact embedding extraction
+        # Get the Actual Embeddings here
         resulting_embeddings = self.embedding_vectors[indices.squeeze(), :]
 
         return resulting_embeddings, indices
-    
-    def calculate_hits_at_n(self, ground_truth: np.ndarray, indices: np.ndarray, topk: int) -> float:
-        assert topk <= indices.shape[1], 'Topk must be smaller or equal than the size of index length'
+        # return indices
+
+    def calculate_hits_at_n(
+        self, ground_truth: np.ndarray, indices: np.ndarray, topk: int
+    ) -> float:
+        assert (
+            topk <= indices.shape[1]
+        ), "Topk must be smaller or equal than the size of index length"
         """
         Calculates the hit@N score, which is the fraction of queries where the correct index is within the top N nearest neighbors.
 
@@ -110,7 +130,8 @@ class ANN_IndexMan():
         Returns:
             float: The hit@N score.
         """
-        hits_at_n = sum([1 for i, gt in enumerate(ground_truth) if gt in indices[i, :topk]])
+        hits_at_n = sum(
+            [1 for i, gt in enumerate(ground_truth) if gt in indices[i, :topk]]
+        )
         hit_at_n_score = hits_at_n / len(ground_truth)
         return hit_at_n_score
-
