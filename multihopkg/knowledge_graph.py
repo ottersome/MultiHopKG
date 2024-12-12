@@ -343,7 +343,7 @@ class KnowledgeGraph(nn.Module):
                 if score < theta:
                     continue
                 print(line)
-                if '{}\t{}\t{}'.format(e1, e2, r) in removed_triples:
+                if "{}\t{}\t{}".format(e1, e2, r) in removed_triples:
                     continue
                 e1_id = self.entity2id[e1]
                 e2_id = self.entity2id[e2]
@@ -354,7 +354,7 @@ class KnowledgeGraph(nn.Module):
                     self.adj_list[e1_id][r_id].add(e2_id)
                     count += 1
                     if count > 0 and count % 1000 == 0:
-                        print('{} fuzzy facts added'.format(count))
+                        print("{} fuzzy facts added".format(count))
 
         self.vectorize_action_space(self.data_dir)
 
@@ -391,7 +391,9 @@ class KnowledgeGraph(nn.Module):
         e_set_1D = e_set.view(-1)
         r_space = self.action_space[0][0][e_set_1D]
         e_space = self.action_space[0][1][e_set_1D]
-        e_space = (r_space.view(batch_size, -1) == r.unsqueeze(1)).long() * e_space.view(batch_size, -1)
+        e_space = (
+            r_space.view(batch_size, -1) == r.unsqueeze(1)
+        ).long() * e_space.view(batch_size, -1)
         e_set_out = []
         for i in range(len(e_space)):
             e_set_out_b = var_cuda(unique(e_space[i].data))
@@ -410,12 +412,16 @@ class KnowledgeGraph(nn.Module):
     def define_modules(self):
         if not self.relation_only:
             self.entity_embeddings = nn.Embedding(self.num_entities, self.entity_dim)
-            if self.model == 'complex':
-                self.entity_img_embeddings = nn.Embedding(self.num_entities, self.entity_dim)
+            if self.model == "complex":
+                self.entity_img_embeddings = nn.Embedding(
+                    self.num_entities, self.entity_dim
+                )
             self.EDropout = nn.Dropout(self.emb_dropout_rate)
         self.relation_embeddings = nn.Embedding(self.num_relations, self.relation_dim)
-        if self.model == 'complex':
-            self.relation_img_embeddings = nn.Embedding(self.num_relations, self.relation_dim)
+        if self.model == "complex":
+            self.relation_img_embeddings = nn.Embedding(
+                self.num_relations, self.relation_dim
+            )
         self.RDropout = nn.Dropout(self.emb_dropout_rate)
 
     def initialize_modules(self):
@@ -448,7 +454,7 @@ class KnowledgeGraph(nn.Module):
 
     @property
     def self_e(self):
-        return NO_OP_ENTITY_ID        
+        return NO_OP_ENTITY_ID
 
     @property
     def dummy_r(self):
@@ -522,8 +528,12 @@ class ITLKnowledgeGraph(nn.Module):
         ]
         self.num_entities = entity_embeddings.shape[0]
         self.num_relations = relation_embeddings.shape[0]
-        self.logger.info(f"Pretrained weights contain number of entities: {self.num_entities}")
-        self.logger.info(f"Pretrained weights contain number of relations: {self.num_relations}")
+        self.logger.info(
+            f"Pretrained weights contain number of entities: {self.num_entities}"
+        )
+        self.logger.info(
+            f"Pretrained weights contain number of relations: {self.num_relations}"
+        )
 
         # Careful: This might only work for conve
         self.entity_dim = entity_embeddings.shape[1]
@@ -574,8 +584,9 @@ class ITLKnowledgeGraph(nn.Module):
         return self.centroid
 
     def get_all_entity_embeddings_wo_dropout(self) -> torch.Tensor:
-        assert self.entity_embeddings is not None # Again, lsp
+        assert self.entity_embeddings is not None  # Again, lsp
         return self.entity_embeddings.weight
+
 
 def calculate_entity_centroid(embeddings: Union[nn.Embedding, nn.Parameter]):
     if isinstance(embeddings, nn.Parameter):
@@ -595,12 +606,12 @@ class SunKnowledgeGraph(nn.Module):
         self,
         model: str,
         pretrained_sun_model_path: str,
-        data_path: str, 
+        data_path: str,
         graph_embed_model_name: str,
-        gamma: float
+        gamma: float,
     ):
         super(SunKnowledgeGraph, self).__init__()
-         
+
         if model != "operational_rotate":
             # I am mostly starting with very specific assumptions so I wont claim I support all models
             raise NotImplementedError(f"The model {model} is not implemented")
@@ -619,30 +630,42 @@ class SunKnowledgeGraph(nn.Module):
         # self.load_all_answers(data_dir)
 
         # These are exclusively loaded
-        
+
         self.logger.info(
             f"Loading pretrained embedding weights from {pretrained_sun_model_path}"
         )
 
-        self.id2entity, self.entit2id = self._load_token_dict(os.path.join(data_path, "entities.dict"))
-        self.id2relation, self.relation2id = self._load_token_dict(os.path.join(data_path, "relations.dict"))
+        self.id2entity, self.entit2id = self._load_token_dict(
+            os.path.join(data_path, "entities.dict")
+        )
+        self.id2relation, self.relation2id = self._load_token_dict(
+            os.path.join(data_path, "relations.dict")
+        )
         ########################################
-        # Load the Sun Model Config. 
+        # Load the Sun Model Config.
         # Always super useful
         ########################################
-        self.metadata = json.load(open(os.path.join(pretrained_sun_model_path, "config.json")))
+        self.metadata = json.load(
+            open(os.path.join(pretrained_sun_model_path, "config.json"))
+        )
 
         self.num_entities = len(self.id2entity)
         self.num_relations = len(self.id2relation)
-        self.logger.info(f"Pretrained weights contain number of entities: {self.num_entities}")
-        self.logger.info(f"Pretrained weights contain number of relations: {self.num_relations}")
+        self.logger.info(
+            f"Pretrained weights contain number of entities: {self.num_entities}"
+        )
+        self.logger.info(
+            f"Pretrained weights contain number of relations: {self.num_relations}"
+        )
 
         # Careful: This might only work for conve
         self.double_entity_dim = bool(self.metadata["double_entity_embedding"])
         self.double_relation_dim = bool(self.metadata["double_relation_embedding"])
         self.entity_dim = self.metadata["hidden_dim"]
         self.relation_dim = self.metadata["hidden_dim"]
-        assert self.entity_dim == self.relation_dim, "The entity and relation dimensions must be the same. At least in RotatE."
+        assert (
+            self.entity_dim == self.relation_dim
+        ), "The entity and relation dimensions must be the same. At least in RotatE."
 
         state_dict = torch.load(os.path.join(pretrained_sun_model_path, "checkpoint"))
 
@@ -655,8 +678,10 @@ class SunKnowledgeGraph(nn.Module):
             double_entity_embedding=self.metadata["double_entity_embedding"],
             double_relation_embedding=self.metadata["double_relation_embedding"],
         )
-        self.sun_model.load_state_dict(state_dict['model_state_dict'])
-        self.sun_model_config: Dict = json.load(open(os.path.join(pretrained_sun_model_path, "config.json")))
+        self.sun_model.load_state_dict(state_dict["model_state_dict"])
+        self.sun_model_config: Dict = json.load(
+            open(os.path.join(pretrained_sun_model_path, "config.json"))
+        )
 
         # NOTE: not sure if centroid is the correct approach but seemed like the first naive idea.
         self.centroid = calculate_entity_centroid(self.sun_model.entity_embedding)
@@ -665,17 +690,16 @@ class SunKnowledgeGraph(nn.Module):
         # NOTE: If using embedding types other than conve, we need to implement that ourselves
         # See rs_pg.py in that case
 
-
-    def _load_token_dict(self, path) -> Tuple[Dict[int, str], Dict[str,int]]: 
+    def _load_token_dict(self, path) -> Tuple[Dict[int, str], Dict[str, int]]:
         id2entity = {}
         entity2id = {}
         with open(path) as f:
             # File is a two column tsv file
-            for line in f: 
-                id, idx = line.strip().split('\t') 
+            for line in f:
+                id, idx = line.strip().split("\t")
                 id2entity[idx] = int(id)
-                entity2id[int(id)] = idx # Yeah I know how this looks.
-                 
+                entity2id[int(id)] = idx  # Yeah I know how this looks.
+
         return id2entity, entity2id
 
     def get_entity_dim(self):
@@ -689,8 +713,19 @@ class SunKnowledgeGraph(nn.Module):
 
     # WE ARE USING THIS ONE
     def get_all_entity_embeddings_wo_dropout(self) -> torch.Tensor:
-        assert isinstance(self.sun_model.entity_embedding, nn.Parameter)\
-            or isinstance(
-                self.sun_model.entity_embedding, nn.Embedding
-            ), "The entity embedding must be either a nn.Parameter or nn.Embedding"
+        print(
+            f"self.sun_model.entity_embedding.shape:\n{self.sun_model.entity_embedding.shape}"
+        )
+        assert isinstance(self.sun_model.entity_embedding, nn.Parameter) or isinstance(
+            self.sun_model.entity_embedding, nn.Embedding
+        ), "The entity embedding must be either a nn.Parameter or nn.Embedding"
         return self.sun_model.entity_embedding.data
+
+    def get_all_relations_embeddings_wo_dropout(self) -> torch.Tensor:
+        print(
+            f"self.sun_model.relation_embedding.shape:\n{self.sun_model.relation_embedding.shape}"
+        )
+        # assert isinstance(self.sun_model.entity_embedding, nn.Parameter) or isinstance(
+        #     self.sun_model.entity_embedding, nn.Embedding
+        # ), "The entity embedding must be either a nn.Parameter or nn.Embedding"
+        return self.sun_model.relation_embedding
