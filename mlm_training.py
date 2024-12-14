@@ -264,7 +264,7 @@ def evaluate_training(
             path_to_log=just_dump_it_here,
             evaluation_metrics_dictionary=current_evaluations,
             possible_relation_embeddings=kg.sun_model.relation_embedding,
-            vector_entity_searcher=env.ann_index_manager,
+            vector_entity_searcher=env.ann_index_manager_ent,
             vector_rel_searcher=env.ann_index_manager_rel,
             tokenizer=tokenizer,
             id2entity=kg.entit2id,  # TODO: Make sure the entity2id and relation2id are saved in the correct order, sun.knowledge_graph order is different from salesforce
@@ -768,12 +768,15 @@ def main():
     print(
         f"knowledge_graph.get_all_entity_embeddings_wo_dropout().shape:\n{knowledge_graph.get_all_entity_embeddings_wo_dropout().shape}"
     )
-    ann_index_manager = ANN_IndexMan(
+
+    ########################################
+    # Setup the Vector Searchers
+    ########################################
+    ann_index_manager_ent = ANN_IndexMan(
         knowledge_graph.get_all_entity_embeddings_wo_dropout(),
         exact_computation=False,
         nlist=100,
     )
-
     ann_index_manager_rel = ANN_IndexMan(
         knowledge_graph.get_all_relations_embeddings_wo_dropout(),
         exact_computation=False,
@@ -813,7 +816,7 @@ def main():
         history_num_layers=args.history_num_layers,
         knowledge_graph=knowledge_graph,
         relation_dim=dim_relation,
-        ann_index_manager=ann_index_manager,
+        ann_index_manager_ent=ann_index_manager_ent,
         ann_index_manager_rel=ann_index_manager_rel,
         steps_in_episode=args.num_rollout_steps,
     )

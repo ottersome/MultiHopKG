@@ -492,7 +492,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         history_num_layers: int,
         knowledge_graph: SunKnowledgeGraph,
         relation_dim: int,
-        ann_index_manager: ANN_IndexMan,
+        ann_index_manager_ent: ANN_IndexMan,
         ann_index_manager_rel: ANN_IndexMan,
         steps_in_episode: int,
     ):
@@ -510,7 +510,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         )  # TODO (mega): Confirm this is correct to get the padding value
         self.path = None
         self.relation_dim = relation_dim
-        self.ann_index_manager = ann_index_manager
+        self.ann_index_manager_ent = ann_index_manager_ent
         self.ann_index_manager_rel = ann_index_manager_rel
         self.steps_in_episode = steps_in_episode
 
