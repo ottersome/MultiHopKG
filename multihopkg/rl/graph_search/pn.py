@@ -605,7 +605,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         print(f"new_pos.type: {type(new_pos)}")
         print(f"new_pos.shape: {new_pos.shape}")
-        matched_embeddings, corresponding_indices = self.ann_index_manager.search(
+        matched_entity_embeddings, corresponding_ent_idxs = self.ann_index_manager_ent.search(
             new_pos, topk=1
         )
         # self.current_position = ann_matches # Either
@@ -625,8 +625,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # Corresponding indices is a list of indices of the matched embeddings (batch_size, topk=1)
         observation = Observation(
-            position=matched_embeddings,
-            position_id=corresponding_indices,
+            position=matched_entity_embeddings,
+            position_id=corresponding_ent_idxs,
             state=projected_state,
         )
 

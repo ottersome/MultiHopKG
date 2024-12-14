@@ -13,6 +13,10 @@
         pkgs = import nixpkgs { 
           config.allowUnfree = true;
           cudaSupport = true;
+          cuda = {
+            enable = true;
+            version = "12.3";
+          };
           inherit 
             system;
         };
@@ -37,7 +41,7 @@
           unzip
           lazygit
           cudatoolkit
-          linuxPackages.nvidia_x11
+          # linuxPackages.nvidia_x11
           libGLU libGL
           xorg.libXi xorg.libXmu freeglut
           xorg.libXext xorg.libX11 xorg.libXv xorg.libXrandr zlib 
