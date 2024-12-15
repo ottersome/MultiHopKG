@@ -269,28 +269,27 @@ def evaluate_training(
             id2entity=kg.id2entity,  # TODO: Make sure the entity2id and relation2id are saved in the correct order, sun.knowledge_graph order is different from salesforce
             id2relations=kg.id2relation,  #! Luis put this one backwards
         )
+        # TODO: Maybe dump the language metrics in wandb ?
+        # table = wandb.Table(
+        #     columns=["Question", "Path Taken", "Real Answer", "Given Answer"]
+        # )
 
-        # TODO: Also dump this to wandb if we find it desirable.
 
     ########################################
     # Average out all metrics across batches
     # The dump to wandb
     ########################################
-    if wandb_run is not None:
-        for k, v in batch_cumulative_metrics.items():
-            mean_metric = torch.stack(v).mean()
-            # Now actually log the metrics
+    for k, v in batch_cumulative_metrics.items():
+        mean_metric = torch.stack(v).mean()
+        if wandb_run is not None:
             wandb.log({k: mean_metric})
-            # TODO: Maybe dump the language metrics in wandb ?
-            # table = wandb.Table(
-            #     columns=["Question", "Path Taken", "Real Answer", "Given Answer"]
-            # )
+        logger.debug(f"Metric '{k}' has value {mean_metric}")
 
-    ########################################
-    if verbose and logger:
-        logger.debug("--------Evaluation Metrics--------")
-        for k, v in metrics.items():
-            logger.debug(f"{k}: {v}")
+    # ########################################
+    # if verbose and logger:
+    #     logger.debug("--------Evaluation Metrics--------")
+    #     for k, v in metrics.items():
+    #         logger.debug(f"{k}: {v}")
 
     nav_agent.train()
     hunch_llm.train()
