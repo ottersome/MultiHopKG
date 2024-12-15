@@ -723,6 +723,20 @@ def main():
 
         # USe debugpy to listen
 
+    ########################################
+    # Get the data
+    ########################################
+    logger.info(":: Setting up the data")
+    train_df, dev_df, train_metadata = load_qa_data(
+        args.cached_QAMetaData_path, args.raw_QAData_path, args.tokenizer_name
+    )
+    if not isinstance(dev_df, pd.DataFrame) or not isinstance(train_df, pd.DataFrame):
+        raise RuntimeError(
+            "The data was not loaded properly. Please check the data loading code."
+        )
+    # Load the dictionaries
+    id2ent, ent2id, id2rel, rel2id =  data_utils.load_dictionaries(args.data_dir)
+
     # TODO: Muybe ? (They use it themselves)
     # initialize_model_directory(args, args.seed)
     if args.wandb:
@@ -746,6 +760,10 @@ def main():
         data_path=args.data_dir,
         graph_embed_model_name=args.graph_embed_model_name,
         gamma=args.gamma,
+        id2entity=id2ent,
+        entity2id=ent2id,
+        id2relation=id2rel,
+        relation2id=rel2id
     )
 
     # Information computed by knowldege graph for future dependency injection
@@ -840,18 +858,6 @@ def main():
 
     # TODO: Add checkpoint support
     # See args.start_epoch
-
-    ########################################
-    # Get the data
-    ########################################
-    logger.info(":: Setting up the data")
-    train_df, dev_df, train_metadata = load_qa_data(
-        args.cached_QAMetaData_path, args.raw_QAData_path, args.tokenizer_name
-    )
-    if not isinstance(dev_df, pd.DataFrame) or not isinstance(train_df, pd.DataFrame):
-        raise RuntimeError(
-            "The data was not loaded properly. Please check the data loading code."
-        )
 
     # TODO: Load the validation data
     # dev_path = os.path.join(args.data_dir, "dev.triples")
