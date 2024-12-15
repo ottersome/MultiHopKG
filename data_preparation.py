@@ -41,6 +41,7 @@ def process_qa_data(
         f"---> text_tokenizer: {text_tokenizer}\n"
     )
 
+    # TODO: (Only when necessary) Fix this since we have change the function elsewhere
     df_split, metadata = data_utils.process_qa_data(
         raw_data_path,
         cache_data_dir,
@@ -52,6 +53,7 @@ def process_qa_data(
     data_utils.prepare_triple_dicts(df_split)
 
     logger.info(f"Done. Result dumped at : \n\033[93m\033[4m{metadata['saved_path']}\033[0m")
+
 
 
 def all_arguments(valid_operations: list) -> argparse.Namespace:
