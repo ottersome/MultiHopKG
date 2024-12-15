@@ -616,7 +616,6 @@ class SunKnowledgeGraph(nn.Module):
             # I am mostly starting with very specific assumptions so I wont claim I support all models
             raise NotImplementedError(f"The model {model} is not implemented")
 
-        self.relation2id, self.id2relation = {}, {}
         self.type2id, self.id2type = {}, {}
         self.entity2typeid = {}
         self.unique_r_space = None
