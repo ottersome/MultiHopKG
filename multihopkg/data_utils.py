@@ -15,6 +15,7 @@ import pdb
 import pickle
 from datetime import datetime
 from typing import Any, Dict, Optional, Sequence, List, Tuple
+import re
 
 import numpy as np
 import pandas as pd
@@ -238,6 +239,11 @@ def load_entity_hist(input_path):
 
 
 def load_index(input_path):
+    """
+    Loads dictionaries to map int-index to str-index and vice-versa
+    This specific implementation takes row number as int-index
+    Use `load_index_column_wise` for one with int-index as the second column
+    """
     index, rev_index = {}, {}
     with open(input_path) as f:
         for i, line in enumerate(f.readlines()):
@@ -694,3 +700,25 @@ def process_freebaseqa_data(
         if not os.path.exists(os.path.join(raw_QAPathData_path, file)):
             raise ValueError(f"The file {file} does not exist in the raw data path {raw_QAPathData_path}")
         pdb.set_trace()
+
+def load_index_column_wise(path: str) -> Tuple[Dict[int, str], Dict[str, int]]:
+    id2entity = {}
+    entity2id = {}
+    with open(path) as f:
+        # File is a two column tsv file
+        for line in f:
+            id, idx = re.split(r'\s+', line.strip())
+            id2entity[int(idx)] = id
+            entity2id[id] = int(idx)  # Yeah I know how this looks.
+
+    return id2entity, entity2id
+
+def load_dictionaries(raw_data_path: str) -> Tuple[Dict[int, str], Dict[str, int], Dict[int, str], Dict[str, int]]:
+    # Load the dictionaries
+    entity2id_path      = os.path.join(raw_data_path, "entity2id.txt")
+    relation2id_path    = os.path.join(raw_data_path, "relation2id.txt")
+    id2entity, entity2id        = load_index_column_wise(entity2id_path)
+    id2relation, relation2id    = load_index_column_wise(relation2id_path)
+
+    return  id2entity, entity2id, id2relation, relation2id
+
