@@ -85,9 +85,20 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--epochs',type=int,default=200,help='Epochs for training')
     # TODO: tinker with this value
     ap.add_argument('--rnn_hidden',type=int,default=400,help='RNN hidden dimension')
+
+    # Questions and Answers
     # ap.add_argument('--raw_QAData_path', type=str, default="data/itl/multihop_ds_datasets_FbWiki_TriviaQA.parquet", help="Directory where the QA knowledge graph data is stored (default: None)")
-    ap.add_argument('--raw_QAData_path', type=str, default="./data/triviaQA/FbWiki_TriviaQA_clean.csv", help="Directory where the QA knowledge graph data is stored (default: None)")
-    ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/itl_data-tok_bert-base-uncased-maxpathlen_5.json", help="Path for precomputed QA knowledge graph data. Precomputing is mostly tokenizaiton.")
+    # ap.add_argument('--raw_QAData_path', type=str, default="./data/triviaQA/FbWiki_TriviaQA_clean.csv", help="Directory where the QA knowledge graph data is stored (default: None)")
+        # ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/itl_data-tok_bert-base-uncased-maxpathlen_5.json", help="Path for precomputed QA knowledge graph data. Precomputing is mostly tokenizaiton.")
+    ap.add_argument('--raw_QAData_path', type=str, default="./data/FB15k/freebaseqa_clean.csv", help="Directory where the QA knowledge graph data is stored (default: None)")
+    ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/freebaseqa_clean.json", help="Path for precomputed QA knowledge graph data. Precomputing is mostly tokenizaiton.")
+    
+    # Entity and Relationship Human Readability
+    ap.add_argument('--node_data_path', type=str, default='./data/FB15k/node_data.csv', help='Path to the CSV file containing the name mapping for the entity.')
+    ap.add_argument('--node_data_key', type=str, default='MID', help='Special key type used for the entity. i.e., MID for FB15k or RDF for Qid for Fb-Wiki.')
+    ap.add_argument('--relationship_data_path', type=str, default=None, help='Path to the CSV file containing the name mapping for the relationship.')
+    ap.add_argument('--relationship_data_key', type=str, default=None, help='Special key type used for the relationship. i.e., None for FB15k or Property for Fb-Wiki.')
+    
     # TODO: (eventually) We might want to add option of locally trained models.
     ap.add_argument('--question_embedding_model', type=str, default="bert-base-uncased", help="The Question embedding model to use (default: bert-base-uncased)")
     ap.add_argument('--question_embedding_module_trainable', type=bool, default=True, help="Whether the question embedding model is trainable or not (default: True)")

@@ -6,7 +6,7 @@
  
  Graph Search Policy Network.
 """
-
+import pandas
 import numpy as np
 import torch
 import torch.nn as nn
@@ -494,6 +494,10 @@ class ITLGraphEnvironment(Environment, nn.Module):
         relation_dim: int,
         ann_index_manager: ANN_IndexMan,
         ann_index_manager_rel: ANN_IndexMan,
+        node_data: str,
+        node_data_key: str,
+        rel_data: str,
+        rel_data_key: str,
         steps_in_episode: int,
     ):
         super(ITLGraphEnvironment, self).__init__()
@@ -513,6 +517,20 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.ann_index_manager = ann_index_manager
         self.ann_index_manager_rel = ann_index_manager_rel
         self.steps_in_episode = steps_in_episode
+
+        self.entity2title = {}
+        self.relation2title = {}
+
+        if node_data: # Enters if node_data is neither a NoneType or an empty string
+            # Extracts the dataframe containing the special encoding name (i.e., MID) and proper title (i.e., Title)
+            node_df = pandas.read_csv(node_data).fillna('')
+            self.entity2title = node_df.set_index(node_data_key)['Title'].to_dict()
+
+        if rel_data: # Enters if rel_data is neither a NoneType or an empty string
+            # Extracts the dataframe containing the special encoding name (i.e., MID) and proper title (i.e., Title)
+            rel_df = pandas.read_csv(rel_data).fillna('')
+            self.rel2title = rel_df.set_index(rel_data_key)['Title'].to_dict()
+
 
         ########################################
         # Core States (3/5)
@@ -603,8 +621,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
             detached_curpos, detached_actions
         )
 
-        print(f"new_pos.type: {type(new_pos)}")
-        print(f"new_pos.shape: {new_pos.shape}")
         matched_embeddings, corresponding_indices = self.ann_index_manager.search(
             new_pos, topk=1
         )

@@ -604,8 +604,8 @@ def process_triviaqa_data(
     ## Processing
     csv_df = pd.read_csv(raw_QAPathData_path)
     assert (
-        len(csv_df.columns) > 5
-    ), "The CSV file should have at least 5 columns. One triplet and one QA pair"
+        len(csv_df.columns) > 2
+    ), "The CSV file should have at least 2 columns. One triplet and one QA pair"
     question_col_idx = len(csv_df.columns) - 2
 
     # Ensure directory exists

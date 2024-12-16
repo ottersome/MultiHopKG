@@ -222,6 +222,7 @@ def evaluate_training(
             mini_batch = dev_df[
                 batch_id * batch_size_dev : (batch_id + 1) * batch_size_dev
             ]
+
             if not isinstance(  # TODO: Remove this assertion once it is never ever met again
                 mini_batch, pd.DataFrame
             ):  # For the lsp to give me a break
@@ -243,9 +244,7 @@ def evaluate_training(
 
             current_evaluations["sampled_actions"] = eval_extras["sampled_actions"]
             current_evaluations["position_ids"] = eval_extras["position_ids"]
-            current_evaluations["hunch_llm_final_guesses"] = eval_extras[
-                "hunch_llm_final_guesses"
-            ]
+            current_evaluations["hunch_llm_final_guesses"] = eval_extras["hunch_llm_final_guesses"]
 
             # Accumlate the metrics
             batch_cumulative_metrics["dev/pg_loss"].append(pg_loss.mean().item())
@@ -267,8 +266,11 @@ def evaluate_training(
             vector_entity_searcher=env.ann_index_manager,
             vector_rel_searcher=env.ann_index_manager_rel,
             tokenizer=tokenizer,
-            id2entity=kg.entit2id,  # TODO: Make sure the entity2id and relation2id are saved in the correct order, sun.knowledge_graph order is different from salesforce
-            id2relations=kg.relation2id,  #! Luis put this one backwards
+            # !Eduin2Luis: The following two lines have the mapping set backwards. Probably due to sun.knowledge_graph order is different from salesforce
+            id2entity=kg.entit2id,
+            id2relations=kg.relation2id,
+            entity2title=env.entity2title,
+            relation2title=env.relation2title,
         )
 
         # TODO: Also dump this to wandb if we find it desirable.
@@ -290,7 +292,7 @@ def evaluate_training(
     ########################################
     if verbose and logger:
         logger.debug("--------Evaluation Metrics--------")
-        for k, v in metrics.items():
+        for k, v in current_evaluations.items():
             logger.debug(f"{k}: {v}")
 
     nav_agent.train()
@@ -310,6 +312,8 @@ def dump_evaluation_metrics(
     tokenizer: PreTrainedTokenizer,
     id2entity: Dict[int, str],
     id2relations: Dict[int, str],
+    entity2title: Dict[str, str],
+    relation2title: Dict[str, str],
 ):
     """
     Will output all of the metrics in a very detailed way for each specific key
@@ -338,21 +342,15 @@ def dump_evaluation_metrics(
             log_file.write(f"Evaluation for {element_id}\n")
 
             # The main values to work with
-            sampled_actions = evaluation_metrics_dictionary["sampled_actions"][
-                :, element_id
-            ]
+            sampled_actions = evaluation_metrics_dictionary["sampled_actions"][:, element_id]
             position_ids = evaluation_metrics_dictionary["position_ids"][:, element_id]
-            hunch_llm_final_guesses = evaluation_metrics_dictionary[
-                "hunch_llm_final_guesses"
-            ][:, element_id]
-            questions = evaluation_metrics_dictionary["reference_questions"].iloc[
-                element_id
-            ]
+            hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id]
+            questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
             answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
 
             # Reconstruct the language output
-            print(f"sampled actions shape:\n{sampled_actions.shape}")
-            print(f"position_ids shape:\n {position_ids.shape}")
+            # print(f"sampled actions shape:\n{sampled_actions.shape}")
+            # print(f"position_ids shape:\n {position_ids.shape}")
 
             # for every element in the batch, we decode the 3 actions with 4 elements in them
             predicted_answer = tokenizer.batch_decode(hunch_llm_final_guesses)
@@ -364,20 +362,9 @@ def dump_evaluation_metrics(
             answer_txt = tokenizer.decode(answer)
             log_file.write(f"Answer TXT: {answer_txt}\n")
 
-            print(f"Question in text format: {questions_txt}")
-            print(f"Answer in text format: {answer_txt}")
-
-            print(predicted_answer)
-
             # Match the relation that are closest to positions we visit
-            print(
-                f"possible_relation_embeddings.detach().shape:\n{possible_relation_embeddings.detach().shape}"
-            )
-            print(f"sampled_actions.shape:\n{sampled_actions.shape}")
             # possible_relation_embeddings.detach().numpy(),
             # sampled_actions.detach().numpy(),
-
-            print(f"embedding_vectors: {vector_rel_searcher.embedding_vectors.shape}")
 
             matched_vectors, relation_indices = vector_rel_searcher.search(
                 sampled_actions, 1
@@ -388,32 +375,24 @@ def dump_evaluation_metrics(
             #     sampled_actions.detach().numpy(),
             # )
 
-            print(f"relation_indices.shape:\n{relation_indices.squeeze().shape}")
-            print(relation_indices.squeeze())
-            # print(f"id2relations: {id2relations.keys()}")
-            relations_names = [
-                id2relations[int(index)] for index in relation_indices.squeeze()
-            ]
+            relations_names = [id2relations[index] for index in relation_indices.squeeze()]
 
-            print(f"Relations Names: \n{relations_names}")
+            if relation2title: relations_names = [relation2title[index] for index in relations_names]
+
             log_file.write(f"Relations Names: {relations_names}\n")
 
             # Similarily log the entities visited.
-            # print(f"id2entity.keys:\n{id2entity.keys()}")
             entities_position_ids = evaluation_metrics_dictionary["position_ids"]
-            print(f"position_ids.shape: {position_ids.shape}")
-            print(f"position_ids.type: {type(position_ids)}")
-            entities_names = [
-                id2entity[index] for index in position_ids.detach().numpy().squeeze()
-            ]
+            entities_names = [id2entity[index] for index in position_ids.detach().numpy().squeeze()]
+            if entity2title: entities_names = [entity2title[index] for index in entities_names]
 
             # Craft the string for the final final output
             final_str_output = ""
 
-            print(f"Entity Names: \n{entities_names}")
-
             log_file.write(f"Entity Names: {entities_names}\n")
 
+    # print("Exiting at the end of dump_evals")
+    # sys.exit()
     # TODO: Some other  metrics ?
 
 
@@ -524,25 +503,21 @@ def calculate_reward(
     seq_max_len = answers_ids.size(1)
     hidden_dim = obtained_state.shape[-1]
 
-    print("In calculate_reward")
-    print(
-        f"batch_size:\n{batch_size}\nseq_max_len:\n{seq_max_len}\nhidden_dim:\n{hidden_dim}"
-    )
+    # print("In calculate_reward")
+    # print(
+    #     f"batch_size:\n{batch_size}\nseq_max_len:\n{seq_max_len}\nhidden_dim:\n{hidden_dim}"
+    # )
 
     # From the obtained_state we will try to find an answer
-    print(f"answers_ids:\n{answers_ids.shape}")
     conditioning_labels = answers_ids[:, 1:].contiguous().to(dtype=torch.int64)
     teacher_forcing_labels = answers_ids[:, :-1].contiguous().to(dtype=torch.int64)
 
-    print(f"obtained_state.shape:\n{obtained_state.shape}")
-    print(f"conditioning_labels.shape:\n{conditioning_labels.shape}")
     answers_inf_softmax = hunch_llm(
         graph_embeddings=obtained_state, decoder_input_ids=conditioning_labels
     )
     # print(f"asnwer_inf_softmax:\n{answers_inf_softmax.shape}")
     _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
 
-    print(f"logits shape: {logits.shape}")
     loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
 
     loss = loss_fn(logits.view(-1, logits.shape[-1]), teacher_forcing_labels.view(-1))
@@ -765,9 +740,7 @@ def main():
     # Will be needed for obtaining observations.
     ########################################
     logger.info(":: Setting up the ANN Index")
-    print(
-        f"knowledge_graph.get_all_entity_embeddings_wo_dropout().shape:\n{knowledge_graph.get_all_entity_embeddings_wo_dropout().shape}"
-    )
+
     ann_index_manager = ANN_IndexMan(
         knowledge_graph.get_all_entity_embeddings_wo_dropout(),
         exact_computation=False,
@@ -815,6 +788,10 @@ def main():
         relation_dim=dim_relation,
         ann_index_manager=ann_index_manager,
         ann_index_manager_rel=ann_index_manager_rel,
+        node_data=args.node_data_path,
+        node_data_key=args.node_data_key,
+        rel_data=args.relationship_data_path,
+        rel_data_key=args.relationship_data_key,
         steps_in_episode=args.num_rollout_steps,
     )
 
@@ -845,6 +822,7 @@ def main():
     train_df, dev_df, train_metadata = load_qa_data(
         args.cached_QAMetaData_path, args.raw_QAData_path, args.tokenizer_name
     )
+
     if not isinstance(dev_df, pd.DataFrame) or not isinstance(train_df, pd.DataFrame):
         raise RuntimeError(
             "The data was not loaded properly. Please check the data loading code."

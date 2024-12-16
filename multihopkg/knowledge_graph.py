@@ -713,18 +713,12 @@ class SunKnowledgeGraph(nn.Module):
 
     # WE ARE USING THIS ONE
     def get_all_entity_embeddings_wo_dropout(self) -> torch.Tensor:
-        print(
-            f"self.sun_model.entity_embedding.shape:\n{self.sun_model.entity_embedding.shape}"
-        )
         assert isinstance(self.sun_model.entity_embedding, nn.Parameter) or isinstance(
             self.sun_model.entity_embedding, nn.Embedding
         ), "The entity embedding must be either a nn.Parameter or nn.Embedding"
         return self.sun_model.entity_embedding.data
 
     def get_all_relations_embeddings_wo_dropout(self) -> torch.Tensor:
-        print(
-            f"self.sun_model.relation_embedding.shape:\n{self.sun_model.relation_embedding.shape}"
-        )
         # assert isinstance(self.sun_model.entity_embedding, nn.Parameter) or isinstance(
         #     self.sun_model.entity_embedding, nn.Embedding
         # ), "The entity embedding must be either a nn.Parameter or nn.Embedding"
