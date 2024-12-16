@@ -492,12 +492,13 @@ class ITLGraphEnvironment(Environment, nn.Module):
         history_num_layers: int,
         knowledge_graph: SunKnowledgeGraph,
         relation_dim: int,
-        ann_index_manager: ANN_IndexMan,
-        ann_index_manager_rel: ANN_IndexMan,
+
         node_data: str,
         node_data_key: str,
         rel_data: str,
         rel_data_key: str,
+        ann_index_manager_ent: ANN_IndexMan,
+        ann_index_manager_rel: ANN_IndexMan,
         steps_in_episode: int,
     ):
         super(ITLGraphEnvironment, self).__init__()
@@ -514,7 +515,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         )  # TODO (mega): Confirm this is correct to get the padding value
         self.path = None
         self.relation_dim = relation_dim
-        self.ann_index_manager = ann_index_manager
+        self.ann_index_manager_ent = ann_index_manager_ent
         self.ann_index_manager_rel = ann_index_manager_rel
         self.steps_in_episode = steps_in_episode
 
@@ -621,7 +622,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             detached_curpos, detached_actions
         )
 
-        matched_embeddings, corresponding_indices = self.ann_index_manager.search(
+        matched_entity_embeddings, corresponding_ent_idxs = self.ann_index_manager_ent.search(
             new_pos, topk=1
         )
         # self.current_position = ann_matches # Either
@@ -641,8 +642,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # Corresponding indices is a list of indices of the matched embeddings (batch_size, topk=1)
         observation = Observation(
-            position=matched_embeddings,
-            position_id=corresponding_indices,
+            position=matched_entity_embeddings,
+            position_id=corresponding_ent_idxs,
             state=projected_state,
         )
 

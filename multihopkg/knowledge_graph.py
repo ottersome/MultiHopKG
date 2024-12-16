@@ -609,6 +609,11 @@ class SunKnowledgeGraph(nn.Module):
         data_path: str,
         graph_embed_model_name: str,
         gamma: float,
+
+        id2entity: Dict[int,str],
+        entity2id: Dict[str,int], 
+        id2relation: Dict[int, str], 
+        relation2id: Dict[str, int]
     ):
         super(SunKnowledgeGraph, self).__init__()
 
@@ -616,7 +621,6 @@ class SunKnowledgeGraph(nn.Module):
             # I am mostly starting with very specific assumptions so I wont claim I support all models
             raise NotImplementedError(f"The model {model} is not implemented")
 
-        self.relation2id, self.id2relation = {}, {}
         self.type2id, self.id2type = {}, {}
         self.entity2typeid = {}
         self.unique_r_space = None
@@ -635,12 +639,19 @@ class SunKnowledgeGraph(nn.Module):
             f"Loading pretrained embedding weights from {pretrained_sun_model_path}"
         )
 
-        self.id2entity, self.entit2id = self._load_token_dict(
-            os.path.join(data_path, "entities.dict")
-        )
-        self.id2relation, self.relation2id = self._load_token_dict(
-            os.path.join(data_path, "relations.dict")
-        )
+
+        self.id2entity = id2entity
+        self.entity2id = entity2id
+        self.id2relation = id2relation
+        self.relation2id = relation2id   
+        #TOREM: I don't like this hardcoding, but I am leaving it in case I need to go back to it.
+        # self.id2entity, self.entit2id = self._load_token_dict(
+        #     os.path.join(data_path, "entities.dict")
+        # )
+        # self.id2relation, self.relation2id = self._load_token_dict(
+        #     os.path.join(data_path, "relations.dict")
+        # )
+
         ########################################
         # Load the Sun Model Config.
         # Always super useful
@@ -690,17 +701,6 @@ class SunKnowledgeGraph(nn.Module):
         # NOTE: If using embedding types other than conve, we need to implement that ourselves
         # See rs_pg.py in that case
 
-    def _load_token_dict(self, path) -> Tuple[Dict[int, str], Dict[str, int]]:
-        id2entity = {}
-        entity2id = {}
-        with open(path) as f:
-            # File is a two column tsv file
-            for line in f:
-                id, idx = line.strip().split("\t")
-                id2entity[idx] = int(id)
-                entity2id[int(id)] = idx  # Yeah I know how this looks.
-
-        return id2entity, entity2id
 
     def get_entity_dim(self):
         return self.entity_dim
@@ -713,12 +713,14 @@ class SunKnowledgeGraph(nn.Module):
 
     # WE ARE USING THIS ONE
     def get_all_entity_embeddings_wo_dropout(self) -> torch.Tensor:
+
         assert isinstance(self.sun_model.entity_embedding, nn.Parameter) or isinstance(
             self.sun_model.entity_embedding, nn.Embedding
         ), "The entity embedding must be either a nn.Parameter or nn.Embedding"
         return self.sun_model.entity_embedding.data
 
     def get_all_relations_embeddings_wo_dropout(self) -> torch.Tensor:
+
         # assert isinstance(self.sun_model.entity_embedding, nn.Parameter) or isinstance(
         #     self.sun_model.entity_embedding, nn.Embedding
         # ), "The entity embedding must be either a nn.Parameter or nn.Embedding"

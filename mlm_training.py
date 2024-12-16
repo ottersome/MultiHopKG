@@ -246,6 +246,7 @@ def evaluate_training(
             current_evaluations["position_ids"] = eval_extras["position_ids"]
             current_evaluations["hunch_llm_final_guesses"] = eval_extras["hunch_llm_final_guesses"]
 
+
             # Accumlate the metrics
             batch_cumulative_metrics["dev/pg_loss"].append(pg_loss.mean().item())
 
@@ -263,37 +264,38 @@ def evaluate_training(
             path_to_log=just_dump_it_here,
             evaluation_metrics_dictionary=current_evaluations,
             possible_relation_embeddings=kg.sun_model.relation_embedding,
-            vector_entity_searcher=env.ann_index_manager,
+            vector_entity_searcher=env.ann_index_manager_ent,
             vector_rel_searcher=env.ann_index_manager_rel,
             tokenizer=tokenizer,
             # !Eduin2Luis: The following two lines have the mapping set backwards. Probably due to sun.knowledge_graph order is different from salesforce
-            id2entity=kg.entit2id,
-            id2relations=kg.relation2id,
+            id2entity=kg.id2entity,
+            id2relations=kg.id2relation,
             entity2title=env.entity2title,
             relation2title=env.relation2title,
-        )
 
-        # TODO: Also dump this to wandb if we find it desirable.
+        )
+        # TODO: Maybe dump the language metrics in wandb ?
+        # table = wandb.Table(
+        #     columns=["Question", "Path Taken", "Real Answer", "Given Answer"]
+        # )
+
 
     ########################################
     # Average out all metrics across batches
     # The dump to wandb
     ########################################
-    if wandb_run is not None:
-        for k, v in batch_cumulative_metrics.items():
-            mean_metric = torch.stack(v).mean()
-            # Now actually log the metrics
-            wandb.log({k: mean_metric})
-            # TODO: Maybe dump the language metrics in wandb ?
-            # table = wandb.Table(
-            #     columns=["Question", "Path Taken", "Real Answer", "Given Answer"]
-            # )
 
-    ########################################
-    if verbose and logger:
-        logger.debug("--------Evaluation Metrics--------")
-        for k, v in current_evaluations.items():
-            logger.debug(f"{k}: {v}")
+    for k, v in batch_cumulative_metrics.items():
+        mean_metric = torch.stack(v).mean()
+        if wandb_run is not None:
+            wandb.log({k: mean_metric})
+        logger.debug(f"Metric '{k}' has value {mean_metric}")
+
+    # ########################################
+    # if verbose and logger:
+    #     logger.debug("--------Evaluation Metrics--------")
+    #     for k, v in metrics.items():
+    #         logger.debug(f"{k}: {v}")
 
     nav_agent.train()
     hunch_llm.train()
@@ -352,6 +354,7 @@ def dump_evaluation_metrics(
             # print(f"sampled actions shape:\n{sampled_actions.shape}")
             # print(f"position_ids shape:\n {position_ids.shape}")
 
+
             # for every element in the batch, we decode the 3 actions with 4 elements in them
             predicted_answer = tokenizer.batch_decode(hunch_llm_final_guesses)
 
@@ -370,6 +373,7 @@ def dump_evaluation_metrics(
                 sampled_actions, 1
             )
 
+
             # matched_vectors, relation_indices = vector_searcher.search(
             #     possible_relation_embeddings.detach().numpy(),
             #     sampled_actions.detach().numpy(),
@@ -379,12 +383,15 @@ def dump_evaluation_metrics(
 
             if relation2title: relations_names = [relation2title[index] for index in relations_names]
 
+
             log_file.write(f"Relations Names: {relations_names}\n")
 
             # Similarily log the entities visited.
+            # print(f"id2entity.keys:\n{id2entity.keys()}")
             entities_position_ids = evaluation_metrics_dictionary["position_ids"]
             entities_names = [id2entity[index] for index in position_ids.detach().numpy().squeeze()]
             if entity2title: entities_names = [entity2title[index] for index in entities_names]
+
 
             # Craft the string for the final final output
             final_str_output = ""
@@ -393,6 +400,7 @@ def dump_evaluation_metrics(
 
     # print("Exiting at the end of dump_evals")
     # sys.exit()
+
     # TODO: Some other  metrics ?
 
 
@@ -503,20 +511,20 @@ def calculate_reward(
     seq_max_len = answers_ids.size(1)
     hidden_dim = obtained_state.shape[-1]
 
-    # print("In calculate_reward")
-    # print(
-    #     f"batch_size:\n{batch_size}\nseq_max_len:\n{seq_max_len}\nhidden_dim:\n{hidden_dim}"
-    # )
 
     # From the obtained_state we will try to find an answer
+    print(f"answers_ids:\n{answers_ids.shape}")
     conditioning_labels = answers_ids[:, 1:].contiguous().to(dtype=torch.int64)
     teacher_forcing_labels = answers_ids[:, :-1].contiguous().to(dtype=torch.int64)
 
+    print(f"obtained_state.shape:\n{obtained_state.shape}")
+    print(f"conditioning_labels.shape:\n{conditioning_labels.shape}")
     answers_inf_softmax = hunch_llm(
         graph_embeddings=obtained_state, decoder_input_ids=conditioning_labels
     )
     # print(f"asnwer_inf_softmax:\n{answers_inf_softmax.shape}")
     _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
+
 
     loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
 
@@ -698,6 +706,20 @@ def main():
 
         # USe debugpy to listen
 
+    ########################################
+    # Get the data
+    ########################################
+    logger.info(":: Setting up the data")
+    train_df, dev_df, train_metadata = load_qa_data(
+        args.cached_QAMetaData_path, args.raw_QAData_path, args.tokenizer_name
+    )
+    if not isinstance(dev_df, pd.DataFrame) or not isinstance(train_df, pd.DataFrame):
+        raise RuntimeError(
+            "The data was not loaded properly. Please check the data loading code."
+        )
+    # Load the dictionaries
+    id2ent, ent2id, id2rel, rel2id =  data_utils.load_dictionaries(args.data_dir)
+
     # TODO: Muybe ? (They use it themselves)
     # initialize_model_directory(args, args.seed)
     if args.wandb:
@@ -721,6 +743,10 @@ def main():
         data_path=args.data_dir,
         graph_embed_model_name=args.graph_embed_model_name,
         gamma=args.gamma,
+        id2entity=id2ent,
+        entity2id=ent2id,
+        id2relation=id2rel,
+        relation2id=rel2id
     )
 
     # Information computed by knowldege graph for future dependency injection
@@ -741,7 +767,10 @@ def main():
     ########################################
     logger.info(":: Setting up the ANN Index")
 
-    ann_index_manager = ANN_IndexMan(
+    ########################################
+    # Setup the Vector Searchers
+    ########################################
+    ann_index_manager_ent = ANN_IndexMan(
         knowledge_graph.get_all_entity_embeddings_wo_dropout(),
         exact_computation=False,
         nlist=100,
@@ -786,12 +815,12 @@ def main():
         history_num_layers=args.history_num_layers,
         knowledge_graph=knowledge_graph,
         relation_dim=dim_relation,
-        ann_index_manager=ann_index_manager,
-        ann_index_manager_rel=ann_index_manager_rel,
         node_data=args.node_data_path,
         node_data_key=args.node_data_key,
         rel_data=args.relationship_data_path,
         rel_data_key=args.relationship_data_key,
+        ann_index_manager_ent=ann_index_manager_ent,
+        ann_index_manager_rel=ann_index_manager_rel,
         steps_in_episode=args.num_rollout_steps,
     )
 
@@ -815,18 +844,6 @@ def main():
     # TODO: Add checkpoint support
     # See args.start_epoch
 
-    ########################################
-    # Get the data
-    ########################################
-    logger.info(":: Setting up the data")
-    train_df, dev_df, train_metadata = load_qa_data(
-        args.cached_QAMetaData_path, args.raw_QAData_path, args.tokenizer_name
-    )
-
-    if not isinstance(dev_df, pd.DataFrame) or not isinstance(train_df, pd.DataFrame):
-        raise RuntimeError(
-            "The data was not loaded properly. Please check the data loading code."
-        )
 
     # TODO: Load the validation data
     # dev_path = os.path.join(args.data_dir, "dev.triples")
