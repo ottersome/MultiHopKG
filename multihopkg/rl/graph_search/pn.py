@@ -8,6 +8,8 @@
 """
 
 import numpy as np
+import pandas
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -492,6 +494,11 @@ class ITLGraphEnvironment(Environment, nn.Module):
         history_num_layers: int,
         knowledge_graph: SunKnowledgeGraph,
         relation_dim: int,
+
+        node_data: str,
+        node_data_key: str,
+        rel_data: str,
+        rel_data_key: str,					  
         ann_index_manager_ent: ANN_IndexMan,
         ann_index_manager_rel: ANN_IndexMan,
         steps_in_episode: int,
@@ -514,6 +521,18 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.ann_index_manager_rel = ann_index_manager_rel
         self.steps_in_episode = steps_in_episode
 
+        self.entity2title = {}
+        self.relation2title = {}
+
+        if node_data: # Enters if node_data is neither a NoneType or an empty string
+            # Extracts the dataframe containing the special encoding name (i.e., MID) and proper title (i.e., Title)
+            node_df = pandas.read_csv(node_data).fillna('')
+            self.entity2title = node_df.set_index(node_data_key)['Title'].to_dict()
+
+        if rel_data: # Enters if rel_data is neither a NoneType or an empty string
+            # Extracts the dataframe containing the special encoding name (i.e., MID) and proper title (i.e., Title)
+            rel_df = pandas.read_csv(rel_data).fillna('')
+            self.rel2title = rel_df.set_index(rel_data_key)['Title'].to_dict()
         ########################################
         # Core States (3/5)
         ########################################
