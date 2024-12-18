@@ -264,10 +264,14 @@ def evaluate_training(
             path_to_log=just_dump_it_here,
             evaluation_metrics_dictionary=current_evaluations,
             possible_relation_embeddings=kg.sun_model.relation_embedding,
+            vector_entity_searcher=env.ann_index_manager_ent,															 
             vector_rel_searcher=env.ann_index_manager_rel,
             tokenizer=tokenizer,
-            id2entity=kg.id2entity,  # TODO: Make sure the entity2id and relation2id are saved in the correct order, sun.knowledge_graph order is different from salesforce
-            id2relations=kg.id2relation,  #! Luis put this one backwards
+		  # TODO: Make sure the entity2id and relation2id are saved in the correct order and is being used correctly
+            id2entity=kg.id2entity,					   
+            id2relations=kg.id2relation,
+            entity2title=env.entity2title,
+            relation2title=env.relation2title,										  
         )
         # TODO: Maybe dump the language metrics in wandb ?
         # table = wandb.Table(
@@ -303,10 +307,13 @@ def dump_evaluation_metrics(
     path_to_log: str,
     evaluation_metrics_dictionary: Dict[str, Any],
     possible_relation_embeddings: torch.Tensor,
+	vector_entity_searcher: ANN_IndexMan,								  
     vector_rel_searcher: ANN_IndexMan,
     tokenizer: PreTrainedTokenizer,
     id2entity: Dict[int, str],
     id2relations: Dict[int, str],
+    entity2title: Dict[str, str],
+    relation2title: Dict[str, str],
 ):
     """
     Will output all of the metrics in a very detailed way for each specific key
@@ -392,6 +399,8 @@ def dump_evaluation_metrics(
                 id2relations[int(index)] for index in relation_indices.squeeze()
             ]
 
+            if relation2title: relations_names = [relation2title[index] for index in relations_names]
+
             print(f"Relations Names: \n{relations_names}")
             log_file.write(f"Relations Names: {relations_names}\n")
 
@@ -403,6 +412,7 @@ def dump_evaluation_metrics(
             entities_names = [
                 id2entity[index] for index in position_ids.detach().numpy().squeeze()
             ]
+            if entity2title: entities_names = [entity2title[index] for index in entities_names]
 
             # Craft the string for the final final output
             final_str_output = ""
@@ -831,6 +841,10 @@ def main():
         history_num_layers=args.history_num_layers,
         knowledge_graph=knowledge_graph,
         relation_dim=dim_relation,
+        node_data=args.node_data_path,
+        node_data_key=args.node_data_key,
+        rel_data=args.relationship_data_path,
+        rel_data_key=args.relationship_data_key,
         ann_index_manager_ent=ann_index_manager_ent,
         ann_index_manager_rel=ann_index_manager_rel,
         steps_in_episode=args.num_rollout_steps,
