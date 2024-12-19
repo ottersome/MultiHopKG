@@ -342,22 +342,13 @@ def dump_evaluation_metrics(
             log_file.write(f"Evaluation for {element_id}\n")
 
             # The main values to work with
-            sampled_actions = evaluation_metrics_dictionary["sampled_actions"][
-                :, element_id
-            ]
+            sampled_actions = evaluation_metrics_dictionary["sampled_actions"][:, element_id]
             position_ids = evaluation_metrics_dictionary["position_ids"][:, element_id]
-            hunch_llm_final_guesses = evaluation_metrics_dictionary[
-                "hunch_llm_final_guesses"
-            ][:, element_id]
-            questions = evaluation_metrics_dictionary["reference_questions"].iloc[
-                element_id
-            ]
+            hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id]
+            questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
             answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
 
             # Reconstruct the language output
-            print(f"sampled actions shape:\n{sampled_actions.shape}")
-            print(f"position_ids shape:\n {position_ids.shape}")
-
             # for every element in the batch, we decode the 3 actions with 4 elements in them
             predicted_answer = tokenizer.batch_decode(hunch_llm_final_guesses)
 
@@ -368,60 +359,34 @@ def dump_evaluation_metrics(
             answer_txt = tokenizer.decode(answer)
             log_file.write(f"Answer TXT: {answer_txt}\n")
 
-            print(f"Question in text format: {questions_txt}")
-            print(f"Answer in text format: {answer_txt}")
-
-            print(predicted_answer)
-
             # Match the relation that are closest to positions we visit
-            print(
-                f"possible_relation_embeddings.detach().shape:\n{possible_relation_embeddings.detach().shape}"
-            )
-            print(f"sampled_actions.shape:\n{sampled_actions.shape}")
-            # possible_relation_embeddings.detach().numpy(),
-            # sampled_actions.detach().numpy(),
-
-            print(f"embedding_vectors: {vector_rel_searcher.embedding_vectors.shape}")
-
-            matched_vectors, relation_indices = vector_rel_searcher.search(
-                sampled_actions, 1
-            )
+            matched_vectors, relation_indices = vector_rel_searcher.search(sampled_actions, 1)
 
             # matched_vectors, relation_indices = vector_searcher.search(
             #     possible_relation_embeddings.detach().numpy(),
             #     sampled_actions.detach().numpy(),
             # )
 
-            print(f"relation_indices.shape:\n{relation_indices.squeeze().shape}")
-            print(relation_indices.squeeze())
-            # print(f"id2relations: {id2relations.keys()}")
-            relations_names = [
-                id2relations[int(index)] for index in relation_indices.squeeze()
-            ]
+            relations_names = [id2relations[int(index)] for index in relation_indices.squeeze()]
 
             if relation2title: relations_names = [relation2title[index] for index in relations_names]
 
-            print(f"Relations Names: \n{relations_names}")
             log_file.write(f"Relations Names: {relations_names}\n")
 
             # Similarily log the entities visited.
-            # print(f"id2entity.keys:\n{id2entity.keys()}")
             entities_position_ids = evaluation_metrics_dictionary["position_ids"]
-            print(f"position_ids.shape: {position_ids.shape}")
-            print(f"position_ids.type: {type(position_ids)}")
-            entities_names = [
-                id2entity[index] for index in position_ids.detach().numpy().squeeze()
-            ]
+
+            entities_names = [id2entity[index] for index in position_ids.detach().numpy().squeeze()]
+
             if entity2title: entities_names = [entity2title[index] for index in entities_names]
 
             # Craft the string for the final final output
             final_str_output = ""
 
-            print(f"Entity Names: \n{entities_names}")
-
             log_file.write(f"Entity Names: {entities_names}\n")
 
     # TODO: Some other  metrics ?
+    # sys.exit()
 
 def train_multihopkg(
     batch_size: int,
@@ -530,25 +495,14 @@ def calculate_reward(
     seq_max_len = answers_ids.size(1)
     hidden_dim = obtained_state.shape[-1]
 
-    print("In calculate_reward")
-    print(
-        f"batch_size:\n{batch_size}\nseq_max_len:\n{seq_max_len}\nhidden_dim:\n{hidden_dim}"
-    )
-
     # From the obtained_state we will try to find an answer
-    print(f"answers_ids:\n{answers_ids.shape}")
     conditioning_labels = answers_ids[:, 1:].contiguous().to(dtype=torch.int64)
     teacher_forcing_labels = answers_ids[:, :-1].contiguous().to(dtype=torch.int64)
 
-    print(f"obtained_state.shape:\n{obtained_state.shape}")
-    print(f"conditioning_labels.shape:\n{conditioning_labels.shape}")
-    answers_inf_softmax = hunch_llm(
-        graph_embeddings=obtained_state, decoder_input_ids=conditioning_labels
-    )
-    # print(f"asnwer_inf_softmax:\n{answers_inf_softmax.shape}")
+    answers_inf_softmax = hunch_llm(graph_embeddings=obtained_state, decoder_input_ids=conditioning_labels)
+
     _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
 
-    print(f"logits shape: {logits.shape}")
     loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
 
     loss = loss_fn(logits.view(-1, logits.shape[-1]), teacher_forcing_labels.view(-1))
@@ -789,9 +743,6 @@ def main():
     # Will be needed for obtaining observations.
     ########################################
     logger.info(":: Setting up the ANN Index")
-    print(
-        f"knowledge_graph.get_all_entity_embeddings_wo_dropout().shape:\n{knowledge_graph.get_all_entity_embeddings_wo_dropout().shape}"
-    )
 
     ########################################
     # Setup the Vector Searchers
