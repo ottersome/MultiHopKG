@@ -867,6 +867,14 @@ def main():
         dim_observation=args.history_dim,  # observation will be into history
     )
 
+    # ======================================
+    # Visualizaing nav_agent models using Netron
+    # Save a model into .onnx format
+    # torch_input = torch.randn(12, 768)
+    # onnx_program = torch.onnx.dynamo_export(nav_agent, torch_input)
+    # onnx_program.save("models/images/nav_agent.onnx")
+    # ======================================
+
     # TODO: Add checkpoint support
     # See args.start_epoch
 

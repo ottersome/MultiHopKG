@@ -120,6 +120,7 @@ data
 data-release.tgz
 TODO.md
 models/itl
+models/images
 wandb
 models/sun
 launch.json

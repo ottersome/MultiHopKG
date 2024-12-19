@@ -72,7 +72,6 @@ class ContinuousPolicyGradient(nn.Module):
         projections = self.fc1(observations)
         mu = self.mu_layer(projections)
         log_sigma = self.sigma_layer(projections)
-        # log_sigma = torch.clamp(log_sigma, min=-20, max=2) # TODO: Check if this is needed
         sigma = torch.exp(log_sigma)
 
         # Create a normal distribution using the mean and standard deviation
