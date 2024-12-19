@@ -622,8 +622,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
             detached_curpos, detached_actions
         )
 
-        print(f"new_pos.type: {type(new_pos)}")
-        print(f"new_pos.shape: {new_pos.shape}")
         matched_entity_embeddings, corresponding_ent_idxs = self.ann_index_manager_ent.search(
             new_pos, topk=1
         )
