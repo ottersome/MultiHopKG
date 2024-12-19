@@ -96,8 +96,8 @@ def get_args() -> argparse.Namespace:
     # Entity and Relationship Human Readability
     ap.add_argument('--node_data_path', type=str, default='./data/FB15k/node_data.csv', help='Path to the CSV file containing the name mapping for the entity.')
     ap.add_argument('--node_data_key', type=str, default='MID', help='Special key type used for the entity. i.e., MID for FB15k or RDF for Qid for Fb-Wiki.')
-    ap.add_argument('--relationship_data_path', type=str, default=None, help='Path to the CSV file containing the name mapping for the relationship.')
-    ap.add_argument('--relationship_data_key', type=str, default=None, help='Special key type used for the relationship. i.e., None for FB15k or Property for Fb-Wiki.')
+    ap.add_argument('--relationship_data_path', type=str, default='./data/FB15k/relation_data.csv', help='Path to the CSV file containing the name mapping for the relationship.')
+    ap.add_argument('--relationship_data_key', type=str, default='Relation', help='Special key type used for the relationship. i.e., None for FB15k or Property for Fb-Wiki.')
     
 	# TODO: (eventually) We might want to add option of locally trained models.
     ap.add_argument('--question_embedding_model', type=str, default="bert-base-uncased", help="The Question embedding model to use (default: bert-base-uncased)")
