@@ -532,7 +532,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         if rel_data: # Enters if rel_data is neither a NoneType or an empty string
             # Extracts the dataframe containing the special encoding name (i.e., MID) and proper title (i.e., Title)
             rel_df = pandas.read_csv(rel_data).fillna('')
-            self.rel2title = rel_df.set_index(rel_data_key)['Title'].to_dict()
+            self.relation2title = rel_df.set_index(rel_data_key)['Title'].to_dict()
         ########################################
         # Core States (3/5)
         ########################################
