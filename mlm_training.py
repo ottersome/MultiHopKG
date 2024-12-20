@@ -16,6 +16,7 @@ from typing import List, Tuple, Dict, Any, DefaultDict
 import debugpy
 import ast
 import sys
+import matplotlib.pyplot as plt
 
 import numpy as np
 import pandas as pd
@@ -23,6 +24,8 @@ import torch
 from transformers.models.oneformer.image_processing_oneformer import (
     convert_segmentation_map_to_binary_masks,
 )
+from torch.utils.tensorboard import SummaryWriter 
+
 import wandb
 from rich import traceback
 from sklearn.model_selection import train_test_split
@@ -287,11 +290,11 @@ def evaluate_training(
     # Average out all metrics across batches
     # The dump to wandb
     ########################################
-    for k, v in batch_cumulative_metrics.items():
-        mean_metric = torch.stack(v).mean()
-        if wandb_run is not None:
-            wandb.log({k: mean_metric})
-        logger.debug(f"Metric '{k}' has value {mean_metric}")
+    # for k, v in batch_cumulative_metrics.items():
+    #     mean_metric = torch.stack(v).mean()
+    #     if wandb_run is not None:
+    #         wandb.log({k: mean_metric})
+    #     logger.debug(f"Metric '{k}' has value {mean_metric}")
 
     # ########################################
     # if verbose and logger:
@@ -431,6 +434,8 @@ def train_multihopkg(
     for name, param in nav_agent.named_parameters():
         print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
 
+    writer = SummaryWriter(log_dir=f'runs')
+    
     # Just use Adam Optimizer by default
     optimizer = torch.optim.Adam(  # type: ignore
         filter(lambda p: p.requires_grad, nav_agent.parameters()), lr=learning_rate
@@ -438,6 +443,11 @@ def train_multihopkg(
 
     # Variable to pass for logging
     batch_count = 0
+
+    # variables to track vanishing gradient for nav_agent
+    mu_tracker = [[], []] # mean, and std
+    sigma_tracker = [[], []]
+    fc1_tracker = [[], []]
 
     ########################################
     # Epoch Loop
@@ -492,9 +502,40 @@ def train_multihopkg(
 
             batch_rewards.append(reinforce_terms_mean.item())
             reinforce_terms_mean.backward()
-            optimizer.step()
 
+            # TODO: get grad distribution parameters,
+            # Inspecting vanishing gradient
+            
+            if sample_offset_idx == 0:
+                for name, param in nav_agent.named_parameters():
+                    if (param.requires_grad) and ('bias' not in name) and (param.grad is not None):
+                        
+                        grads = param.grad.detach()
+                            
+                        # Get the mu and sigma
+                        grad_mean = grads.mean().item()
+                        grad_var = grads.var().item()
+
+                        writer.add_scalar(f'{name}/Gradient Mean', grad_mean, epoch_id)
+                        writer.add_scalar(f'{name}/Gradient Var', grad_var, epoch_id)
+                        
+                        print(f"{name} - mean{grad_mean} & var{grad_var}")
+
+                        # TODO: remove?
+                        # if name == "fc1.weight":
+                        #     fc1_tracker[0].append(grad_mean)
+                        #     fc1_tracker[1].append(grad_var)
+                        # if name == "mu_layer.weight":
+                        #     mu_tracker[0].append(grad_mean)
+                        #     mu_tracker[1].append(grad_var)
+                        # if name == "sigma_layer.weight":
+                        #     sigma_tracker[0].append(grad_mean)
+                        #     sigma_tracker[1].append(grad_var)
+
+            optimizer.step()
+        
             batch_count += 1
+        
 
 
 def initialize_path(questions: torch.Tensor):
