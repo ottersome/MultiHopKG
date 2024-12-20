@@ -645,8 +645,9 @@ class ITLGraphEnvironment(Environment, nn.Module):
             position=matched_entity_embeddings,
             position_id=corresponding_ent_idxs,
             state=projected_state,
+            position_emb=detached_curpos,
         )
-
+        
         return observation
 
     def _define_modules(
@@ -734,6 +735,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             position=self.current_position.detach().numpy(),
             position_id=np.zeros((self.current_position.shape[0])),
             state=projected_state,
+            position_emb=self.current_position,
         )
 
         return observation
