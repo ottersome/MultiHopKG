@@ -290,17 +290,17 @@ def evaluate_training(
     # Average out all metrics across batches
     # The dump to wandb
     ########################################
-    # for k, v in batch_cumulative_metrics.items():
-    #     mean_metric = torch.stack(v).mean()
-    #     if wandb_run is not None:
-    #         wandb.log({k: mean_metric})
-    #     logger.debug(f"Metric '{k}' has value {mean_metric}")
+    for k, v in batch_cumulative_metrics.items():
+        mean_metric = torch.stack(v).mean()
+        if wandb_run is not None:
+            wandb.log({k: mean_metric})
+        logger.debug(f"Metric '{k}' has value {mean_metric}")
 
-    # ########################################
-    # if verbose and logger:
-    #     logger.debug("--------Evaluation Metrics--------")
-    #     for k, v in metrics.items():
-    #         logger.debug(f"{k}: {v}")
+    ########################################
+    if verbose and logger:
+        logger.debug("--------Evaluation Metrics--------")
+        for k, v in metrics.items():
+            logger.debug(f"{k}: {v}")
 
     nav_agent.train()
     hunch_llm.train()

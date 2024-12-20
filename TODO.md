@@ -2,6 +2,8 @@
 
 (Descending Priority)
 
+- [ ] Try to retrain the embedding models
+- [ ] Suspicion that the continuous action space is not learning properly
 - [ ] Ensure that all the parts of tehe computation graph are connecting and calcuating things.
     - For this stuff I can imagine use using stuff like `torchviz` to visualizing. I tried but `torchviz` reveals too much.\
 - [ ] Writing a suite of tools for  troubleshooting.
