@@ -217,38 +217,42 @@ def evaluate_training(
     )  # For storing results from last batch. Otherwise too much info
 
     with torch.no_grad():
-        for batch_id in range(num_batches):
-            # TODO: Get the rollout working
-            mini_batch = dev_df[
-                batch_id * batch_size_dev : (batch_id + 1) * batch_size_dev
-            ]
-            if not isinstance(  # TODO: Remove this assertion once it is never ever met again
-                mini_batch, pd.DataFrame
-            ):  # For the lsp to give me a break
-                raise RuntimeError(
-                    f"The mini batch is not a pd.DataFrame, but a {type(mini_batch)}. Please check the data loading code."
-                )
-            if (
-                len(mini_batch) < batch_size_dev
-            ):  # We dont want to evaluate on incomplete batches
-                continue
+        # for batch_id in range(num_batches):
 
-            current_evaluations["reference_questions"] = mini_batch["question"]
-            current_evaluations["true_answer"] = mini_batch["answer"]
-
-            # Get the Metrics
-            pg_loss, eval_extras = batch_loop_dev(
-                env, mini_batch, nav_agent, hunch_llm, steps_in_episode
+        # We will only evaluate on the last batch
+        batch_id = num_batches - 1
+        # TODO: Get the rollout working
+        mini_batch = dev_df[
+            batch_id * batch_size_dev : (batch_id + 1) * batch_size_dev
+        ]
+        if not isinstance(  # TODO: Remove this assertion once it is never ever met again
+            mini_batch, pd.DataFrame
+        ):  # For the lsp to give me a break
+            raise RuntimeError(
+                f"The mini batch is not a pd.DataFrame, but a {type(mini_batch)}. Please check the data loading code."
             )
+        # if (
+        #     len(mini_batch) < batch_size_dev
+        # ):  # We dont want to evaluate on incomplete batches
+        #     continue
 
-            current_evaluations["sampled_actions"] = eval_extras["sampled_actions"]
-            current_evaluations["position_ids"] = eval_extras["position_ids"]
-            current_evaluations["hunch_llm_final_guesses"] = eval_extras[
-                "hunch_llm_final_guesses"
-            ]
+        current_evaluations["reference_questions"] = mini_batch["question"]
+        current_evaluations["true_answer"] = mini_batch["answer"]
 
-            # Accumlate the metrics
-            batch_cumulative_metrics["dev/pg_loss"].append(pg_loss.mean().item())
+        # Get the Metrics
+        pg_loss, eval_extras = batch_loop_dev(
+            env, mini_batch, nav_agent, hunch_llm, steps_in_episode
+        )
+
+        current_evaluations["sampled_actions"] = eval_extras["sampled_actions"]
+        current_evaluations["position_ids"] = eval_extras["position_ids"]
+        current_evaluations["position_emb"] = eval_extras["position_emb"]
+        current_evaluations["hunch_llm_final_guesses"] = eval_extras[
+            "hunch_llm_final_guesses"
+        ]
+
+        # Accumlate the metrics
+        batch_cumulative_metrics["dev/pg_loss"].append(pg_loss.mean().item())
 
     ########################################
     # Take `current_evaluations` as
@@ -344,6 +348,7 @@ def dump_evaluation_metrics(
             # The main values to work with
             sampled_actions = evaluation_metrics_dictionary["sampled_actions"][:, element_id]
             position_ids = evaluation_metrics_dictionary["position_ids"][:, element_id]
+            position_emb = evaluation_metrics_dictionary["position_emb"][:, element_id]
             hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id]
             questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
             answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
@@ -352,12 +357,11 @@ def dump_evaluation_metrics(
             # for every element in the batch, we decode the 3 actions with 4 elements in them
             predicted_answer = tokenizer.batch_decode(hunch_llm_final_guesses)
 
-            log_file.write(f"Predicted Answer: {predicted_answer}\n")
-
             questions_txt = tokenizer.decode(questions)
-            log_file.write(f"Question TXT: {questions_txt}\n")
             answer_txt = tokenizer.decode(answer)
-            log_file.write(f"Answer TXT: {answer_txt}\n")
+            log_file.write(f"Question: {questions_txt}\n")
+            log_file.write(f"Answer: {answer_txt}\n")
+            log_file.write(f"HunchLLM Answer: {predicted_answer}\n")
 
             # Match the relation that are closest to positions we visit
             matched_vectors, relation_indices = vector_rel_searcher.search(sampled_actions, 1)
@@ -367,23 +371,37 @@ def dump_evaluation_metrics(
             #     sampled_actions.detach().numpy(),
             # )
 
-            relations_names = [id2relations[int(index)] for index in relation_indices.squeeze()]
+            relations_tokens = [id2relations[int(index)] for index in relation_indices.squeeze()]
+            log_file.write(f"Relations Tokens: {relations_tokens}\n")
 
-            if relation2title: relations_names = [relation2title[index] for index in relations_names]
+            if relation2title: 
+                relations_names = [relation2title[index] for index in relations_tokens]
+                log_file.write(f"Relations Names: {relations_names}\n")
 
-            log_file.write(f"Relations Names: {relations_names}\n")
+            action_distance = []
+            for i0 in range(sampled_actions.shape[0] -1 ):
+                action_distance.append(f"{torch.dist(sampled_actions[i0], sampled_actions[i0+1]).item():.2e}")
+            
+            log_file.write(f"Distance between Actions: {action_distance} \n")
 
             # Similarily log the entities visited.
             entities_position_ids = evaluation_metrics_dictionary["position_ids"]
 
-            entities_names = [id2entity[index] for index in position_ids.detach().numpy().squeeze()]
+            entities_tokens = [id2entity[index] for index in position_ids.detach().numpy().squeeze()]
+            log_file.write(f"Entity Tokens: {entities_tokens}\n")
 
-            if entity2title: entities_names = [entity2title[index] for index in entities_names]
+            if entity2title: 
+                entities_names = [entity2title[index] for index in entities_tokens]
+                log_file.write(f"Entity Names: {entities_names}\n")
 
+            position_distance = []
+            for i0 in range(position_emb.shape[0] -1 ):
+                position_distance.append(f"{torch.dist(position_emb[i0], position_emb[i0+1]).item():.2e}")
+            
+            log_file.write(f"Distance between Positions: {position_distance} \n")
             # Craft the string for the final final output
             final_str_output = ""
 
-            log_file.write(f"Entity Names: {entities_names}\n")
 
     # TODO: Some other  metrics ?
     # sys.exit()
@@ -576,6 +594,7 @@ def rollout(
         states = observations.state
         visited_embeddings = torch.from_numpy(observations.position)
         position_ids = torch.from_numpy(observations.position_id)
+        position_emb = observations.position_emb
         # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
 
@@ -606,6 +625,7 @@ def rollout(
             eval_metrics["sampled_actions"].append(sampled_actions)
             eval_metrics["visited_embeddings"].append(visited_embeddings)
             eval_metrics["position_ids"].append(position_ids)
+            eval_metrics["position_emb"].append(position_emb)
             eval_metrics["hunch_llm_final_guesses"].append(logits.argmax(dim=-1))
 
     # if dev_mode:

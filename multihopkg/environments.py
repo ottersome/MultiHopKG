@@ -12,6 +12,7 @@ class Observation:
     position: np.ndarray # Debugging
     position_id: np.ndarray # Debuggin
     state: torch.Tensor # Part of computation Graph
+    position_emb: torch.Tensor # ! Eduin: I have no better name for it, current position embedding without ANN usage
 
 class Environment(ABC):
 
