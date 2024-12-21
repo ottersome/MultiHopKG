@@ -51,6 +51,7 @@ from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 from multihopkg.run_configs import alpha
 from multihopkg.utils.setup import set_seeds
 from multihopkg.vector_search import ANN_IndexMan
+from multihopkg.logs import torch_module_logging
 
 # PCA
 from sklearn.decomposition import PCA
@@ -531,6 +532,7 @@ def train_multihopkg(
     verbose: bool,
     visualize: bool,
     tokenizer: PreTrainedTokenizer,
+    track_gradients: bool,
 ):
     # TODO: Get the rollout working
 
@@ -567,6 +569,10 @@ def train_multihopkg(
     mu_tracker = [[], []] # mean, and std
     sigma_tracker = [[], []]
     fc1_tracker = [[], []]
+
+    # Replacement for the hooks
+    if track_gradients:
+        grad_logger = torch_module_logging.ModuleSupervisor(nav_agent)
 
     ########################################
     # Epoch Loop
@@ -625,6 +631,17 @@ def train_multihopkg(
 
             batch_rewards.append(reinforce_terms_mean.item())
             reinforce_terms_mean.backward()
+
+            # TODO: get grad distribution parameters,
+            # Inspecting vanishing gradient
+            
+            if sample_offset_idx == 0:
+
+                # Ask for the DAG to be dumped
+                if track_gradients:
+                    grad_logger.dump_visual_dag(destination_path=f"./figures/grads/dag_{epoch_id:02d}.png", figsize=(10, 10)) # type: ignore
+
+            optimizer.step()
 
             if torch.all(nav_agent.mu_layer.weight.grad == 0):
                 print("Gradients are zero for mu_layer!")
@@ -1177,6 +1194,7 @@ def main():
         verbose=args.verbose,
         visualize=args.visualize,
         tokenizer=tokenizer,
+        track_gradients=args.track_gradients
     )
     logger.info("Done with everything. Exiting...")
 
