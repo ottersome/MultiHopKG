@@ -49,6 +49,7 @@ from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 from multihopkg.run_configs import alpha
 from multihopkg.utils.setup import set_seeds
 from multihopkg.vector_search import ANN_IndexMan
+from multihopkg.logs import torch_module_logging
 
 traceback.install()
 wandb_run = None
@@ -424,6 +425,7 @@ def train_multihopkg(
     mbatches_b4_eval: int,
     verbose: bool,
     tokenizer: PreTrainedTokenizer,
+    track_gradients: bool,
 ):
     # TODO: Get the rollout working
 
@@ -444,10 +446,14 @@ def train_multihopkg(
     # Variable to pass for logging
     batch_count = 0
 
-    # variables to track vanishing gradient for nav_agent
+    # TOREM: variables to track vanishing gradient for nav_agent
     mu_tracker = [[], []] # mean, and std
     sigma_tracker = [[], []]
     fc1_tracker = [[], []]
+
+    # Replacement for the hooks
+    if track_gradients:
+        grad_logger = torch_module_logging.ModuleSupervisor(nav_agent)
 
     ########################################
     # Epoch Loop
@@ -507,20 +513,24 @@ def train_multihopkg(
             # Inspecting vanishing gradient
             
             if sample_offset_idx == 0:
-                for name, param in nav_agent.named_parameters():
-                    if (param.requires_grad) and ('bias' not in name) and (param.grad is not None):
-                        
-                        grads = param.grad.detach()
-                            
-                        # Get the mu and sigma
-                        grad_mean = grads.mean().item()
-                        grad_var = grads.var().item()
 
-                        writer.add_scalar(f'{name}/Gradient Mean', grad_mean, epoch_id)
-                        writer.add_scalar(f'{name}/Gradient Var', grad_var, epoch_id)
-                        
-                        print(f"{name} - mean{grad_mean} & var{grad_var}")
-
+                # Ask for the DAG to be dumped
+                if track_gradients:
+                    grad_logger.dump_visual_dag(destination_path=f"./figures/grad/dag_{epoch_id:02d}.png", figsize=(10, 10)) # type: ignore
+                # for name, param in nav_agent.named_parameters():
+                #     if (param.requires_grad) and ('bias' not in name) and (param.grad is not None):
+                #         
+                #         grads = param.grad.detach()
+                #             
+                #         # Get the mu and sigma
+                #         grad_mean = grads.mean().item()
+                #         grad_var = grads.var().item()
+                #
+                #         writer.add_scalar(f'{name}/Gradient Mean', grad_mean, epoch_id)
+                #         writer.add_scalar(f'{name}/Gradient Var', grad_var, epoch_id)
+                #         
+                #         print(f"{name} - mean{grad_mean} & var{grad_var}")
+                #
                         # TODO: remove?
                         # if name == "fc1.weight":
                         #     fc1_tracker[0].append(grad_mean)
@@ -929,6 +939,7 @@ def main():
         mbatches_b4_eval=args.batches_b4_eval,
         verbose=args.verbose,
         tokenizer=tokenizer,
+        track_gradients=args.track_gradients
     )
     logger.info("Done with everything. Exiting...")
 

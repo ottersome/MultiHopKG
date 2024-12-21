@@ -109,6 +109,10 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--pretrained_llm_transformer_ckpnt_path', type=str, default="models/itl/pretrained_transformer_e1_s9176.ckpt", help="The path to the pretrained language model transformer weights (default: models/itl/pretrained_transformer_e1_s9176.ckpt)")
     ap.add_argument('--pretrained_sun_model_loc', type=str, default="models/sun", help="The path to the pretrained language model transformer weights (default: models/itl/pretrained_transformer_e1_s9176.ckpt)")
 
+    # Some Verbose stuff
+    ap.add_argument('--verbose','-v',action="store_true", help="Verbose on the results of evaluation.")
+    ap.add_argument('--track_gradients', '-g', action='store_true', help='track gradients')
+
     # Wand DB Modell
     ap.add_argument("-w", "--wandb", action="store_true")
     ap.add_argument("--wandb_project_name", help="wandb: Project name label", type=str)
@@ -125,7 +129,6 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--llm_dropout_rate", default=0.1)
     ap.add_argument("--max_seq_length", default=1024)
     ap.add_argument('--batches_b4_eval', type=int, default=1, help='Number of batches to run before evaluation (default: 100)')
-    ap.add_argument('--verbose','-v',action="store_true", help="Verbose on the results of evaluation.")
 
 
     # NOTE: Legacy Parameters
