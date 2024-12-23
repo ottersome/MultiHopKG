@@ -26,6 +26,7 @@ from multihopkg.utils.ops import int_var_cuda, var_cuda
 from typing import Dict, List, Tuple, Optional, Union
 import pdb
 
+import sys
 
 class KnowledgeGraph(nn.Module):
     """
@@ -641,7 +642,8 @@ class SunKnowledgeGraph(nn.Module):
         self.id2entity = id2entity
         self.entity2id = entity2id
         self.id2relation = id2relation
-        self.relation2id = relation2id   
+        self.relation2id = relation2id
+
         #TOREM: I don't like this hardcoding, but I am leaving it in case I need to go back to it.
         # self.id2entity, self.entit2id = self._load_token_dict(
         #     os.path.join(data_path, "entities.dict")
@@ -692,6 +694,28 @@ class SunKnowledgeGraph(nn.Module):
             open(os.path.join(pretrained_sun_model_path, "config.json"))
         )
 
+        for param in self.sun_model.parameters():
+            param.requires_grad = False
+
+        # ! SANITY CHECK: Making sure the trained model performs the same after reloading
+
+        # # ! For sanity check only, remove later, comment out if not needed
+        # train_triples = self.read_triple(os.path.join(data_path, 'train.txt'), self.entity2id, self.relation2id)
+        # valid_triples = self.read_triple(os.path.join(data_path, 'valid.txt'), self.entity2id, self.relation2id)
+        # test_triples = self.read_triple(os.path.join(data_path, 'test.txt'), self.entity2id, self.relation2id)
+
+        # #All true triples
+        # all_true_triples = train_triples + valid_triples + test_triples
+        # del train_triples
+        # del valid_triples
+
+        # print(f"Running Evaluation on Sun Model")
+        # # ! Improve input arguments
+        # metrics = self.sun_model.test_step(model=self.sun_model, test_triples=test_triples, all_true_triples=all_true_triples,
+        #                                    nentity=self.num_entities, nrelation=self.num_relations,
+        #                                    cpu_num=10, cuda=True, test_batch_size=25)
+        # print(f"Sun Eval Metrics: {metrics}")
+
         # NOTE: not sure if centroid is the correct approach but seemed like the first naive idea.
         self.centroid = calculate_entity_centroid(self.sun_model.entity_embedding)
 
@@ -717,7 +741,18 @@ class SunKnowledgeGraph(nn.Module):
         return self.sun_model.entity_embedding.data
 
     def get_all_relations_embeddings_wo_dropout(self) -> torch.Tensor:
-        # assert isinstance(self.sun_model.entity_embedding, nn.Parameter) or isinstance(
-        #     self.sun_model.entity_embedding, nn.Embedding
-        # ), "The entity embedding must be either a nn.Parameter or nn.Embedding"
+        assert isinstance(self.sun_model.relation_embedding, nn.Parameter) or isinstance(
+            self.sun_model.relation_embedding, nn.Embedding
+        ), "The relation embedding must be either a nn.Parameter or nn.Embedding"
         return self.sun_model.relation_embedding
+
+    def read_triple(self, file_path, entity2id, relation2id):
+        '''
+        Read triples and map them into ids.
+        '''
+        triples = []
+        with open(file_path) as fin:
+            for line in fin:
+                h, r, t = line.strip().split('\t')
+                triples.append((entity2id[h], relation2id[r], entity2id[t]))
+        return triples

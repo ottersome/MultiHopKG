@@ -290,6 +290,7 @@ def evaluate_training(
     # Average out all metrics across batches
     # The dump to wandb
     ########################################
+    """
     for k, v in batch_cumulative_metrics.items():
         mean_metric = torch.stack(v).mean()
         if wandb_run is not None:
@@ -307,6 +308,7 @@ def evaluate_training(
     env.train()
     dev_mode = False
     logger.info("Done with Evaluation")
+    """
     # TODO: Implement this
 
 
@@ -434,11 +436,21 @@ def train_multihopkg(
     for name, param in nav_agent.named_parameters():
         print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
 
+    for name, param in env.named_parameters():
+        if param.requires_grad: print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
+
     writer = SummaryWriter(log_dir=f'runs')
     
     # Just use Adam Optimizer by default
+    # optimizer = torch.optim.Adam(  # type: ignore
+    #     filter(lambda p: p.requires_grad, nav_agent.parameters()), lr=learning_rate
+    # )
     optimizer = torch.optim.Adam(  # type: ignore
-        filter(lambda p: p.requires_grad, nav_agent.parameters()), lr=learning_rate
+        filter(
+            lambda p: p.requires_grad,
+            list(env.parameters()) + list(nav_agent.parameters())
+        ),
+        lr=learning_rate
     )
 
     # Variable to pass for logging
@@ -519,18 +531,34 @@ def train_multihopkg(
                         writer.add_scalar(f'{name}/Gradient Mean', grad_mean, epoch_id)
                         writer.add_scalar(f'{name}/Gradient Var', grad_var, epoch_id)
                         
-                        print(f"{name} - mean{grad_mean} & var{grad_var}")
+                        print(f"{name} gradient -  mean {grad_mean} & var {grad_var}")
 
-                        # TODO: remove?
-                        # if name == "fc1.weight":
-                        #     fc1_tracker[0].append(grad_mean)
-                        #     fc1_tracker[1].append(grad_var)
-                        # if name == "mu_layer.weight":
-                        #     mu_tracker[0].append(grad_mean)
-                        #     mu_tracker[1].append(grad_var)
-                        # if name == "sigma_layer.weight":
-                        #     sigma_tracker[0].append(grad_mean)
-                        #     sigma_tracker[1].append(grad_var)
+                for name, param in env.named_parameters():
+                    if (param.requires_grad) and ('bias' not in name) and (param.grad is not None):
+                        grads = param.grad.detach()
+                            
+                        # Get the mu and sigma
+                        grad_mean = grads.mean().item()
+                        grad_var = grads.var().item()
+
+                        writer.add_scalar(f'{name}/Gradient Mean', grad_mean, epoch_id)
+                        writer.add_scalar(f'{name}/Gradient Var', grad_var, epoch_id)
+                        
+                        print(f"{name} gradient - mean {grad_mean} & var{grad_var}")
+
+                for name, param in hunch_llm.named_parameters():
+                    if (param.requires_grad) and ('bias' not in name) and (param.grad is not None):
+                        assert False, "Cheating Detected!!! You scum bag. You are not supposed to train the language model."
+                        grads = param.grad.detach()
+                            
+                        # Get the mu and sigma
+                        grad_mean = grads.mean().item()
+                        grad_var = grads.var().item()
+
+                        writer.add_scalar(f'{name}/Gradient Mean', grad_mean, epoch_id)
+                        writer.add_scalar(f'{name}/Gradient Var', grad_var, epoch_id)
+                        
+                        print(f"{name} - mean{grad_mean} & var{grad_var}")
 
             optimizer.step()
         
@@ -570,8 +598,8 @@ def calculate_reward(
     # Reshape the reward to the batch size
     reward = reward.view(batch_size, -1)
 
-    # Get indices of the max value of the final output
-    answers_inf_ids = torch.argmax(logits, dim=-1)
+    # # Get indices of the max value of the final output
+    # answers_inf_ids = torch.argmax(logits, dim=-1)
 
     return reward, logits
 
@@ -835,12 +863,21 @@ def main():
         pretrained_bart_model=args.pretrained_llm_for_hunch,
     )
 
+    # Freeze the Hunch LLM
+    for param in hunch_llm.parameters():
+        param.requires_grad = False
+
     if args.further_train_hunchs_llm:
         # TODO: Ensure we dont have to freeze the model for this.
         hunch_llm.freeze_llm()
 
     # Setup the entity embedding module
     question_embedding_module = AutoModel.from_pretrained(args.question_embedding_model)
+
+    # Freeze the Question Embedding Module
+    for param in question_embedding_module.parameters():
+        param.requires_grad = False
+
     # Setting up the models
     logger.info(":: Setting up the environment")
     env = ITLGraphEnvironment(
