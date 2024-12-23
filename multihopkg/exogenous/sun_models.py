@@ -14,8 +14,7 @@ import torch.nn.functional as F
 
 from sklearn.metrics import average_precision_score
 
-from torch.utils.data import DataLoader
-
+from torch.utils.data import DataLoader, Dataset
 
 class KGEModel(nn.Module):
     def __init__(
@@ -350,3 +349,136 @@ class KGEModel(nn.Module):
         }
 
         return log
+
+    @staticmethod
+    def test_step(model, test_triples, all_true_triples, 
+                  nentity, nrelation, test_batch_size, cpu_num = 1, cuda = False):
+        """
+        Evaluate the model on test or valid datasets
+        """
+        if cuda: model.cuda()
+        model.eval()
+            
+        #Otherwise use standard (filtered) MRR, MR, HITS@1, HITS@3, and HITS@10 metrics
+        #Prepare dataloader for evaluation
+        test_dataloader_head = DataLoader(
+            TestDataset(
+                test_triples, 
+                all_true_triples, 
+                nentity, 
+                nrelation, 
+                'head-batch'
+            ), 
+            batch_size=test_batch_size,
+            num_workers=max(1, cpu_num//2), 
+            collate_fn=TestDataset.collate_fn
+        )
+
+        test_dataloader_tail = DataLoader(
+            TestDataset(
+                test_triples, 
+                all_true_triples, 
+                nentity, 
+                nrelation, 
+                'tail-batch'
+            ), 
+            batch_size=test_batch_size,
+            num_workers=max(1, cpu_num//2), 
+            collate_fn=TestDataset.collate_fn
+        )
+        
+        test_dataset_list = [test_dataloader_head, test_dataloader_tail]
+        
+        logs = []
+
+        step = 0
+        total_steps = sum([len(dataset) for dataset in test_dataset_list])
+
+        with torch.no_grad():
+            for test_dataset in test_dataset_list:
+                for positive_sample, negative_sample, filter_bias, mode in test_dataset:
+                    if cuda:
+                        positive_sample = positive_sample.cuda()
+                        negative_sample = negative_sample.cuda()
+                        filter_bias = filter_bias.cuda()
+
+                    batch_size = positive_sample.size(0)
+
+                    score, _, _, _ = model((positive_sample, negative_sample), mode)
+                    score += filter_bias
+
+                    #Explicitly sort all the entities to ensure that there is no test exposure bias
+                    argsort = torch.argsort(score, dim = 1, descending=True)
+
+                    if mode == 'head-batch':
+                        positive_arg = positive_sample[:, 0]
+                    elif mode == 'tail-batch':
+                        positive_arg = positive_sample[:, 2]
+                    else:
+                        raise ValueError('mode %s not supported' % mode)
+
+                    for i in range(batch_size):
+                        #Notice that argsort is not ranking
+                        ranking = (argsort[i, :] == positive_arg[i]).nonzero()
+                        assert ranking.size(0) == 1
+
+                        #ranking + 1 is the true ranking used in evaluation metrics
+                        ranking = 1 + ranking.item()
+                        logs.append({
+                            'MRR': 1.0/ranking,
+                            'MR': float(ranking),
+                            'HITS@1': 1.0 if ranking <= 1 else 0.0,
+                            'HITS@3': 1.0 if ranking <= 3 else 0.0,
+                            'HITS@10': 1.0 if ranking <= 10 else 0.0,
+                        })
+
+                    step += 1
+                    print(f"Step: {step}/{total_steps}")
+
+        metrics = {}
+        for metric in logs[0].keys():
+            metrics[metric] = sum([log[metric] for log in logs])/len(logs)
+
+        return metrics
+
+class TestDataset(Dataset):
+    def __init__(self, triples, all_true_triples, nentity, nrelation, mode):
+        self.len = len(triples)
+        self.triple_set = set(all_true_triples)
+        self.triples = triples
+        self.nentity = nentity
+        self.nrelation = nrelation
+        self.mode = mode
+
+    def __len__(self):
+        return self.len
+    
+    def __getitem__(self, idx):
+        head, relation, tail = self.triples[idx]
+
+        if self.mode == 'head-batch':
+            tmp = [(0, rand_head) if (rand_head, relation, tail) not in self.triple_set
+                   else (-1, head) for rand_head in range(self.nentity)]
+            tmp[head] = (0, head)
+        elif self.mode == 'tail-batch':
+            tmp = [(0, rand_tail) if (head, relation, rand_tail) not in self.triple_set
+                   else (-1, tail) for rand_tail in range(self.nentity)]
+            tmp[tail] = (0, tail)
+        else:
+            raise ValueError('negative batch mode %s not supported' % self.mode)
+            
+        tmp = torch.LongTensor(tmp)            
+        filter_bias = tmp[:, 0].float()
+        negative_sample = tmp[:, 1]
+
+        positive_sample = torch.LongTensor((head, relation, tail))
+            
+        return positive_sample, negative_sample, filter_bias, self.mode
+    
+    @staticmethod
+    def collate_fn(data):
+        positive_sample = torch.stack([_[0] for _ in data], dim=0)
+        negative_sample = torch.stack([_[1] for _ in data], dim=0)
+        filter_bias = torch.stack([_[2] for _ in data], dim=0)
+        mode = data[0][3]
+        return positive_sample, negative_sample, filter_bias, mode
