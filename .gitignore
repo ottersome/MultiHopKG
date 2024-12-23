@@ -123,6 +123,7 @@ models/itl
 models/images
 wandb
 models/sun
+models/sun_backup
 launch.json
 model_graph
 model_graph.png

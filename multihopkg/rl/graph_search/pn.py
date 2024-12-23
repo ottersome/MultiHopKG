@@ -22,6 +22,7 @@ from multihopkg.environments import Environment, Observation
 from typing import Tuple, List, Optional
 import pdb
 
+import sys
 
 class GraphSearchPolicy(nn.Module):
     def __init__(
@@ -716,9 +717,10 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # Create more complete representation of state
         centroid = self.knowledge_graph.get_centroid()
         tiled_centroids = centroid.unsqueeze(0).repeat(len(initial_states_info), 1)
+
         # concatenations = torch.cat([self.current_questions_emb, tiled_centroids], dim=-1)
         concatenations = torch.cat(
-            [tiled_centroids, self.current_questions_emb], dim=-1
+            [self.current_questions_emb, tiled_centroids], dim=-1
         )
         projected_concat = self.concat_projector(concatenations)
         # NOTE: We were using path encoder here before and are not sure if removing is good idea.
@@ -735,7 +737,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             position=self.current_position.detach().numpy(),
             position_id=np.zeros((self.current_position.shape[0])),
             state=projected_state,
-            position_emb=self.current_position,
+            position_emb=self.current_position.detach(),
         )
 
         return observation
