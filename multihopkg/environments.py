@@ -12,7 +12,8 @@ class Observation:
     position: np.ndarray # Debugging
     position_id: np.ndarray # Debuggin
     state: torch.Tensor # Part of computation Graph
-    position_emb: torch.Tensor # ! Eduin: I have no better name for it, current position embedding without ANN usage
+    position_emb: torch.Tensor # KG embedding vector of the current position
+    position_dist: float # Distance between the previous KGE position and the new one after the flexible sun rotate.
 
 class Environment(ABC):
 

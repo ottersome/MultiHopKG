@@ -694,8 +694,11 @@ class SunKnowledgeGraph(nn.Module):
             open(os.path.join(pretrained_sun_model_path, "config.json"))
         )
 
-        for param in self.sun_model.parameters():
-            param.requires_grad = False
+        self.entity_dim = self.sun_model.entity_embedding.shape[1]
+        self.relation_dim = self.sun_model.relation_embedding.shape[1]
+
+        # for param in self.sun_model.parameters():
+        #     param.requires_grad = False
 
         # ! SANITY CHECK: Making sure the trained model performs the same after reloading
 

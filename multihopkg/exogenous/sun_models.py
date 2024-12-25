@@ -224,6 +224,9 @@ class KGEModel(nn.Module):
         re_relation = torch.cos(phase_relation)
         im_relation = torch.sin(phase_relation)
 
+        # re_relation = torch.cos(relation)
+        # im_relation = torch.sin(relation)
+
         re_est_tail = re_head * re_relation - im_head * im_relation
         im_est_tail = re_head * im_relation + im_head * re_relation
 

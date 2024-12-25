@@ -9,6 +9,9 @@ from multihopkg.knowledge_graph import ITLKnowledgeGraph
 from typing import Tuple
 import pdb
 
+import torch.nn.functional as F
+
+import sys
 
 class ContinuousPolicyGradient(nn.Module):
     # TODO: remove all parameters that are irrelevant here
@@ -71,19 +74,23 @@ class ContinuousPolicyGradient(nn.Module):
         """
         projections = self.fc1(observations)
         mu = self.mu_layer(projections)
-        log_sigma = self.sigma_layer(projections)
+
+        # log_sigma = self.sigma_layer(projections)
+        log_sigma = torch.pi * F.sigmoid(self.sigma_layer(projections))
+        # log_sigma = torch.clamp(self.sigma_layer(projections), min=0, max=torch.e)  # Stabilizing Sigma, Preventing extremes
         sigma = torch.exp(log_sigma)
 
-        # Create a normal distribution using the mean and standard deviation
+        # # Create a normal distribution using the mean and standard deviation
         dist = torch.distributions.Normal(mu, sigma)
-        entropy = dist.entropy().sum(dim=-1)  
+        entropy = dist.entropy().sum(dim=-1)
 
-        # Now Sample from it 
-        # TODO: Ensure we are sampling correctly from this 
+        # # Now Sample from it 
+        # # TODO: Ensure we are sampling correctly from this 
         actions = dist.rsample()
+
         log_probs = dist.log_prob(actions).sum(dim=-1)
 
-        return actions,log_probs, entropy
+        return actions, log_probs, entropy
 
 
     def _define_modules(self, input_dim:int, observation_dim: int, hidden_dim: int):
@@ -92,6 +99,13 @@ class ContinuousPolicyGradient(nn.Module):
         
         mu_layer = nn.Linear(hidden_dim, observation_dim)
         sigma_layer = nn.Linear(hidden_dim, observation_dim)
+
+        # Custom initialization
+        nn.init.xavier_uniform_(mu_layer.weight)  # Xavier uniform initialization
+        nn.init.constant_(mu_layer.bias, 0.1)    # Initialize bias to a small positive value
+
+        nn.init.xavier_uniform_(sigma_layer.weight)
+        nn.init.constant_(sigma_layer.bias, -1)  # Bias closer to log(0.1)
 
         return fc1, mu_layer, sigma_layer
 
