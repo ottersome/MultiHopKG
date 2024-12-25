@@ -618,13 +618,18 @@ class ITLGraphEnvironment(Environment, nn.Module):
         ########################################
         # ANN mostly for debugging for now
         ########################################
-        # new_pos = detached_curpos + detached_actions
+
         new_pos = self.knowledge_graph.sun_model.flexible_forward_rotate(
-            detached_curpos, detached_actions
+            self.current_position, actions, 
         )
+        
+        # making sure the movement stays within the neighborhood limit
+        new_pos = torch.clamp(new_pos,
+                            min=self.knowledge_graph.sun_model.entity_embedding.min(),
+                            max=self.knowledge_graph.sun_model.entity_embedding.max()) 
 
         matched_entity_embeddings, corresponding_ent_idxs = self.ann_index_manager_ent.search(
-            new_pos, topk=1
+            new_pos.detach(), topk=1
         )
         # self.current_position = ann_matches # Either
         self.current_position = new_pos  # Or
@@ -635,7 +640,14 @@ class ITLGraphEnvironment(Environment, nn.Module):
         concatenations = torch.cat(
             [self.current_questions_emb, self.current_position], dim=-1
         )
+
+        # ! Currently inspecting projections
+        # Normal Projection
         projected_state = self.concat_projector(concatenations)
+
+        # projected_state = self.concat_projector(self.current_questions_emb, self.current_position)
+
+        # projected_state = F.normalize(projected_state, p=2, dim=1)
 
         # TODO: Think about this, we have a transformer so I dont think we need to do this.
         # concatenations_w_sequence = concatenations.unsqueeze(1)
@@ -646,7 +658,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
             position=matched_entity_embeddings,
             position_id=corresponding_ent_idxs,
             state=projected_state,
-            position_emb=detached_curpos,
+            position_emb=new_pos.detach(),
+            position_dist=torch.norm(detached_curpos - new_pos.detach(), dim=-1),
         )
         
         return observation
@@ -667,7 +680,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         action_dim = relation_dim
         # input_dim = action_dim + question_dim
         # input_dim = action_dim + question_dim
-        input_dim = entity_dim + relation_dim + question_dim
+        input_dim = entity_dim + question_dim
 
         # W1 = nn.Linear(input_dim, action_dim)
         # W2 = nn.Linear(action_dim, action_dim)
@@ -689,6 +702,12 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # State Variables for holding rollout information
         # I might regret this
         self.current_position = None
+
+        # W1 = AttentionFusion(
+        #     semantic_dim=entity_dim + relation_dim,
+        #     text_dim=question_dim,
+        #     fusion_dim=history_dim,
+        # )
 
         return W1, W2, W1Dropout, W2Dropout, path_encoder
 
@@ -716,17 +735,27 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # Create more complete representation of state
         centroid = self.knowledge_graph.get_centroid()
+
         tiled_centroids = centroid.unsqueeze(0).repeat(len(initial_states_info), 1)
 
-        # concatenations = torch.cat([self.current_questions_emb, tiled_centroids], dim=-1)
         concatenations = torch.cat(
             [self.current_questions_emb, tiled_centroids], dim=-1
         )
-        projected_concat = self.concat_projector(concatenations)
+        projected_state = self.concat_projector(concatenations)
+
+        # projected_state = self.concat_projector(self.current_questions_emb, tiled_centroids)
+
+        # projected_concat = torch.clamp(self.concat_projector(concatenations),
+        #                                 min=self.knowledge_graph.sun_model.entity_embedding.min(),
+        #                                 max=self.knowledge_graph.sun_model.entity_embedding.max()) 
+        
         # NOTE: We were using path encoder here before and are not sure if removing is good idea.
 
         # This was for when we were receiving sequences. I mean I gues we still are.
-        projected_state = projected_concat
+        # projected_state = projected_concat
+
+        # projected_state = F.normalize(projected_state, p=2, dim=1)
+
         self.current_step = 0
 
         self.current_position = centroid.unsqueeze(0).repeat(
@@ -738,6 +767,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             position_id=np.zeros((self.current_position.shape[0])),
             state=projected_state,
             position_emb=self.current_position.detach(),
+            position_dist=torch.Tensor([0.0]),
         )
 
         return observation
@@ -758,3 +788,31 @@ class ITLGraphEnvironment(Environment, nn.Module):
 # TODO: Implementn ann
 def run_ann(approximate_states: torch.Tensor) -> torch.Tensor:
     raise NotImplementedError
+
+class AttentionFusion(nn.Module):
+    def __init__(self, text_dim, semantic_dim, fusion_dim):
+        super(AttentionFusion, self).__init__()
+        self.text_projection = nn.Linear(text_dim, fusion_dim)
+        self.semantic_projection = nn.Linear(semantic_dim, fusion_dim)
+        self.query = nn.Linear(fusion_dim, fusion_dim)
+        self.key = nn.Linear(fusion_dim, fusion_dim)
+        self.value = nn.Linear(fusion_dim, fusion_dim)
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, text_embedding, semantic_embedding):
+        # Project embeddings to the common dimensionality
+        text_proj = self.text_projection(text_embedding)
+        semantic_proj = self.semantic_projection(semantic_embedding)
+
+        # Compute query, key, and value for attention
+        query = self.query(text_proj)
+        key = self.key(semantic_proj)
+        value = self.value(semantic_proj)
+
+        # Calculate attention scores
+        attention_scores = torch.bmm(query.unsqueeze(1), key.unsqueeze(2)).squeeze(-1)
+        attention_weights = self.softmax(attention_scores)
+
+        # Weighted sum of values
+        fused_embedding = attention_weights * value
+        return fused_embedding
