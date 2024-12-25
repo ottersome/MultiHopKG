@@ -338,16 +338,18 @@ def evaluate_training(
     ########################################
     """
     for k, v in batch_cumulative_metrics.items():
-        mean_metric = torch.stack(v).mean()
-        if wandb_run is not None:
-            wandb.log({k: mean_metric})
-        logger.debug(f"Metric '{k}' has value {mean_metric}")
+        metric_to_report = 0
+        if isinstance(v[0],torch.Tensor):
+            metric_to_report = torch.stack(v).mean()
+        elif isinstance(v[0], int) or isinstance(v[0], float):
+            metric_to_report = v[0]
+        else:
+            raise ValueError(f"The metric to report is not a tensor or int but rather {type(v[0])}")
 
-    ########################################
-    if verbose and logger:
-        logger.debug("--------Evaluation Metrics--------")
-        for k, v in metrics.items():
-            logger.debug(f"{k}: {v}")
+        if wandb_run is not None:
+            wandb.log({k: metric_to_report})
+        logger.debug(f"Metric '{k}' has value {metric_to_report}")
+
 
     nav_agent.train()
     hunch_llm.train()
