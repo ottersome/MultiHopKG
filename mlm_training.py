@@ -107,7 +107,7 @@ def batch_loop_dev(
     question_embeddings = env.get_llm_embeddings(questions)
     answer_ids_padded_tensor = collate_token_ids_batch(answers).to(torch.int32)
 
-    logger.warn(f"About to go into rollout")
+    logger.warning(f"About to go into rollout")
     log_probs, rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
@@ -121,7 +121,7 @@ def batch_loop_dev(
     ########################################
     # Calculate Reinforce Objective
     ########################################
-    logger.warn(f"We just left dev rollout")
+    logger.warning(f"We just left dev rollout")
     # Compute policy gradient
     rewards_t = torch.stack(rewards).mean(dim=-1).sum(dim=0, keepdim=True)
     log_probs_t = torch.stack(log_probs)
@@ -175,7 +175,24 @@ def batch_loop(
     )  # TODO: I think I need to add the gamma here
     log_probs_t = torch.stack(log_probs)
 
+    rewards_t = rewards_t.expand_as(log_probs_t)
+
+    # gamma = nav_agent.gamma
+    # discounted_rewards = rewards_t.clone()
+    # for t in reversed(range(num_steps - 1)):
+    #     discounted_rewards[t] += gamma * discounted_rewards[t + 1]
+
+    # # Scale rewards instead of normalizing
+    # rewards_t = rewards_t / (torch.abs(rewards_t).max() + 1e-8)
+
+    # Normalize the rewards
+    # rewards_t = (rewards_t - rewards_t.mean()) / (rewards_t.std() + 1e-8)
+    # rewards_t = rewards_t / (torch.abs(rewards_t).max() + 1e-8)
+
     pg_loss = -1 * rewards_t * log_probs_t
+
+    # Policy gradient loss
+    # pg_loss = -1 * (discounted_rewards * log_probs_t)
 
     # TOREM: Maybe we don't need this visualization
     # ########################################
@@ -250,6 +267,7 @@ def evaluate_training(
         current_evaluations["sampled_actions"] = eval_extras["sampled_actions"]
         current_evaluations["position_ids"] = eval_extras["position_ids"]
         current_evaluations["position_emb"] = eval_extras["position_emb"]
+        current_evaluations["position_dist"] = eval_extras["position_dist"]
         current_evaluations["hunch_llm_final_guesses"] = eval_extras[
             "hunch_llm_final_guesses"
         ]
@@ -354,6 +372,7 @@ def dump_evaluation_metrics(
             sampled_actions = evaluation_metrics_dictionary["sampled_actions"][:, element_id]
             position_ids = evaluation_metrics_dictionary["position_ids"][:, element_id]
             position_emb = evaluation_metrics_dictionary["position_emb"][:, element_id]
+            position_dist = evaluation_metrics_dictionary["position_dist"][:, element_id]
             hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id]
             questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
             answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
@@ -390,7 +409,7 @@ def dump_evaluation_metrics(
             log_file.write(f"Distance between Actions: {action_distance} \n")
 
             # Similarily log the entities visited.
-            entities_position_ids = evaluation_metrics_dictionary["position_ids"]
+            # entities_position_ids = evaluation_metrics_dictionary["position_ids"]
 
             entities_tokens = [id2entity[index] for index in position_ids.detach().numpy().squeeze()]
             log_file.write(f"Entity Tokens: {entities_tokens}\n")
@@ -400,10 +419,10 @@ def dump_evaluation_metrics(
                 log_file.write(f"Entity Names: {entities_names}\n")
 
             position_distance = []
-            for i0 in range(position_emb.shape[0] -1 ):
-                position_distance.append(f"{torch.dist(position_emb[i0], position_emb[i0+1]).item():.2e}")
+            for i0 in range(position_dist.shape[0]):
+                position_distance.append(f"{position_dist[i0].item():.2e}")
             
-            log_file.write(f"Distance between Positions: {position_distance} \n")
+            log_file.write(f"Distance between KGE Positions: {position_distance} \n")
             # Craft the string for the final final output
             final_str_output = ""
 
@@ -445,10 +464,12 @@ def train_multihopkg(
     # optimizer = torch.optim.Adam(  # type: ignore
     #     filter(lambda p: p.requires_grad, nav_agent.parameters()), lr=learning_rate
     # )
+
+    named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()) + list(hunch_llm.named_parameters()))}
     optimizer = torch.optim.Adam(  # type: ignore
         filter(
             lambda p: p.requires_grad,
-            list(env.parameters()) + list(nav_agent.parameters())
+            list(env.concat_projector.parameters()) + list(nav_agent.parameters())
         ),
         lr=learning_rate
     )
@@ -507,6 +528,7 @@ def train_multihopkg(
             pg_loss, _ = batch_loop(
                 env, mini_batch, nav_agent, hunch_llm, steps_in_episode
             )
+
             if torch.isnan(pg_loss).any():
                 logger.error("NaN detected in the loss. Aborting training.")
                 # pdb.set_trace()
@@ -515,50 +537,42 @@ def train_multihopkg(
             batch_rewards.append(reinforce_terms_mean.item())
             reinforce_terms_mean.backward()
 
+            if torch.all(nav_agent.mu_layer.weight.grad == 0):
+                print("Gradients are zero for mu_layer!")
+
             # TODO: get grad distribution parameters,
             # Inspecting vanishing gradient
             
             if sample_offset_idx == 0:
-                for name, param in nav_agent.named_parameters():
-                    if (param.requires_grad) and ('bias' not in name) and (param.grad is not None):
-                        
+                # Retrieve named parameters from the optimizer
+                named_params = [
+                    (named_param_map[param], param)
+                    for group in optimizer.param_groups
+                    for param in group['params']
+                ]
+
+                # Iterate and calculate gradients as needed
+                for name, param in named_params:
+                    if param.requires_grad and ('bias' not in name) and (param.grad is not None):
+                        if name == 'weight': name = 'concat_projector.weight'               
                         grads = param.grad.detach()
-                            
-                        # Get the mu and sigma
+
+                        # Calculate mean and variance of gradients
                         grad_mean = grads.mean().item()
                         grad_var = grads.var().item()
 
+                        # Process weights
+                        weight_mean = param.detach().mean().item()
+                        weight_var = param.detach().var().item()
+
+                        # Add to writer and print (assuming writer is defined elsewhere)
                         writer.add_scalar(f'{name}/Gradient Mean', grad_mean, epoch_id)
                         writer.add_scalar(f'{name}/Gradient Var', grad_var, epoch_id)
-                        
-                        print(f"{name} gradient -  mean {grad_mean} & var {grad_var}")
+                        writer.add_scalar(f'{name}/Weight Mean', weight_mean, epoch_id)
+                        writer.add_scalar(f'{name}/Weight Var', weight_var, epoch_id)
 
-                for name, param in env.named_parameters():
-                    if (param.requires_grad) and ('bias' not in name) and (param.grad is not None):
-                        grads = param.grad.detach()
-                            
-                        # Get the mu and sigma
-                        grad_mean = grads.mean().item()
-                        grad_var = grads.var().item()
-
-                        writer.add_scalar(f'{name}/Gradient Mean', grad_mean, epoch_id)
-                        writer.add_scalar(f'{name}/Gradient Var', grad_var, epoch_id)
-                        
-                        print(f"{name} gradient - mean {grad_mean} & var{grad_var}")
-
-                for name, param in hunch_llm.named_parameters():
-                    if (param.requires_grad) and ('bias' not in name) and (param.grad is not None):
-                        assert False, "Cheating Detected!!! You scum bag. You are not supposed to train the language model."
-                        grads = param.grad.detach()
-                            
-                        # Get the mu and sigma
-                        grad_mean = grads.mean().item()
-                        grad_var = grads.var().item()
-
-                        writer.add_scalar(f'{name}/Gradient Mean', grad_mean, epoch_id)
-                        writer.add_scalar(f'{name}/Gradient Var', grad_var, epoch_id)
-                        
-                        print(f"{name} - mean{grad_mean} & var{grad_var}")
+                        print(f"{name} gradient - mean {grad_mean:.4f} & var {grad_var:.4f}")
+                        print(f"{name} weight   - mean {weight_mean:.4f} & var {weight_var:.4f}")
 
             optimizer.step()
         
@@ -593,6 +607,7 @@ def calculate_reward(
     loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
 
     loss = loss_fn(logits.view(-1, logits.shape[-1]), teacher_forcing_labels.view(-1))
+
     reward = -loss
 
     # Reshape the reward to the batch size
@@ -664,6 +679,7 @@ def rollout(
         visited_embeddings = torch.from_numpy(observations.position)
         position_ids = torch.from_numpy(observations.position_id)
         position_emb = observations.position_emb
+        position_dist = observations.position_dist
         # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
 
@@ -677,6 +693,7 @@ def rollout(
         similarity_scores, logits = calculate_reward(
             hunch_llm, stacked_states, answers_ids
         )
+
         rewards.append(similarity_scores)
 
         # TODO: Make obseervations not rely on the question
@@ -695,6 +712,7 @@ def rollout(
             eval_metrics["visited_embeddings"].append(visited_embeddings)
             eval_metrics["position_ids"].append(position_ids)
             eval_metrics["position_emb"].append(position_emb)
+            eval_metrics["position_dist"].append(position_dist)
             eval_metrics["hunch_llm_final_guesses"].append(logits.argmax(dim=-1))
 
     # if dev_mode:
@@ -863,9 +881,9 @@ def main():
         pretrained_bart_model=args.pretrained_llm_for_hunch,
     )
 
-    # Freeze the Hunch LLM
-    for param in hunch_llm.parameters():
-        param.requires_grad = False
+    # # Freeze the Hunch LLM
+    # for param in hunch_llm.parameters():
+    #     param.requires_grad = False
 
     if args.further_train_hunchs_llm:
         # TODO: Ensure we dont have to freeze the model for this.
@@ -874,9 +892,9 @@ def main():
     # Setup the entity embedding module
     question_embedding_module = AutoModel.from_pretrained(args.question_embedding_model)
 
-    # Freeze the Question Embedding Module
-    for param in question_embedding_module.parameters():
-        param.requires_grad = False
+    # # Freeze the Question Embedding Module
+    # for param in question_embedding_module.parameters():
+    #     param.requires_grad = False
 
     # Setting up the models
     logger.info(":: Setting up the environment")
