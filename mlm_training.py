@@ -175,23 +175,27 @@ def batch_loop(
     )  # TODO: I think I need to add the gamma here
     log_probs_t = torch.stack(log_probs)
 
-    rewards_t = rewards_t.expand_as(log_probs_t)
+    rewards_t = rewards_t.expand_as(log_probs_t) # TOREM: This is a hack to make the shapes match
+    # ! Modifying the rewards to stabilize training
+    # ! Approach 1: Use the rewards as is
 
+    # ! Approach 2: Use the discounted rewards
     # gamma = nav_agent.gamma
     # discounted_rewards = rewards_t.clone()
     # for t in reversed(range(num_steps - 1)):
     #     discounted_rewards[t] += gamma * discounted_rewards[t + 1]
 
-    # # Scale rewards instead of normalizing
+    # ! Approach 3: Use the rewards as is but scale them
+    # Scale rewards instead of normalizing
     # rewards_t = rewards_t / (torch.abs(rewards_t).max() + 1e-8)
 
+    # ! Approach 4: Use the rewards as is but normalize them with the mean and std
     # Normalize the rewards
     # rewards_t = (rewards_t - rewards_t.mean()) / (rewards_t.std() + 1e-8)
-    # rewards_t = rewards_t / (torch.abs(rewards_t).max() + 1e-8)
 
     pg_loss = -1 * rewards_t * log_probs_t
 
-    # Policy gradient loss
+    # ! Approach 2: Use the discounted rewards
     # pg_loss = -1 * (discounted_rewards * log_probs_t)
 
     # TOREM: Maybe we don't need this visualization

@@ -799,6 +799,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
 def run_ann(approximate_states: torch.Tensor) -> torch.Tensor:
     raise NotImplementedError
 
+# ! Approach 2 for the TextualEmb + KGE Projections (Gradients are not moving, must recheck)
 class AttentionFusion(nn.Module):
     def __init__(self, text_dim, semantic_dim, fusion_dim):
         super(AttentionFusion, self).__init__()
