@@ -553,7 +553,11 @@ class ITLKnowledgeGraph(nn.Module):
         ), "No support yet for relation only graphs"
 
         # TOTWEAK: not sure if centroid is the correct approach but seemed like the first naive idea.
+        # ! Approach 1: Calculate the centroid of the entity embeddings as a starting point
         self.centroid = calculate_entity_centroid(self.entity_embeddings)
+        
+        # ! Approach 2: Sample a random entity as a starting point
+        # self.centroid = sample_random_entity(self.entity_embeddings)
 
         # Load the dictionary here.
         # NOTE: If using embedding types other than conve, we need to implement that ourselves
@@ -595,6 +599,17 @@ def calculate_entity_centroid(embeddings: Union[nn.Embedding, nn.Parameter]):
     elif isinstance(embeddings, nn.Embedding):
         entity_centroid = torch.mean(embeddings.weight.data, dim=0)
     return entity_centroid
+
+def sample_random_entity(embeddings: Union[nn.Embedding, nn.Parameter]):
+    if isinstance(embeddings, nn.Parameter):
+        num_entities = embeddings.data.shape[0]
+        idx = torch.randint(0, num_entities, (1,))
+        sample = embeddings.data[idx].squeeze()
+    elif isinstance(embeddings, nn.Embedding):
+        num_entities = embeddings.weight.data.shape[0]
+        idx = torch.randint(0, num_entities, (1,))
+        sample = embeddings.weight.data[idx].squeeze()
+    return sample
 
 
 class SunKnowledgeGraph(nn.Module):
@@ -720,7 +735,11 @@ class SunKnowledgeGraph(nn.Module):
         # print(f"Sun Eval Metrics: {metrics}")
 
         # NOTE: not sure if centroid is the correct approach but seemed like the first naive idea.
+        # ! Approach 1: Calculate the centroid of the entity embeddings as a starting point
         self.centroid = calculate_entity_centroid(self.sun_model.entity_embedding)
+
+        # ! Approach 2: Sample a random entity as a starting point
+        # self.centroid = sample_random_entity(self.sun_model.entity_embedding)
 
         # Load the dictionary here.
         # NOTE: If using embedding types other than conve, we need to implement that ourselves
