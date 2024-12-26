@@ -421,8 +421,8 @@ def dump_evaluation_metrics(
 
             # Match the relation that are closest to positions we visit
             _, relation_indices = vector_rel_searcher.search(kge_action, 1)
-            _, entity_indices = vector_entity_searcher.search(kge_cur_pos, 1)
-            _, start_index = vector_entity_searcher.search(kge_prev_pos, 1)
+            entity_emb, entity_indices = vector_entity_searcher.search(kge_cur_pos, 1)
+            prev_emb, start_index = vector_entity_searcher.search(kge_prev_pos, 1)
 
             # combine index of start_index with the rest of entity_indices into pos_ids
             pos_ids = np.concatenate((start_index[0][:, None], entity_indices), axis=0)
@@ -455,8 +455,19 @@ def dump_evaluation_metrics(
             position_distance = []
             for i0 in range(kge_cur_pos.shape[0]):
                 position_distance.append(f"{torch.dist(kge_prev_pos[i0], kge_cur_pos[i0]).item():.2e}")
-            
+
             log_file.write(f"Distance between KGE Positions: {position_distance} \n")
+
+            closest_distance = []
+            for i0 in range(kge_cur_pos.shape[0]):
+                closest_distance.append(f"{torch.dist(kge_cur_pos[i0], torch.tensor(entity_emb[i0])).item():.2e}")
+
+            log_file.write(f"Distance between KGE Current Positions & Closest Entity: {closest_distance} \n")
+
+            start_distance = f"{torch.dist(kge_prev_pos[0], torch.tensor(prev_emb[0])).item():.2e}"
+
+            log_file.write(f"Distance between KGE Start Position & Closest Entity: {start_distance} \n")
+
             # Craft the string for the final final output
             final_str_output = ""
 
@@ -466,11 +477,15 @@ def dump_evaluation_metrics(
         cur_pos_mag = np.abs(cur_pos[:, :1000] + 1j*cur_pos[:, 1000:])
         cur_pos_pca = trained_pca.transform(cur_pos_mag)
 
+        closest_entities_mag = np.abs(entity_emb[:, :1000] + 1j*entity_emb[:, 1000:])
+        closest_entities_pca = trained_pca.transform(closest_entities_mag)
+
         # Do not forget to subsample the graph, too many elements
         ax.clear()
         ax.scatter(graph_pca[:, 0], graph_pca[:, 1], c='b', label="Graph", alpha=0.4)
         ax.scatter(cur_pos_pca[:, 0], cur_pos_pca[:, 1], c='g', label="Initial Pos", alpha=0.4, marker='s')
         ax.scatter(initial_pos_pca[:, 0], initial_pos_pca[:, 1], c='r', label="Initial Pos", alpha=0.8, marker='^')
+        ax.scatter(closest_entities_pca[:, 0], closest_entities_pca[:, 1], c='y', label="Closest Entities", alpha=0.8, marker='x')
 
         # Set the title and labels
         ax.set_title(f"Visualization of Graph and Positions | Frame {frame_count}\nEvaluation for the last Question")

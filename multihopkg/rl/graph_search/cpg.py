@@ -77,13 +77,13 @@ class ContinuousPolicyGradient(nn.Module):
 
         # ! Stabilizing Sigma, Limiting the values for the actions to be within a certain range [-pi, pi] for the phase
         # ! Approach 1: Default
-        # log_sigma = self.sigma_layer(projections)
+        log_sigma = self.sigma_layer(projections)
 
         # ! Approach 2: Clampings
         # log_sigma = torch.clamp(self.sigma_layer(projections), min=0, max=torch.pi)  # Stabilizing Sigma, Preventing extremes
 
         # ! Approach 3: Sigmoid
-        log_sigma = torch.pi * F.sigmoid(self.sigma_layer(projections))
+        # log_sigma = torch.pi * F.sigmoid(self.sigma_layer(projections))
 
         sigma = torch.exp(log_sigma)
 
@@ -109,7 +109,7 @@ class ContinuousPolicyGradient(nn.Module):
 
         # ! Testing different initialization methods
         # ! Approach 1: Default Initialization
-        
+
         # ! Approach 2: Xavier Uniform Initialization (Works better)
         # Custom initialization
         nn.init.xavier_uniform_(mu_layer.weight)  # Xavier uniform initialization

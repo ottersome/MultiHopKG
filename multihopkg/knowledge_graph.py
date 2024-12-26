@@ -754,6 +754,7 @@ class SunKnowledgeGraph(nn.Module):
         return self.relation_dim
 
     def get_centroid(self) -> torch.Tensor:
+        self.centroid = sample_random_entity(self.sun_model.entity_embedding)
         return self.centroid
 
     # WE ARE USING THIS ONE
