@@ -503,6 +503,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
         ann_index_manager_ent: ANN_IndexMan,
         ann_index_manager_rel: ANN_IndexMan,
         steps_in_episode: int,
+        trained_pca,
+        graph_pca
     ):
         super(ITLGraphEnvironment, self).__init__()
         # Should be injected via information extracted from Knowledge Grap
@@ -521,6 +523,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.ann_index_manager_ent = ann_index_manager_ent
         self.ann_index_manager_rel = ann_index_manager_rel
         self.steps_in_episode = steps_in_episode
+        self.trained_pca = trained_pca
+        self.graph_pca = graph_pca
 
         self.entity2title = {}
         self.relation2title = {}
