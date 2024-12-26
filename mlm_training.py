@@ -20,6 +20,9 @@ import matplotlib.pyplot as plt
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import time
+
 import torch
 from transformers.models.oneformer.image_processing_oneformer import (
     convert_segmentation_map_to_binary_masks,
@@ -50,11 +53,19 @@ from multihopkg.run_configs import alpha
 from multihopkg.utils.setup import set_seeds
 from multihopkg.vector_search import ANN_IndexMan
 
+# PCA
+from sklearn.decomposition import PCA
+
 traceback.install()
 wandb_run = None
 
 # TODO: Remove before final realease, this is purely for debugging
 in_dev_mode = False
+# for visualization
+initial_pos_flag = True
+frame_count = 1
+ax = None
+fig = None
 
 
 def initialize_model_directory(args, random_seed=None):
@@ -217,6 +228,7 @@ def evaluate_training(
     batch_size_dev: int,
     batch_count: int,
     verbose: bool,
+    verbose2: bool,
     tokenizer: PreTrainedTokenizer,
 ):
     print("Running evalute_training")
@@ -296,7 +308,10 @@ def evaluate_training(
             id2entity=kg.id2entity,					   
             id2relations=kg.id2relation,
             entity2title=env.entity2title,
-            relation2title=env.relation2title,										  
+            relation2title=env.relation2title,
+            trained_pca=env.trained_pca,
+            graph_pca=env.graph_pca,
+            verbose=verbose2,						  
         )
         # TODO: Maybe dump the language metrics in wandb ?
         # table = wandb.Table(
@@ -328,7 +343,7 @@ def evaluate_training(
     logger.info("Done with Evaluation")
     """
     # TODO: Implement this
-
+        
 
 def dump_evaluation_metrics(
     path_to_log: str,
@@ -341,7 +356,15 @@ def dump_evaluation_metrics(
     id2relations: Dict[int, str],
     entity2title: Dict[str, str],
     relation2title: Dict[str, str],
+    trained_pca,
+    graph_pca,
+    verbose: bool,
 ):
+    global initial_pos_flag
+    global fig
+    global ax
+    global frame_count
+
     """
     Will output all of the metrics in a very detailed way for each specific key
     """
@@ -377,6 +400,14 @@ def dump_evaluation_metrics(
             hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id]
             questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
             answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
+
+            # Get the pca of the initial position
+            if verbose:
+                if initial_pos_flag:
+                    initial_pos = kge_prev_pos.numpy()[0].reshape(1, -1)
+                    initial_pos_mag = np.abs(initial_pos[:, :1000] + 1j*initial_pos[:, 1000:])
+                    initial_pos_pca = trained_pca.transform(initial_pos_mag)
+                    initial_pos_flag = False
 
             # Reconstruct the language output
             # for every element in the batch, we decode the 3 actions with 4 elements in them
@@ -429,6 +460,33 @@ def dump_evaluation_metrics(
             # Craft the string for the final final output
             final_str_output = ""
 
+    # Save the emebeddings of the current position and the initial position of the agent
+    if verbose:
+        cur_pos = kge_cur_pos.numpy()
+        cur_pos_mag = np.abs(cur_pos[:, :1000] + 1j*cur_pos[:, 1000:])
+        cur_pos_pca = trained_pca.transform(cur_pos_mag)
+
+        # Do not forget to subsample the graph, too many elements
+        ax.clear()
+        ax.scatter(graph_pca[:, 0], graph_pca[:, 1], c='b', label="Graph", alpha=0.4)
+        ax.scatter(cur_pos_pca[:, 0], cur_pos_pca[:, 1], c='g', label="Initial Pos", alpha=0.4, marker='s')
+        ax.scatter(initial_pos_pca[:, 0], initial_pos_pca[:, 1], c='r', label="Initial Pos", alpha=0.8, marker='^')
+
+        # Set the title and labels
+        ax.set_title(f"Visualization of Graph and Positions | Frame {frame_count}\nEvaluation for the last Question")
+        ax.set_xlabel("PCA Component 1")
+        ax.set_ylabel("PCA Component 2")
+
+        ax.legend()
+
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+
+        visualization_flag = False
+        time.sleep(0.1)
+
+        initial_pos_flag = True
+        frame_count += 1
 
     # TODO: Some other  metrics ?
     # sys.exit()
@@ -447,6 +505,7 @@ def train_multihopkg(
     dev_df: pd.DataFrame,
     mbatches_b4_eval: int,
     verbose: bool,
+    verbose2: bool,
     tokenizer: PreTrainedTokenizer,
 ):
     # TODO: Get the rollout working
@@ -516,6 +575,7 @@ def train_multihopkg(
                     batch_size_dev,
                     batch_count,
                     verbose,
+                    verbose2,
                     tokenizer,
                 )
 
@@ -783,7 +843,7 @@ def main():
     # By default we run the config
     # Process data will determine by itself if there is any data to process
     args, tokenizer, logger = initial_setup()
-    global wandb_run
+    global wandb_run, ax, fig
 
     if args.debug:
         logger.info("\033[1;33m Waiting for debugger to attach...\033[0m")
@@ -868,6 +928,26 @@ def main():
         exact_computation=True,
         nlist=100,
     )
+
+    if args.verbose2:
+        # Train the pca, and also get the emebeddings of the graph as an array
+        pca = PCA(n_components=2)
+        tmp_graph = (knowledge_graph.get_all_entity_embeddings_wo_dropout())
+        graph_mag = np.abs(tmp_graph[:,:1000] + 1j*tmp_graph[:,1000:])
+        graph_pca = pca.fit(graph_mag).transform(graph_mag)
+
+        # Sub-sample it to 100 elements
+        random_idx = np.random.choice(graph_pca.shape[0], 100, replace=False)
+        graph_pca = graph_pca[random_idx]
+
+        # For visualization
+        plt.ion()
+        fig = plt.figure(figsize=(8,6))
+        ax = fig.add_subplot(111)
+    else:
+        graph_pca = None
+        pca = None
+
     # Setup the pretrained language model
     logger.info(":: Setting up the pretrained language model")
     config = BartConfig.from_pretrained("facebook/bart-base")
@@ -918,6 +998,8 @@ def main():
         ann_index_manager_ent=ann_index_manager_ent,
         ann_index_manager_rel=ann_index_manager_rel,
         steps_in_episode=args.num_rollout_steps,
+        trained_pca=pca,
+        graph_pca = graph_pca
     )
 
     # Now we load this from the embedding models
@@ -973,6 +1055,10 @@ def main():
     ######## ######## ########
     start_epoch = 0
     logger.info(":: Training the model")
+
+    if args.verbose2:
+        args.verbose = True
+
     train_multihopkg(
         batch_size=args.batch_size,
         batch_size_dev=args.batch_size_dev,
@@ -987,6 +1073,7 @@ def main():
         dev_df=dev_df,
         mbatches_b4_eval=args.batches_b4_eval,
         verbose=args.verbose,
+        verbose2=args.verbose2,
         tokenizer=tokenizer,
     )
     logger.info("Done with everything. Exiting...")

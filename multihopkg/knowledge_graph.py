@@ -737,10 +737,10 @@ class SunKnowledgeGraph(nn.Module):
 
         # NOTE: not sure if centroid is the correct approach but seemed like the first naive idea.
         # ! Approach 1: Calculate the centroid of the entity embeddings as a starting point
-        self.centroid = calculate_entity_centroid(self.sun_model.entity_embedding)
+        # self.centroid = calculate_entity_centroid(self.sun_model.entity_embedding)
 
         # ! Approach 2: Sample a random entity as a starting point
-        # self.centroid = sample_random_entity(self.sun_model.entity_embedding)
+        self.centroid = sample_random_entity(self.sun_model.entity_embedding)
 
         # Load the dictionary here.
         # NOTE: If using embedding types other than conve, we need to implement that ourselves
