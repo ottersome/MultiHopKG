@@ -619,34 +619,40 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # ANN mostly for debugging for now
         ########################################
 
-        new_pos = self.knowledge_graph.sun_model.flexible_forward_rotate(
+        # ! Restraining the movement to the neighborhood
+
+        self.current_position = self.knowledge_graph.sun_model.flexible_forward_rotate(
             self.current_position, actions, 
         )
-        
+
+        # ! Approach 1: No restraint
+
+        # ! Approach 2: Restrain to neighborhood with Min and Max
         # making sure the movement stays within the neighborhood limit
-        new_pos = torch.clamp(new_pos,
-                            min=self.knowledge_graph.sun_model.entity_embedding.min(),
-                            max=self.knowledge_graph.sun_model.entity_embedding.max()) 
+        # self.current_position = torch.clamp(self.current_position,
+        #                     min=self.knowledge_graph.sun_model.entity_embedding.min(),
+        #                     max=self.knowledge_graph.sun_model.entity_embedding.max()) 
 
         matched_entity_embeddings, corresponding_ent_idxs = self.ann_index_manager_ent.search(
-            new_pos.detach(), topk=1
+            self.current_position.detach(), topk=1
         )
-        # self.current_position = ann_matches # Either
-        self.current_position = new_pos  # Or
 
         ########################################
         # Projections
         ########################################
+        # ! Inspecting projections (gradients variance is too high from the start)
+
+        # ! Approach 1: Normal Projection
         concatenations = torch.cat(
             [self.current_questions_emb, self.current_position], dim=-1
         )
 
-        # ! Currently inspecting projections
-        # Normal Projection
         projected_state = self.concat_projector(concatenations)
 
+        # ! Approach 2: Attention Fusion (Gradients are not moving, must recheck)
         # projected_state = self.concat_projector(self.current_questions_emb, self.current_position)
 
+        # ! Approach 3: Normalization on the Projection (Reduces gradients variance, but still loses it.)
         # projected_state = F.normalize(projected_state, p=2, dim=1)
 
         # TODO: Think about this, we have a transformer so I dont think we need to do this.
@@ -658,8 +664,9 @@ class ITLGraphEnvironment(Environment, nn.Module):
             position=matched_entity_embeddings,
             position_id=corresponding_ent_idxs,
             state=projected_state,
-            position_emb=new_pos.detach(),
-            position_dist=torch.norm(detached_curpos - new_pos.detach(), dim=-1),
+            kge_cur_pos=self.current_position.detach(),
+            kge_prev_pos=detached_curpos,
+            kge_action=detached_actions,
         )
         
         return observation
@@ -738,23 +745,25 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         tiled_centroids = centroid.unsqueeze(0).repeat(len(initial_states_info), 1)
 
+        # ! Inspecting projections (gradients variance is too high from the start)
+
+        # ! Approach 1: Normal Projection
         concatenations = torch.cat(
             [self.current_questions_emb, tiled_centroids], dim=-1
         )
         projected_state = self.concat_projector(concatenations)
 
+        # ! Approach 2: Attention Fusion (Gradients are not moving, must recheck)
         # projected_state = self.concat_projector(self.current_questions_emb, tiled_centroids)
-
-        # projected_concat = torch.clamp(self.concat_projector(concatenations),
-        #                                 min=self.knowledge_graph.sun_model.entity_embedding.min(),
-        #                                 max=self.knowledge_graph.sun_model.entity_embedding.max()) 
         
+        # ! Approach 3: Normalization on the Projection (Reduces gradients variance, but still loses it.)
+
+        # projected_state = F.normalize(projected_state, p=2, dim=1)
+
         # NOTE: We were using path encoder here before and are not sure if removing is good idea.
 
         # This was for when we were receiving sequences. I mean I gues we still are.
         # projected_state = projected_concat
-
-        # projected_state = F.normalize(projected_state, p=2, dim=1)
 
         self.current_step = 0
 
@@ -766,8 +775,9 @@ class ITLGraphEnvironment(Environment, nn.Module):
             position=self.current_position.detach().numpy(),
             position_id=np.zeros((self.current_position.shape[0])),
             state=projected_state,
-            position_emb=self.current_position.detach(),
-            position_dist=torch.Tensor([0.0]),
+            kge_cur_pos=self.current_position.detach(),
+            kge_prev_pos=torch.zeros_like(self.current_position.detach()),
+            kge_action=torch.zeros(self.action_dim),
         )
 
         return observation

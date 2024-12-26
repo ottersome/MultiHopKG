@@ -264,13 +264,9 @@ def evaluate_training(
             env, mini_batch, nav_agent, hunch_llm, steps_in_episode
         )
 
-        current_evaluations["sampled_actions"] = eval_extras["sampled_actions"]
-        current_evaluations["position_ids"] = eval_extras["position_ids"]
-        current_evaluations["position_emb"] = eval_extras["position_emb"]
-        current_evaluations["position_dist"] = eval_extras["position_dist"]
-        current_evaluations["hunch_llm_final_guesses"] = eval_extras[
-            "hunch_llm_final_guesses"
-        ]
+        'Extract all the variables from eval_extras'
+        for k, v in eval_extras.items():
+            current_evaluations[k] = v
 
         # Accumlate the metrics
         batch_cumulative_metrics["dev/pg_loss"].append(pg_loss.mean().item())
@@ -371,8 +367,9 @@ def dump_evaluation_metrics(
             # The main values to work with
             sampled_actions = evaluation_metrics_dictionary["sampled_actions"][:, element_id]
             position_ids = evaluation_metrics_dictionary["position_ids"][:, element_id]
-            position_emb = evaluation_metrics_dictionary["position_emb"][:, element_id]
-            position_dist = evaluation_metrics_dictionary["position_dist"][:, element_id]
+            kge_cur_pos = evaluation_metrics_dictionary["kge_cur_pos"][:, element_id]
+            kge_prev_pos = evaluation_metrics_dictionary["kge_prev_pos"][:, element_id]
+            kge_action = evaluation_metrics_dictionary["kge_action"][:, element_id]
             hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id]
             questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
             answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
@@ -388,7 +385,12 @@ def dump_evaluation_metrics(
             log_file.write(f"HunchLLM Answer: {predicted_answer}\n")
 
             # Match the relation that are closest to positions we visit
-            matched_vectors, relation_indices = vector_rel_searcher.search(sampled_actions, 1)
+            _, relation_indices = vector_rel_searcher.search(kge_action, 1)
+            _, entity_indices = vector_entity_searcher.search(kge_cur_pos, 1)
+            _, start_index = vector_entity_searcher.search(kge_prev_pos, 1)
+
+            # combine index of start_index with the rest of entity_indices into pos_ids
+            pos_ids = np.concatenate((start_index[0][:, None], entity_indices), axis=0)
 
             # matched_vectors, relation_indices = vector_searcher.search(
             #     possible_relation_embeddings.detach().numpy(),
@@ -403,15 +405,12 @@ def dump_evaluation_metrics(
                 log_file.write(f"Relations Names: {relations_names}\n")
 
             action_distance = []
-            for i0 in range(sampled_actions.shape[0] -1 ):
-                action_distance.append(f"{torch.dist(sampled_actions[i0], sampled_actions[i0+1]).item():.2e}")
+            for i0 in range(kge_action.shape[0] -1 ):
+                action_distance.append(f"{torch.dist(kge_action[i0], kge_action[i0+1]).item():.2e}")
             
-            log_file.write(f"Distance between Actions: {action_distance} \n")
+            log_file.write(f"Distance between KGE Actions: {action_distance} \n")
 
-            # Similarily log the entities visited.
-            # entities_position_ids = evaluation_metrics_dictionary["position_ids"]
-
-            entities_tokens = [id2entity[index] for index in position_ids.detach().numpy().squeeze()]
+            entities_tokens = [id2entity[index] for index in pos_ids.squeeze()]
             log_file.write(f"Entity Tokens: {entities_tokens}\n")
 
             if entity2title: 
@@ -419,8 +418,8 @@ def dump_evaluation_metrics(
                 log_file.write(f"Entity Names: {entities_names}\n")
 
             position_distance = []
-            for i0 in range(position_dist.shape[0]):
-                position_distance.append(f"{position_dist[i0].item():.2e}")
+            for i0 in range(kge_cur_pos.shape[0]):
+                position_distance.append(f"{torch.dist(kge_prev_pos[i0], kge_cur_pos[i0]).item():.2e}")
             
             log_file.write(f"Distance between KGE Positions: {position_distance} \n")
             # Craft the string for the final final output
@@ -678,8 +677,6 @@ def rollout(
         states = observations.state
         visited_embeddings = torch.from_numpy(observations.position)
         position_ids = torch.from_numpy(observations.position_id)
-        position_emb = observations.position_emb
-        position_dist = observations.position_dist
         # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
 
@@ -711,8 +708,9 @@ def rollout(
             eval_metrics["sampled_actions"].append(sampled_actions)
             eval_metrics["visited_embeddings"].append(visited_embeddings)
             eval_metrics["position_ids"].append(position_ids)
-            eval_metrics["position_emb"].append(position_emb)
-            eval_metrics["position_dist"].append(position_dist)
+            eval_metrics["kge_cur_pos"].append(observations.kge_cur_pos)
+            eval_metrics["kge_prev_pos"].append(observations.kge_prev_pos)
+            eval_metrics["kge_action"].append(observations.kge_action)
             eval_metrics["hunch_llm_final_guesses"].append(logits.argmax(dim=-1))
 
     # if dev_mode:
@@ -854,14 +852,16 @@ def main():
     ########################################
     # Setup the Vector Searchers
     ########################################
+    # ! Currently using approximations, check if it this is the best way to go
+    # ! Testing: exact computation
     ann_index_manager_ent = ANN_IndexMan(
         knowledge_graph.get_all_entity_embeddings_wo_dropout(),
-        exact_computation=False,
+        exact_computation=True,
         nlist=100,
     )
     ann_index_manager_rel = ANN_IndexMan(
         knowledge_graph.get_all_relations_embeddings_wo_dropout(),
-        exact_computation=False,
+        exact_computation=True,
         nlist=100,
     )
     # Setup the pretrained language model
