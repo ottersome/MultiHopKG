@@ -217,15 +217,10 @@ class KGEModel(nn.Module):
 
         re_head, im_head = torch.chunk(head, 2, dim=1)
 
-        # Make phases of relations uniformly distributed in [-pi, pi]
-
         phase_relation = relation / (self.embedding_range.item() / pi)
 
         re_relation = torch.cos(phase_relation)
         im_relation = torch.sin(phase_relation)
-
-        # re_relation = torch.cos(relation)
-        # im_relation = torch.sin(relation)
 
         re_est_tail = re_head * re_relation - im_head * im_relation
         im_est_tail = re_head * im_relation + im_head * re_relation
