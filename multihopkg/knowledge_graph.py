@@ -709,6 +709,7 @@ class SunKnowledgeGraph(nn.Module):
             open(os.path.join(pretrained_sun_model_path, "config.json"))
         )
 
+        # Recalculating the entity and rel size based on the loaded model
         self.entity_dim = self.sun_model.entity_embedding.shape[1]
         self.relation_dim = self.sun_model.relation_embedding.shape[1]
 
