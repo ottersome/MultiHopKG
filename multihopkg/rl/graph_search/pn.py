@@ -504,7 +504,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
         ann_index_manager_rel: ANN_IndexMan,
         steps_in_episode: int,
         trained_pca,
-        graph_pca
+        graph_pca,
+        graph_annotation: str,
     ):
         super(ITLGraphEnvironment, self).__init__()
         # Should be injected via information extracted from Knowledge Grap
@@ -525,6 +526,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.steps_in_episode = steps_in_episode
         self.trained_pca = trained_pca
         self.graph_pca = graph_pca
+        self.graph_annotation = graph_annotation
 
         self.entity2title = {}
         self.relation2title = {}
@@ -709,6 +711,13 @@ class ITLGraphEnvironment(Environment, nn.Module):
             num_layers=history_num_layers,
             batch_first=True,
         )
+
+        # W1 = nn.LSTM(
+        #     input_size=entity_dim + question_dim,
+        #     hidden_size=history_dim,  # AFAIK equiv this output size
+        #     num_layers=history_num_layers,
+        #     batch_first=True,
+        # )
 
         # State Variables for holding rollout information
         # I might regret this

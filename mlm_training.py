@@ -16,7 +16,6 @@ from typing import List, Tuple, Dict, Any, DefaultDict
 import debugpy
 import ast
 import sys
-import matplotlib.pyplot as plt
 
 import numpy as np
 import pandas as pd
@@ -55,6 +54,9 @@ from multihopkg.vector_search import ANN_IndexMan
 
 # PCA
 from sklearn.decomposition import PCA
+
+import io
+from PIL import Image
 
 traceback.install()
 wandb_run = None
@@ -228,7 +230,8 @@ def evaluate_training(
     batch_size_dev: int,
     batch_count: int,
     verbose: bool,
-    verbose2: bool,
+    visualize: bool,
+    writer: SummaryWriter,
     tokenizer: PreTrainedTokenizer,
 ):
     print("Running evalute_training")
@@ -293,6 +296,14 @@ def evaluate_training(
     ########################################
     kg = env.knowledge_graph
     if verbose and logger:
+        graph_annotation = []
+        if env.entity2title:
+            for i0 in range(len(env.graph_annotation)):
+                if env.graph_annotation[i0] in env.entity2title.keys():
+                    graph_annotation.append(env.entity2title[env.graph_annotation[i0]])
+                else:
+                    graph_annotation.append("")
+
         # eval_extras has variables that we need
         just_dump_it_here = "./logs/evaluation_dumps.log"
         questions = current_evaluations["reference_questions"]
@@ -311,7 +322,9 @@ def evaluate_training(
             relation2title=env.relation2title,
             trained_pca=env.trained_pca,
             graph_pca=env.graph_pca,
-            verbose=verbose2,						  
+            graph_annotation=graph_annotation,
+            visualize=visualize,
+            writer=writer,						  
         )
         # TODO: Maybe dump the language metrics in wandb ?
         # table = wandb.Table(
@@ -358,11 +371,11 @@ def dump_evaluation_metrics(
     relation2title: Dict[str, str],
     trained_pca,
     graph_pca,
-    verbose: bool,
+    graph_annotation: List[str],
+    visualize: bool,
+    writer: SummaryWriter,
 ):
     global initial_pos_flag
-    global fig
-    global ax
     global frame_count
 
     """
@@ -402,12 +415,11 @@ def dump_evaluation_metrics(
             answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
 
             # Get the pca of the initial position
-            if verbose:
-                if initial_pos_flag:
-                    initial_pos = kge_prev_pos.numpy()[0].reshape(1, -1)
-                    initial_pos_mag = np.abs(initial_pos[:, :1000] + 1j*initial_pos[:, 1000:])
-                    initial_pos_pca = trained_pca.transform(initial_pos_mag)
-                    initial_pos_flag = False
+            if visualize and initial_pos_flag:
+                initial_pos = kge_prev_pos.numpy()[0][None, :]
+                initial_pos_mag = np.abs(initial_pos[:, :1000] + 1j*initial_pos[:, 1000:])
+                initial_pos_pca = trained_pca.transform(initial_pos_mag)
+                initial_pos_flag = False
 
             # Reconstruct the language output
             # for every element in the batch, we decode the 3 actions with 4 elements in them
@@ -472,7 +484,7 @@ def dump_evaluation_metrics(
             final_str_output = ""
 
     # Save the emebeddings of the current position and the initial position of the agent
-    if verbose:
+    if visualize:
         cur_pos = kge_cur_pos.numpy()
         cur_pos_mag = np.abs(cur_pos[:, :1000] + 1j*cur_pos[:, 1000:])
         cur_pos_pca = trained_pca.transform(cur_pos_mag)
@@ -480,25 +492,20 @@ def dump_evaluation_metrics(
         closest_entities_mag = np.abs(entity_emb[:, :1000] + 1j*entity_emb[:, 1000:])
         closest_entities_pca = trained_pca.transform(closest_entities_mag)
 
-        # Do not forget to subsample the graph, too many elements
-        ax.clear()
-        ax.scatter(graph_pca[:, 0], graph_pca[:, 1], c='b', label="Graph", alpha=0.4)
-        ax.scatter(cur_pos_pca[:, 0], cur_pos_pca[:, 1], c='g', label="Initial Pos", alpha=0.4, marker='s')
-        ax.scatter(initial_pos_pca[:, 0], initial_pos_pca[:, 1], c='r', label="Initial Pos", alpha=0.8, marker='^')
-        ax.scatter(closest_entities_pca[:, 0], closest_entities_pca[:, 1], c='y', label="Closest Entities", alpha=0.8, marker='x')
 
-        # Set the title and labels
-        ax.set_title(f"Visualization of Graph and Positions | Frame {frame_count}\nEvaluation for the last Question")
-        ax.set_xlabel("PCA Component 1")
-        ax.set_ylabel("PCA Component 2")
-
-        ax.legend()
-
-        fig.canvas.draw()
-        fig.canvas.flush_events()
+        write_2d_graph_displacement(data=[graph_pca, cur_pos_pca, initial_pos_pca, closest_entities_pca], 
+                                    label=["Graph", "Current Pos", "Initial Pos", "Closest Entities"], 
+                                    color=['b', 'g', 'r', 'y'], 
+                                    alpha=[0.4, 0.4, 0.8, 0.8], 
+                                    marker=['o', 's', '^', 'x'], 
+                                    title=f"Visualization of Graph and Positions | Frame {frame_count}\nEvaluation for the last Question", 
+                                    xlabel="PCA Component 1", 
+                                    ylabel="PCA Component 2",
+                                    annotation=graph_annotation,
+                                    writer=writer, 
+                                    frame_count=frame_count)
 
         visualization_flag = False
-        time.sleep(0.1)
 
         initial_pos_flag = True
         frame_count += 1
@@ -520,7 +527,7 @@ def train_multihopkg(
     dev_df: pd.DataFrame,
     mbatches_b4_eval: int,
     verbose: bool,
-    verbose2: bool,
+    visualize: bool,
     tokenizer: PreTrainedTokenizer,
 ):
     # TODO: Get the rollout working
@@ -590,8 +597,10 @@ def train_multihopkg(
                     batch_size_dev,
                     batch_count,
                     verbose,
-                    verbose2,
+                    visualize,
+                    writer,
                     tokenizer,
+
                 )
 
             ########################################
@@ -621,7 +630,7 @@ def train_multihopkg(
             # TODO: get grad distribution parameters,
             # Inspecting vanishing gradient
             
-            if sample_offset_idx == 0:
+            if sample_offset_idx == 0 and verbose:
                 # Retrieve named parameters from the optimizer
                 named_params = [
                     (named_param_map[param], param)
@@ -633,30 +642,99 @@ def train_multihopkg(
                 for name, param in named_params:
                     if param.requires_grad and ('bias' not in name) and (param.grad is not None):
                         if name == 'weight': name = 'concat_projector.weight'               
-                        grads = param.grad.detach()
+                        grads = param.grad.detach().cpu()
+                        weights = param.detach().cpu()
 
-                        # Calculate mean and variance of gradients
-                        grad_mean = grads.mean().item()
-                        grad_var = grads.var().item()
+                        write_parameters(grads, name, "Gradient", writer, epoch_id)
+                        write_parameters(weights, name, "Weights", writer, epoch_id)
 
-                        # Process weights
-                        weight_mean = param.detach().mean().item()
-                        weight_var = param.detach().var().item()
-
-                        # Add to writer and print (assuming writer is defined elsewhere)
-                        writer.add_scalar(f'{name}/Gradient Mean', grad_mean, epoch_id)
-                        writer.add_scalar(f'{name}/Gradient Var', grad_var, epoch_id)
-                        writer.add_scalar(f'{name}/Weight Mean', weight_mean, epoch_id)
-                        writer.add_scalar(f'{name}/Weight Var', weight_var, epoch_id)
-
-                        print(f"{name} gradient - mean {grad_mean:.4f} & var {grad_var:.4f}")
-                        print(f"{name} weight   - mean {weight_mean:.4f} & var {weight_var:.4f}")
+                        if visualize:
+                            write_histogram(grads.numpy().flatten(), name, 'g', "Gradient Histogram", "Grad Value", "Frequency", writer, epoch_id)
+                            write_histogram(weights.numpy().flatten(), name, 'b', "Weights Histogram", "Weight Value", "Frequency", writer, epoch_id)
 
             optimizer.step()
         
             batch_count += 1
-        
 
+def write_parameters(data: torch.Tensor, layer_name: str, value_type: str, writer: SummaryWriter, epoch_id: int):
+    mean = data.mean().item()
+    var = data.var().item()
+
+    writer.add_scalar(f'{layer_name}/{value_type} Mean', mean, epoch_id)
+    writer.add_scalar(f'{layer_name}/{value_type} Var', var, epoch_id)
+    
+    print(f"{layer_name} {value_type} - mean {mean:.4f} & var {var:.4f}")
+
+def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, xlabel: str, ylabel: str, writer: SummaryWriter, epoch_id: int):
+
+    plt.figure(1)
+    plt.hist(data, bins=50, alpha=0.75, color=color)
+    plt.title(f"{layer_name} {title}")
+    plt.xlabel(f"{xlabel}")
+    plt.ylabel(f"{ylabel}")
+
+    # Show the grid
+    plt.grid(True)
+
+    # Save the histogram to a BytesIO buffer
+    hist_buf = io.BytesIO()
+    plt.savefig(hist_buf, format='png')
+    hist_buf.seek(0)
+
+    # Convert the buffer content to an image and then to a NumPy array in HWC format
+    hist_image = Image.open(hist_buf)
+    hist_image_np = np.array(hist_image)
+
+    # Add the histogram to TensorBoard
+    writer.add_image(f"{layer_name}/{title}", hist_image_np, epoch_id, dataformats='HWC')
+
+    # Close the buffer
+    hist_buf.close()
+    plt.close()
+
+def write_2d_graph_displacement(data: List[np.ndarray], label: List[str], color: List[str], alpha: List[float], marker: List[str],
+                              title: str, xlabel: str, ylabel: str, writer: SummaryWriter, frame_count: int, annotation: List[str]):
+        global ax, fig
+
+        ax.clear()
+        
+        # Plot the various data points
+        for i0 in range(len(data)):
+            ax.scatter(data[i0][:,0], data[i0][:,1], c=color[i0], label=label[i0], alpha=alpha[i0], marker=marker[i0])
+
+        if annotation:
+            for i0, txt in enumerate(annotation):
+                ax.annotate(txt, (data[0][i0, 0], data[0][i0, 1]))
+
+        # Set the title and labels
+        ax.set_title(f"{title}")
+        ax.set_xlabel(f"{xlabel}")
+        ax.set_ylabel(f"{ylabel}")
+
+        # Show the grid
+        ax.grid(True)
+
+        ax.legend()
+
+        # Save the plot to a BytesIO buffer
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png')
+        buf.seek(0)
+
+        # Convert the buffer content to an image and then to a NumPy array in HWC format
+        image = Image.open(buf)
+        image_np = np.array(image)
+
+        # Add the image to TensorBoard
+        writer.add_image("Visualization of Graph and Positions", image_np, frame_count, dataformats='HWC')
+
+        # Close the buffer
+        buf.close()
+
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+
+        time.sleep(0.1)
 
 def initialize_path(questions: torch.Tensor):
     # Questions must be turned into queries
@@ -944,7 +1022,7 @@ def main():
         nlist=100,
     )
 
-    if args.verbose2:
+    if args.visualize:
         # Train the pca, and also get the emebeddings of the graph as an array
         pca = PCA(n_components=2)
         tmp_graph = (knowledge_graph.get_all_entity_embeddings_wo_dropout())
@@ -955,12 +1033,18 @@ def main():
         random_idx = np.random.choice(graph_pca.shape[0], 100, replace=False)
         graph_pca = graph_pca[random_idx]
 
+        # ! Extract annotations for the graph
+        graph_annotation = []
+        for i0 in range(min(random_idx.shape[0], 15)): # improve this with an argument
+            graph_annotation.append(knowledge_graph.id2entity[random_idx[i0]])
+
         # For visualization
         plt.ion()
-        fig = plt.figure(figsize=(8,6))
+        fig = plt.figure(0, figsize=(8,6))
         ax = fig.add_subplot(111)
     else:
         graph_pca = None
+        graph_annotation = None
         pca = None
 
     # Setup the pretrained language model
@@ -1014,7 +1098,8 @@ def main():
         ann_index_manager_rel=ann_index_manager_rel,
         steps_in_episode=args.num_rollout_steps,
         trained_pca=pca,
-        graph_pca = graph_pca
+        graph_pca=graph_pca,
+        graph_annotation=graph_annotation,
     )
 
     # Now we load this from the embedding models
@@ -1071,7 +1156,7 @@ def main():
     start_epoch = 0
     logger.info(":: Training the model")
 
-    if args.verbose2:
+    if args.visualize:
         args.verbose = True
 
     train_multihopkg(
@@ -1088,7 +1173,7 @@ def main():
         dev_df=dev_df,
         mbatches_b4_eval=args.batches_b4_eval,
         verbose=args.verbose,
-        verbose2=args.verbose2,
+        visualize=args.visualize,
         tokenizer=tokenizer,
     )
     logger.info("Done with everything. Exiting...")
