@@ -64,7 +64,7 @@ def get_args() -> argparse.Namespace:
                     help='Foundational Operational Model')
     ap.add_argument('--graph_embed_model_name', type=str,default="RotatE",
                     help='The name of the graph embedding model to use')
-    ap.add_argument('--gamma', type=float, default=1,
+    ap.add_argument('--gamma', type=float, default=12,
                     help='The gamma parameter for the graph embedding model')
     ap.add_argument('--freebaseqa_path', type=str, default="./data/freebaseqa", help="The path to the freebaseqa data")
 

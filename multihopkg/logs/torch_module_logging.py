@@ -1,4 +1,4 @@
-from typing import Dict, DefaultDict, Set
+from typing import Dict, List
  
 from torch import nn
 import numpy as np
@@ -13,9 +13,11 @@ from multihopkg.logging import setup_logger
 
 class ModuleSupervisor():
 
-    def __init__(self, module: nn.Module):
-        self.module = module
+    def __init__(self, modules: Dict[str, nn.Module]):
         self.connections = {}
+        if not isinstance(modules, dict):
+            raise ValueError("The modules must be a dictionary of modules")
+        self.modules: Dict[str, nn.Module] = modules
 
         # Save the initial grad values
         self.initial_grads = {}
@@ -29,29 +31,24 @@ class ModuleSupervisor():
         self._register_hooks()
 
     def _register_hooks(self):
-        for name, module in self.module.named_modules():
-            if len(list(module.children())) == 0 and hasattr(module, "weight"):  # leaf modules only
-                self.module_names[module] = name
-                self.connections[module] = set()
-                print(f"Wrote set for module {module._get_name()} with object hash {id(module)}")
-                module.register_forward_hook(self._forward_hook)
-                module.register_backward_hook(self._backward_hook)
+        for k, indep_module in self.modules.items():
+            for name, module in indep_module.named_modules():
+                if len(list(module.children())) == 0 and hasattr(module, "weight"):  # leaf modules only
+                    self.module_names[module] = k + "." + name
+                    self.connections[module] = set()
+                    self.logger.debug(f"Wrote set for module {module._get_name()} with object hash {id(module)}")
+                    module.register_forward_hook(self._forward_hook)
+                    module.register_backward_hook(self._backward_hook)
 
 
     def _forward_hook(self, module: nn.Module, input, output):
         """
         Tracks/Calculates the forward pass connections
         """
-        def get_module_name(m):
-            # Find the full path of the module in the model
-            for name, mod in self.module.named_modules():  # Assuming self.model is your model
-                if mod is m:
-                    return name
-            return m._get_name()  # Fallback to class name if not found
 
         if self._last_module is not None:
-            last_name = get_module_name(self._last_module)
-            current_name = get_module_name(module)
+            last_name = self.module_names[self._last_module]
+            current_name = self.module_names[module]
             self.logger.debug(f"For module {last_name} we are adding {current_name} to the connections set")
             self.connections[self._last_module].add(module)
         self._last_module = module
@@ -72,12 +69,13 @@ class ModuleSupervisor():
             self.module_stats[module].append((mean, var))
         
 
-    def dump_visual_dag(self, destination_path: str, figsize=(10, 10),  cmap='RdYlBu'):
+    def dump_visual_dag(self, destination_path: str, figsize=(40, 200),  cmap='RdYlBu'):
         """
         Visualize the model DAG with gradient information
         """
         G = nx.DiGraph()
 
+        self.logger.debug(f"Dropping {len(self.module_stats)} modules")
         # Create nodes (same as before)
         for module in self.module_stats:
             name = self.module_names[module]
@@ -86,7 +84,9 @@ class ModuleSupervisor():
             var_grad = np.mean(stats[:, 1])
 
             norm = mcolors.Normalize(vmin=-1, vmax=1)
+            self.logger.debug(f"The values of mean_grad and var_grad are {mean_grad} and {var_grad}")
             color = plt.cm.get_cmap(cmap)(norm(mean_grad))
+            self.logger.debug(f"Color looks like {color}")
             size = 1000 * (1 + np.log(1 + abs(var_grad)))
 
             G.add_node(name, color=color, size=size)
@@ -100,7 +100,9 @@ class ModuleSupervisor():
                     G.add_edge(name, child_name)
 
         plt.figure(figsize=figsize)
-        pos = nx.spring_layout(G)
+        plt.tight_layout()
+        # pos = nx.spring_layout(G)
+        pos = nx.nx_agraph.graphviz_layout(G, prog='dot', args='-Grankdir=LR') # 還不錯
 
         nx.draw(G, pos,
                 node_color=[G.nodes[node]['color'] for node in G.nodes()],

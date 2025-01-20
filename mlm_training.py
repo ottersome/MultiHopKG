@@ -167,9 +167,12 @@ def batch_loop(
     # Deconstruct the batch
     questions = mini_batch["question"].tolist()
     answers = mini_batch["answer"].tolist()
+    logger.debug("About to get llmb embeddings")
     question_embeddings = env.get_llm_embeddings(questions)
+    logger.debug("About to collate llm embeddings")
     answer_ids_padded_tensor = collate_token_ids_batch(answers).to(torch.int32)
 
+    logger.debug("About to rollout")
     log_probs, rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
@@ -184,9 +187,11 @@ def batch_loop(
     ########################################
     # Compute policy gradient
     num_steps = len(log_probs)
+    logger.debug("About to calculate rewards")
     rewards_t = (
         torch.stack(rewards).mean(dim=-1).sum(dim=0, keepdim=True)
     )  # TODO: I think I need to add the gamma here
+    logger.debug("About to stack em")
     log_probs_t = torch.stack(log_probs)
 
     rewards_t = rewards_t.expand_as(log_probs_t) # TOREM: This is a hack to make the shapes match
@@ -572,7 +577,10 @@ def train_multihopkg(
 
     # Replacement for the hooks
     if track_gradients:
-        grad_logger = torch_module_logging.ModuleSupervisor(nav_agent)
+        grad_logger = torch_module_logging.ModuleSupervisor({
+            "navigation_agent" : nav_agent, 
+            "hunch_llm" : hunch_llm
+        })
 
     ########################################
     # Epoch Loop
@@ -610,16 +618,18 @@ def train_multihopkg(
                     tokenizer,
 
                 )
-
+            logger.debug("Past evaluation")
             ########################################
             # Training
             ########################################
+            logger.debug("Getting some train data")
             mini_batch = train_data[sample_offset_idx : sample_offset_idx + batch_size]
             # pdb.set_trace()
             assert isinstance(
                 mini_batch, pd.DataFrame
             )  # For the lsp to give me a break
             optimizer.zero_grad()
+            logger.debug("About to go into batch loop")
             pg_loss, _ = batch_loop(
                 env, mini_batch, nav_agent, hunch_llm, steps_in_episode
             )
@@ -630,6 +640,7 @@ def train_multihopkg(
             reinforce_terms_mean = pg_loss.mean()
 
             batch_rewards.append(reinforce_terms_mean.item())
+            logger.debug("Bout to go backwords")
             reinforce_terms_mean.backward()
 
             # TODO: get grad distribution parameters,
@@ -639,8 +650,9 @@ def train_multihopkg(
 
                 # Ask for the DAG to be dumped
                 if track_gradients:
-                    grad_logger.dump_visual_dag(destination_path=f"./figures/grads/dag_{epoch_id:02d}.png", figsize=(10, 10)) # type: ignore
+                    grad_logger.dump_visual_dag(destination_path=f"./figures/grads/dag_{epoch_id:02d}.png", figsize=(10, 100)) # type: ignore
 
+            logger.debug("Taking Evaluation step")
             optimizer.step()
 
             if torch.all(nav_agent.mu_layer.weight.grad == 0):
@@ -674,6 +686,8 @@ def train_multihopkg(
             optimizer.step()
         
             batch_count += 1
+        logger.debug(f"Epoch {epoch_id} debug ")
+        
 
 def write_parameters(data: torch.Tensor, layer_name: str, value_type: str, writer: SummaryWriter, epoch_id: int):
     mean = data.mean().item()
