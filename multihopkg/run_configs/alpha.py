@@ -57,7 +57,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--gpu", type=int, default=0)
     ap.add_argument("--seed", type=int, default=420, metavar="S")
     ap.add_argument("--tokenizer_name", type=str, default="bert-base-uncased")
-    ap.add_argument("--debug", action="store_true", help="Debug mode")
+    ap.add_argument("--debug", "-d", action="store_true", help="Debug mode")
     ap.add_argument('--data_dir', type=str, default="./data/FB15k",
                     help='directory where the knowledge graph data is stored (default: None)')
     ap.add_argument('--model', type=str, default='operational_rotate',

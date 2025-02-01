@@ -620,7 +620,7 @@ def train_multihopkg(
     ########################################
     # Epoch Loop
     ########################################
-    for epoch_id in range(start_epoch, epochs):
+    for epoch_id in tqdm(range(start_epoch, epochs), desc="Epoch"):
 
         logger.info("Epoch {}".format(epoch_id))
         # TODO: Perhaps evaluate the epochs?
@@ -634,7 +634,7 @@ def train_multihopkg(
         # Batch Loop
         ##############################
         # TODO: update the parameters.
-        for sample_offset_idx in tqdm(range(0, len(train_data), batch_size)):
+        for sample_offset_idx in tqdm(range(0, len(train_data), batch_size), desc="Training Batches", leave=False):
             ########################################
             # Evaluation
             ########################################
