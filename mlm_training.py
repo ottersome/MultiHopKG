@@ -234,6 +234,7 @@ def evaluate_training(
     visualize: bool,
     writer: SummaryWriter,
     tokenizer: PreTrainedTokenizer,
+    wandb_on: bool
 ):
     print("Running evalute_training")
 
@@ -326,6 +327,7 @@ def evaluate_training(
             graph_annotation=graph_annotation,
             visualize=visualize,
             writer=writer,						  
+            wandb_on=wandb_on,
         )
         # TODO: Maybe dump the language metrics in wandb ?
         # table = wandb.Table(
@@ -377,6 +379,7 @@ def dump_evaluation_metrics(
     graph_annotation: List[str],
     visualize: bool,
     writer: SummaryWriter,
+    wandb_on: bool,
 ):
     global initial_pos_flag
     global frame_count
@@ -397,10 +400,18 @@ def dump_evaluation_metrics(
     log_file = open(path_to_log, "w")
 
     batch_size = evaluation_metrics_dictionary["sampled_actions"].shape[1]
+    num_reasoning_steps = evaluation_metrics_dictionary["hunch_llm_final_guesses"].shape[0]
+    reasoning_steps_str = [ f"{i}." for i in range(num_reasoning_steps)]
     log_file.write(f"Batch size: {batch_size}\n")
 
     final_str_output = ""
 
+    final_columns = ["questions", "answer_true", "answ"]
+    wandb_questions = []
+    wandb_predAnswer = []
+    wandb_realAnswer = []
+    wandb_steps = []
+    wandb_positions = []
     with open(path_to_log) as f:
         for element_id in range(batch_size):
 
@@ -413,7 +424,7 @@ def dump_evaluation_metrics(
             kge_cur_pos = evaluation_metrics_dictionary["kge_cur_pos"][:, element_id]
             kge_prev_pos = evaluation_metrics_dictionary["kge_prev_pos"][:, element_id]
             kge_action = evaluation_metrics_dictionary["kge_action"][:, element_id]
-            hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id]
+            hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id, :]
             questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
             answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
 
@@ -453,6 +464,7 @@ def dump_evaluation_metrics(
             if relation2title: 
                 relations_names = [relation2title[index] for index in relations_tokens]
                 log_file.write(f"Relations Names: {relations_names}\n")
+                wandb_steps.append(" -- ".join(relations_names))
 
             action_distance = []
             for i0 in range(kge_action.shape[0] -1 ):
@@ -466,6 +478,7 @@ def dump_evaluation_metrics(
             if entity2title: 
                 entities_names = [entity2title[index] for index in entities_tokens]
                 log_file.write(f"Entity Names: {entities_names}\n")
+                wandb_positions.append(" -> ".join(entities_names))
 
             position_distance = []
             for i0 in range(kge_cur_pos.shape[0]):
@@ -485,6 +498,27 @@ def dump_evaluation_metrics(
 
             # Craft the string for the final final output
             final_str_output = ""
+
+            # We will write predicted_answer into a wandb table:
+            if wandb_on:
+                wandb_questions.append(questions_txt)
+                wandb_realAnswer.append(answer_txt)
+                wandb_predAnswer.append("\n".join([f"{step} {answer}" for step,answer in zip(reasoning_steps_str,predicted_answer)]))
+                
+    ########################################
+    # Report to Wandb
+    ########################################
+    if wandb_on:
+        wandb_df = pd.DataFrame({
+            "questions" : wandb_questions,
+            "answer_true" : wandb_realAnswer,
+            "answer_pred" : wandb_predAnswer,
+            "positions" : wandb_positions if wandb_positions else "",
+            "relations" : wandb_steps if wandb_positions else ""
+        })
+        wandb_table = wandb.Table(dataframe=wandb_df)
+        wandb.log({"qa_results": wandb_table})
+
 
     # Save the emebeddings of the current position and the initial position of the agent
     if visualize:
@@ -533,6 +567,7 @@ def train_multihopkg(
     visualize: bool,
     tokenizer: PreTrainedTokenizer,
     track_gradients: bool,
+    wandb_on: bool,
 ):
     # TODO: Get the rollout working
 
@@ -611,7 +646,7 @@ def train_multihopkg(
                     visualize,
                     writer,
                     tokenizer,
-
+                    wandb_on,
                 )
 
             ########################################
@@ -675,7 +710,11 @@ def train_multihopkg(
                             write_histogram(weights.numpy().flatten(), name, 'b', "Weights Histogram", "Weight Value", "Frequency", writer, epoch_id)
 
             optimizer.step()
-        
+            if wandb_on:
+                loss_item = pg_loss.mean().item()
+                logger.info(f"Submitting train/pg_loss: {loss_item} to wandb")
+                wandb.log({"train/pg_loss": loss_item})
+
             batch_count += 1
 
 def write_parameters(data: torch.Tensor, layer_name: str, value_type: str, writer: SummaryWriter, epoch_id: int):
@@ -1197,7 +1236,8 @@ def main():
         verbose=args.verbose,
         visualize=args.visualize,
         tokenizer=tokenizer,
-        track_gradients=args.track_gradients
+        track_gradients=args.track_gradients,
+        wandb_on=args.wandb
     )
     logger.info("Done with everything. Exiting...")
 
