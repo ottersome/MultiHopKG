@@ -183,21 +183,22 @@ def batch_loop(
     # Calculate Reinforce Objective
     ########################################
     # Compute policy gradient
-    num_steps = len(log_probs)
     rewards_t = (
-        torch.stack(rewards).mean(dim=-1).sum(dim=0, keepdim=True)
-    )  # TODO: I think I need to add the gamma here
-    log_probs_t = torch.stack(log_probs)
+        torch.stack(rewards).mean(dim=-1)
+    ).T  # TODO: I think I need to add the gamma here
+    log_probs_t = torch.stack(log_probs).T
+    num_steps = log_probs_t.shape[-1]
 
+    # TODO: Check if this is not bad. 
     rewards_t = rewards_t.expand_as(log_probs_t) # TOREM: This is a hack to make the shapes match
     # ! Modifying the rewards to stabilize training
     # ! Approach 1: Use the rewards as is
 
     # ! Approach 2: Use the discounted rewards
-    # gamma = nav_agent.gamma
-    # discounted_rewards = rewards_t.clone()
-    # for t in reversed(range(num_steps - 1)):
-    #     discounted_rewards[t] += gamma * discounted_rewards[t + 1]
+    gamma = nav_agent.gamma
+    discounted_rewards = rewards_t.clone()
+    for t in reversed(range(num_steps - 1)):
+        discounted_rewards[:,t] += gamma * discounted_rewards[:,t + 1]
 
     # ! Approach 3: Use the rewards as is but scale them
     # Scale rewards instead of normalizing
@@ -207,7 +208,8 @@ def batch_loop(
     # Normalize the rewards
     # rewards_t = (rewards_t - rewards_t.mean()) / (rewards_t.std() + 1e-8)
 
-    pg_loss = -1 * rewards_t * log_probs_t
+    pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
+    # TODO: Perhaps only use the first few steps ?
 
     # ! Approach 2: Use the discounted rewards
     # pg_loss = -1 * (discounted_rewards * log_probs_t)
@@ -825,7 +827,8 @@ def calculate_reward(
 
     loss = loss_fn(logits.view(-1, logits.shape[-1]), teacher_forcing_labels.view(-1))
 
-    reward = -loss
+    # TODO: Perhaps Stabilize the loss. Normalize it or SMTH like that
+    reward = -loss # We expect this reward function to be concave rather than convex. 
 
     # Reshape the reward to the batch size
     reward = reward.view(batch_size, -1)
@@ -905,11 +908,11 @@ def rollout(
         ########################################
         stacked_states = torch.stack(states_so_far).permute(1, 0, 2)
         # Calculate how close we are
-        similarity_scores, logits = calculate_reward(
+        llm_rewards, logits = calculate_reward(
             hunch_llm, stacked_states, answers_ids
         )
 
-        rewards.append(similarity_scores)
+        rewards.append(llm_rewards)
 
         # TODO: Make obseervations not rely on the question
 
@@ -945,6 +948,7 @@ def rollout(
 
 
 def load_qa_data(cached_metadata_path: str, raw_QAData_path, tokenizer_name: str):
+
     if os.path.exists(cached_metadata_path):
         logger.info(
             f"\033[93m Found cache for the QA data {cached_metadata_path} will load it instead of working on {raw_QAData_path}. \033[0m"
