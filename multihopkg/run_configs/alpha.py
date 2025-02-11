@@ -92,6 +92,7 @@ def get_args() -> argparse.Namespace:
         # ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/itl_data-tok_bert-base-uncased-maxpathlen_5.json", help="Path for precomputed QA knowledge graph data. Precomputing is mostly tokenizaiton.")
     ap.add_argument('--raw_QAData_path', type=str, default="./data/FB15k/freebaseqa_clean.csv", help="Directory where the QA knowledge graph data is stored (default: None)")
     ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/freebaseqa_clean.json", help="Path for precomputed QA knowledge graph data. Precomputing is mostly tokenizaiton.")
+    ap.add_argument('--force_data_prepro', '-f', action="store_true", help="Force the data prepro to run even if the data is already cached.")
     
     # Entity and Relationship Human Readability
     ap.add_argument('--node_data_path', type=str, default='./data/FB15k/node_data.csv', help='Path to the CSV file containing the name mapping for the entity.')

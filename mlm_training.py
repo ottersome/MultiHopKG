@@ -955,9 +955,14 @@ def rollout(
     return log_action_probs, rewards, eval_metrics
 
 
-def load_qa_data(cached_metadata_path: str, raw_QAData_path, tokenizer_name: str):
+def load_qa_data(
+    cached_metadata_path: str,
+    raw_QAData_path,
+    tokenizer_name: str,
+    force_recompute: bool = False,
+):
 
-    if os.path.exists(cached_metadata_path):
+    if os.path.exists(cached_metadata_path) and not force_recompute:
         logger.info(
             f"\033[93m Found cache for the QA data {cached_metadata_path} will load it instead of working on {raw_QAData_path}. \033[0m"
         )
