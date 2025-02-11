@@ -9,7 +9,7 @@ from torch import exp, nn
 from torch.nn import Embedding
 
 from multihopkg.logging import setup_logger
-from transformers import BartForConditionalGeneration, BartTokenizer
+from transformers import BartForConditionalGeneration, BartTokenizer, PreTrainedTokenizer
 
 class GraphEncoder(nn.Module):
     """
@@ -26,9 +26,14 @@ class GraphEncoder(nn.Module):
         return self.fc2(x)
 
 class HunchBart(nn.Module):
-    def __init__(self, pretrained_bart_model):
+    def __init__(
+        self,
+        pretrained_bart_model: str,
+        answer_tokenizer: PreTrainedTokenizer,
+    ):
         super(HunchBart, self).__init__()
         self.bart = BartForConditionalGeneration.from_pretrained(pretrained_bart_model)
+        self.pretrained_bart_tokenizer = answer_tokenizer
     
     def forward(self, graph_embeddings: torch.Tensor, decoder_input_ids: Optional[torch.Tensor] = None, labels=None):
         # Pass graph embeddings through custom encoder

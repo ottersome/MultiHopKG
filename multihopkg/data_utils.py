@@ -587,7 +587,8 @@ def load_configs(args, config_path):
 def process_triviaqa_data(
     raw_QAPathData_path: str,
     cached_toked_qatriples_path: str,
-    text_tokenizer: PreTrainedTokenizer,
+    question_tokenizer: PreTrainedTokenizer,
+    answer_tokenizer: PreTrainedTokenizer,
 ) -> Tuple[DFSplit, Dict] :
     """
     Args:
@@ -613,21 +614,28 @@ def process_triviaqa_data(
     assert (
         len(csv_df.columns) > 2
     ), "The CSV file should have at least 2 columns. One triplet and one QA pair"
-    question_col_idx = len(csv_df.columns) - 2
+    # FIX: The harcoding of things
+    question_col_idx = 1
+    answers_col_idx  = 2
 
     # Ensure directory exists
     dir_name = os.path.dirname(cached_toked_qatriples_path)
     os.makedirs(dir_name, exist_ok=True)
 
     ## Prepare specific triplets/path
-    paths = csv_df.iloc[:, :question_col_idx]
-    qna = csv_df.iloc[:, question_col_idx:]  # Both Q and A
-    num_path_cols = len(paths.columns)
+    # paths = csv_df.iloc[:, 0] 
+    questions = csv_df.iloc[:, question_col_idx]  # Both Q and A
+    answers = csv_df.iloc[:, answers_col_idx]
 
     ## Prepare the language data
-    qna = qna.map(lambda x: text_tokenizer.encode(x, add_special_tokens=False))
+    questions = questions.map(lambda x: question_tokenizer.encode(x, add_special_tokens=False))
+    answers = answers.map(
+        lambda x: [answer_tokenizer.bos_token_id]
+        + answer_tokenizer.encode(x, add_special_tokens=False)
+        + [answer_tokenizer.eos_token_id]
+    )
     specific_names: Dict[str, str] = {
-        name: cached_toked_qatriples_path.replace("json", f"parquet").format(name, text_tokenizer.name_or_path,num_path_cols )
+        name: cached_toked_qatriples_path.replace("json", f"parquet").format(name, f"Q-{question_tokenizer.name_or_path}_A-{answer_tokenizer.name_or_path}")
         for name in ["train", "dev", "test"]
     }
 
@@ -635,13 +643,12 @@ def process_triviaqa_data(
     if repo_root is None:
         raise ValueError("Cannot get the git root path. Please make sure you are running a clone of the repo")
 
-    # remove prefix before git_root to get the path relative to the git root
     specific_names = {key : val.replace(repo_root + "/", "") for key,val in specific_names.items()}
     no_splitlabel_name = specific_names["train"].replace("train_", "")
 
     # Start amalgamating the data into its final form
     # TODO: test set
-    new_df = pd.concat([paths, qna], axis=1)
+    new_df = pd.concat([questions, answers], axis=1)
     new_df = new_df.sample(frac=1).reset_index(drop=True)
     train_df, test_df = train_test_split(new_df, test_size=0.2, random_state=42)
     dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=42)
@@ -656,7 +663,7 @@ def process_triviaqa_data(
     # Tokenize the text by applying a pandas map function
     # Store the metadata
     metadata = {
-        "tokenizer": text_tokenizer.name_or_path,
+        "tokenizer": question_tokenizer.name_or_path,
         "num_columns": question_col_idx + 1,
         "question_column": question_col_idx,
         "0-index_column": True,
@@ -673,19 +680,21 @@ def process_triviaqa_data(
 def data_loading_router(
     raw_QAPathData_path: str,
     cached_toked_qatriples_path: str,
-    text_tokenizer: PreTrainedTokenizer,
+    question_tokenizer: PreTrainedTokenizer,
+    answer_tokenizer: PreTrainedTokenizer,
 ):
     if "freebaseqa" in raw_QAPathData_path:
         return process_freebaseqa_data(
             raw_QAPathData_path,
             cached_toked_qatriples_path,
-            text_tokenizer,
+            question_tokenizer,
         )
     elif "triviaqa" in raw_QAPathData_path:
         return process_triviaqa_data(
             raw_QAPathData_path,
             cached_toked_qatriples_path,
-            text_tokenizer,
+            question_tokenizer,
+            answer_tokenizer,
         )
     else:
         raise ValueError("The data loading router could not find a matching data loader for the data path")
