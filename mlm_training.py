@@ -438,8 +438,8 @@ def dump_evaluation_metrics(
 
             # Get the pca of the initial position
             if visualize and initial_pos_flag:
-                initial_pos = kge_prev_pos.numpy()[0][None, :]
-                initial_pos_mag = np.abs(initial_pos[:, :1000] + 1j*initial_pos[:, 1000:])
+                initial_pos = kge_prev_pos[0][None, :]
+                initial_pos_mag = np.abs(initial_pos[:, :1000].cpu().detach().numpy() + 1j*initial_pos[:, 1000:].cpu().detach().numpy())
                 initial_pos_pca = trained_pca.transform(initial_pos_mag)
                 initial_pos_flag = False
 
@@ -456,7 +456,7 @@ def dump_evaluation_metrics(
             # Match the relation that are closest to positions we visit
             _, relation_indices = vector_rel_searcher.search(kge_action, 1)
             entity_emb, entity_indices = vector_entity_searcher.search(kge_cur_pos, 1)
-            prev_emb, start_index = vector_entity_searcher.search(kge_prev_pos, 1)
+            prev_emb, start_index = vector_entity_searcher.search(kge_prev_pos.detach().cpu(), 1)
 
             # combine index of start_index with the rest of entity_indices into pos_ids
             pos_ids = np.concatenate((start_index[0][:, None], entity_indices), axis=0)
@@ -476,7 +476,7 @@ def dump_evaluation_metrics(
 
             action_distance = []
             for i0 in range(kge_action.shape[0] -1 ):
-                action_distance.append(f"{torch.dist(kge_action[i0], kge_action[i0+1]).item():.2e}")
+                action_distance.append(f"{torch.dist(kge_action.detach().cpu()[i0], torch.tensor(kge_action[i0+1]).cpu()).item():.2e}")
             
             log_file.write(f"Distance between KGE Actions: {action_distance} \n")
 
@@ -496,11 +496,11 @@ def dump_evaluation_metrics(
 
             closest_distance = []
             for i0 in range(kge_cur_pos.shape[0]):
-                closest_distance.append(f"{torch.dist(kge_cur_pos[i0], torch.tensor(entity_emb[i0])).item():.2e}")
+                closest_distance.append(f"{torch.dist(kge_cur_pos[i0].cpu(), torch.tensor(entity_emb[i0]).cpu()).item():.2e}")
 
             log_file.write(f"Distance between KGE Current Positions & Closest Entity: {closest_distance} \n")
 
-            start_distance = f"{torch.dist(kge_prev_pos[0], torch.tensor(prev_emb[0])).item():.2e}"
+            start_distance = f"{torch.dist(kge_prev_pos[0].cpu(), torch.tensor(prev_emb[0]).cpu()).item():.2e}"
 
             log_file.write(f"Distance between KGE Start Position & Closest Entity: {start_distance} \n")
 
@@ -530,7 +530,7 @@ def dump_evaluation_metrics(
 
     # Save the emebeddings of the current position and the initial position of the agent
     if visualize:
-        cur_pos = kge_cur_pos.numpy()
+        cur_pos = kge_cur_pos.cpu().numpy()
         cur_pos_mag = np.abs(cur_pos[:, :1000] + 1j*cur_pos[:, 1000:])
         cur_pos_pca = trained_pca.transform(cur_pos_mag)
 
