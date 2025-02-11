@@ -27,6 +27,7 @@ from sklearn.model_selection import train_test_split
 from multihopkg.utils.setup import get_git_root
 from multihopkg.itl_typing import Triple
 from multihopkg.itl_typing import DFSplit
+from multihopkg.utils.metacode import stale_code
 
 traceback.install()
 
@@ -668,6 +669,7 @@ def process_triviaqa_data(
 
     return DFSplit(train=train_df, dev=dev_df, test=test_df), metadata
 
+@stale_code
 def data_loading_router(
     raw_QAPathData_path: str,
     cached_toked_qatriples_path: str,
