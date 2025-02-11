@@ -817,7 +817,10 @@ def initialize_path(questions: torch.Tensor):
 
 
 def calculate_reward(
-    hunch_llm: nn.Module, obtained_state: torch.Tensor, answers_ids: torch.Tensor
+    hunch_llm: nn.Module,
+    obtained_state: torch.Tensor,
+    answers_ids: torch.Tensor,
+    bos_token_id: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Will take the answers and give an idea of how close we were.
@@ -828,7 +831,10 @@ def calculate_reward(
     hidden_dim = obtained_state.shape[-1]
 
     # From the obtained_state we will try to find an answer
-    conditioning_labels = answers_ids[:, 1:].contiguous().to(dtype=torch.int64)
+    conditioning_labels = answers_ids[:, :-1].contiguous().to(dtype=torch.int64)
+    # add bos token
+    # TODO: CHECK THIS
+    conditioning_labels = torch.cat([torch.tensor(bos_token_id).to(torch.long).unsqueeze(0).repeat(batch_size, 1), conditioning_labels], dim=1)
     teacher_forcing_labels = answers_ids[:, :-1].contiguous().to(dtype=torch.int64)
 
     answers_inf_softmax = hunch_llm(graph_embeddings=obtained_state, decoder_input_ids=conditioning_labels)
@@ -921,7 +927,7 @@ def rollout(
         stacked_states = torch.stack(states_so_far).permute(1, 0, 2)
         # Calculate how close we are
         llm_rewards, logits = calculate_reward(
-            hunch_llm, stacked_states, answers_ids
+            hunch_llm, stacked_states, answers_ids, bos_token_id
         )
 
         rewards.append(llm_rewards)
