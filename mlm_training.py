@@ -77,7 +77,7 @@ def initialize_model_directory(args, random_seed=None):
     raise NotImplementedError
 
 
-def initial_setup() -> Tuple[argparse.Namespace, PreTrainedTokenizer, logging.Logger]:
+def initial_setup() -> Tuple[argparse.Namespace, PreTrainedTokenizer, PreTrainedTokenizer, logging.Logger]:
     global logger
     args = alpha.get_args()
     args = alpha.overload_parse_defaults_with_yaml(args.preferred_config, args)
@@ -86,11 +86,12 @@ def initial_setup() -> Tuple[argparse.Namespace, PreTrainedTokenizer, logging.Lo
     logger = setup_logger("__MAIN__")
 
     # Get Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
+    question_tokenizer = AutoTokenizer.from_pretrained(args.question_tokenizer_name)
+    answer_tokenizer = AutoTokenizer.from_pretrained(args.answer_tokenizer_name)
 
     assert isinstance(args, argparse.Namespace)
 
-    return args, tokenizer, logger
+    return args, question_tokenizer, answer_tokenizer, logger
 
 
 def prep_questions(questions: List[torch.Tensor], model: BertModel):
@@ -158,6 +159,8 @@ def batch_loop(
     nav_agent: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
     steps_in_episode: int,
+    bos_token_id: int,
+    eos_token_id: int,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
 
     ########################################
@@ -237,7 +240,8 @@ def evaluate_training(
     verbose: bool,
     visualize: bool,
     writer: SummaryWriter,
-    tokenizer: PreTrainedTokenizer,
+    question_tokenizer: PreTrainedTokenizer,
+    answer_tokenizer: PreTrainedTokenizer,
     wandb_on: bool
 ):
     print("Running evalute_training")
@@ -285,8 +289,18 @@ def evaluate_training(
         current_evaluations["true_answer"] = mini_batch["answer"]
 
         # Get the Metrics
+        bos_token_id = answer_tokenizer.bos_token_id
+        eos_token_id = answer_tokenizer.eos_token_id
+        pad_token_id = answer_tokenizer.pad_token_id
+        if bos_token_id is None or eos_token_id is None or pad_token_id is None:
+            raise ValueError("Assumptions Wrong. The answer_tokenizer must have a bos_token_id, eos_token_id and pad_token_id")
         pg_loss, eval_extras = batch_loop_dev(
-            env, mini_batch, nav_agent, hunch_llm, steps_in_episode
+            env,
+            mini_batch,
+            nav_agent,
+            hunch_llm,
+            steps_in_episode,
+            pad_token_id,
         )
 
         'Extract all the variables from eval_extras'
@@ -320,7 +334,8 @@ def evaluate_training(
             possible_relation_embeddings=kg.sun_model.relation_embedding,
             vector_entity_searcher=env.ann_index_manager_ent,															 
             vector_rel_searcher=env.ann_index_manager_rel,
-            tokenizer=tokenizer,
+            question_tokenizer=question_tokenizer,
+            answer_tokenizer=answer_tokenizer,
 		  # TODO: Make sure the entity2id and relation2id are saved in the correct order and is being used correctly
             id2entity=kg.id2entity,					   
             id2relations=kg.id2relation,
@@ -373,7 +388,8 @@ def dump_evaluation_metrics(
     possible_relation_embeddings: torch.Tensor,
 	vector_entity_searcher: ANN_IndexMan,								  
     vector_rel_searcher: ANN_IndexMan,
-    tokenizer: PreTrainedTokenizer,
+    question_tokenizer: PreTrainedTokenizer,
+    answer_tokenizer: PreTrainedTokenizer,
     id2entity: Dict[int, str],
     id2relations: Dict[int, str],
     entity2title: Dict[str, str],
@@ -441,10 +457,10 @@ def dump_evaluation_metrics(
 
             # Reconstruct the language output
             # for every element in the batch, we decode the 3 actions with 4 elements in them
-            predicted_answer = tokenizer.batch_decode(hunch_llm_final_guesses)
+            predicted_answer = answer_tokenizer.batch_decode(hunch_llm_final_guesses)
 
-            questions_txt = tokenizer.decode(questions)
-            answer_txt = tokenizer.decode(answer)
+            questions_txt = question_tokenizer.decode(questions)
+            answer_txt = answer_tokenizer.decode(answer)
             log_file.write(f"Question: {questions_txt}\n")
             log_file.write(f"Answer: {answer_txt}\n")
             log_file.write(f"HunchLLM Answer: {predicted_answer}\n")
@@ -569,7 +585,8 @@ def train_multihopkg(
     mbatches_b4_eval: int,
     verbose: bool,
     visualize: bool,
-    tokenizer: PreTrainedTokenizer,
+    question_tokenizer: PreTrainedTokenizer,
+    answer_tokenizer: PreTrainedTokenizer,
     track_gradients: bool,
     wandb_on: bool,
 ):
@@ -603,6 +620,11 @@ def train_multihopkg(
 
     # Variable to pass for logging
     batch_count = 0
+    bos_token_id = answer_tokenizer.bos_token_id
+    eos_token_id = answer_tokenizer.eos_token_id
+    pad_token_id = answer_tokenizer.pad_token_id
+    if bos_token_id is None or eos_token_id is None or pad_token_id is None:
+        raise ValueError("Assumptions Wrong. The answer_tokenize must have a bos_token_id, eos_token_id and pad_token_id")
 
     # variables to track vanishing gradient for nav_agent
     mu_tracker = [[], []] # mean, and std
@@ -649,7 +671,8 @@ def train_multihopkg(
                     verbose,
                     visualize,
                     writer,
-                    tokenizer,
+                    question_tokenizer,
+                    answer_tokenizer,
                     wandb_on,
                 )
 
@@ -663,7 +686,7 @@ def train_multihopkg(
             )  # For the lsp to give me a break
             optimizer.zero_grad()
             pg_loss, _ = batch_loop(
-                env, mini_batch, nav_agent, hunch_llm, steps_in_episode
+                env, mini_batch, nav_agent, hunch_llm, steps_in_episode, bos_token_id, eos_token_id, pad_token_id
             )
 
             if torch.isnan(pg_loss).any():
@@ -810,7 +833,6 @@ def calculate_reward(
     hunch_llm: nn.Module,
     obtained_state: torch.Tensor,
     answers_ids: torch.Tensor,
-    bos_token_id: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Will take the answers and give an idea of how close we were.
@@ -917,7 +939,7 @@ def rollout(
         stacked_states = torch.stack(states_so_far).permute(1, 0, 2)
         # Calculate how close we are
         llm_rewards, logits = calculate_reward(
-            hunch_llm, stacked_states, answers_ids, bos_token_id
+            hunch_llm, stacked_states, answers_ids
         )
 
         rewards.append(llm_rewards)
@@ -958,7 +980,8 @@ def rollout(
 def load_qa_data(
     cached_metadata_path: str,
     raw_QAData_path,
-    tokenizer_name: str,
+    question_tokenizer_name: str,
+    answer_tokenizer_name: str, 
     force_recompute: bool = False,
 ):
 
@@ -985,12 +1008,14 @@ def load_qa_data(
         logger.info(
             f"\033[93m Did not find cache for the QA data {cached_metadata_path}. Will now process it from {raw_QAData_path} \033[0m"
         )
-        text_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        question_tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
+        answer_tokenzier   = AutoTokenizer.from_pretrained(answer_tokenizer_name)
         df_split, train_metadata = (
             data_utils.process_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
                 raw_QAData_path,
                 cached_metadata_path,
-                text_tokenizer,
+                question_tokenizer,
+                answer_tokenzier,
             )
         )
         train_df, dev_df, test_df = df_split.train, df_split.dev, df_split.test
@@ -1013,7 +1038,7 @@ def load_qa_data(
 def main():
     # By default we run the config
     # Process data will determine by itself if there is any data to process
-    args, tokenizer, logger = initial_setup()
+    args, question_tokenizer, answer_tokenizer, logger = initial_setup()
     global wandb_run, ax, fig
 
     if args.debug:
@@ -1028,7 +1053,11 @@ def main():
     ########################################
     logger.info(":: Setting up the data")
     train_df, dev_df, train_metadata = load_qa_data(
-        args.cached_QAMetaData_path, args.raw_QAData_path, args.tokenizer_name
+        args.cached_QAMetaData_path,
+        args.raw_QAData_path,
+        args.question_tokenizer_name,
+        args.answer_tokenizer_name,
+        args.force_data_prepro,
     )
     if not isinstance(dev_df, pd.DataFrame) or not isinstance(train_df, pd.DataFrame):
         raise RuntimeError(
@@ -1141,6 +1170,8 @@ def main():
     # We prepare our custom encoder for Bart Here
     hunch_llm = HunchBart(
         pretrained_bart_model=args.pretrained_llm_for_hunch,
+        answer_tokenizer=answer_tokenizer,
+        # We convert the graph embeddings to state embeddings obeying current state dimensions
     ).to(args.device)
 
     # # Freeze the Hunch LLM
@@ -1253,7 +1284,8 @@ def main():
         mbatches_b4_eval=args.batches_b4_eval,
         verbose=args.verbose,
         visualize=args.visualize,
-        tokenizer=tokenizer,
+        question_tokenizer=question_tokenizer,
+        answer_tokenizer=answer_tokenizer,
         track_gradients=args.track_gradients,
         wandb_on=args.wandb
     )
