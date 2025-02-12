@@ -106,6 +106,7 @@ def batch_loop_dev(
     nav_agent: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
     steps_in_episode: int,
+    pad_token_id: int,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
     Specifically for computing any extra metrics on the dev set.
@@ -122,7 +123,7 @@ def batch_loop_dev(
     questions = mini_batch["question"].tolist()
     answers = mini_batch["answer"].tolist()
     question_embeddings = env.get_llm_embeddings(questions, device)
-    answer_ids_padded_tensor = collate_token_ids_batch(answers).to(torch.int32).to(device)
+    answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
 
     logger.warning(f"About to go into rollout")
     log_probs, rewards, eval_extras = rollout(
@@ -162,6 +163,7 @@ def batch_loop(
     steps_in_episode: int,
     bos_token_id: int,
     eos_token_id: int,
+    pad_token_id: int,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
 
     ########################################
@@ -176,7 +178,8 @@ def batch_loop(
     logger.debug("About to get llmb embeddings")
     question_embeddings = env.get_llm_embeddings(questions, device)
     logger.debug("About to collate llm embeddings")
-    answer_ids_padded_tensor = collate_token_ids_batch(answers).to(torch.int32).to(device)
+    answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
+    pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
     logger.debug("About to rollout")
     log_probs, rewards, eval_extras = rollout(
@@ -1170,7 +1173,6 @@ def main():
     logger.info(":: Setting up the pretrained language model")
     config = BartConfig.from_pretrained("facebook/bart-base")
     # Access the hidden size (hidden dimension)
-    bart_padding_token_id = config.pad_token_id
     # TODO: Remove the hardcode. Perhaps
     embedding_hidden_size = config.d_model
     embedding_vocab_size = config.vocab_size

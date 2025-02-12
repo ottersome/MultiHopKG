@@ -440,12 +440,12 @@ class PathCrossAttentionTransformer(nn.Module):
         output = self.fc(dec_output)
         return output
 
-def collate_token_ids_batch(batch: List[np.ndarray]) -> torch.Tensor:
+def collate_token_ids_batch(batch: List[np.ndarray], pad_value: int) -> torch.Tensor:
     """
     Will take a list of token ids and return a tensor of shape (batch_size, seq_len)
     """
     max_seq_len = max([len(x) for x in batch])
-    batch_token_ids = torch.zeros((len(batch), max_seq_len))
+    batch_token_ids = torch.full((len(batch), max_seq_len), pad_value)
     for i, x in enumerate(batch):
         batch_token_ids[i, :len(x)] = torch.tensor(x)
     return batch_token_ids
