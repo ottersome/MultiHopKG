@@ -614,7 +614,7 @@ def train_multihopkg(
     optimizer = torch.optim.Adam(  # type: ignore
         filter(
             lambda p: p.requires_grad,
-            list(env.concat_projector.parameters()) + list(nav_agent.parameters())
+            list(env.concat_projector.parameters()) + list(nav_agent.parameters()) + list(hunch_llm.embedding_translator.parameters())
         ),
         lr=learning_rate
     )
@@ -1173,6 +1173,7 @@ def main():
         pretrained_bart_model=args.pretrained_llm_for_hunch,
         answer_tokenizer=answer_tokenizer,
         # We convert the graph embeddings to state embeddings obeying current state dimensions
+        graph_embedding_dim=args.llm_model_dim, 
     ).to(args.device)
 
     # # Freeze the Hunch LLM
