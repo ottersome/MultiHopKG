@@ -197,8 +197,18 @@ def batch_loop(
     # Compute policy gradient
     logger.debug("About to calculate rewards")
     rewards_t = (
-        torch.stack(rewards).mean(dim=-1)
-    ).T  # TODO: I think I need to add the gamma here
+        torch.stack(rewards)
+    ).permute(1,0,2)  # TODO: I think I need to add the gamma here
+
+    # Get only masked, then mean
+    rewards_t_unpacked = []
+    for i, reward_batch_element in enumerate(rewards_t):
+        mask_for_element = pad_mask[i][1:].unsqueeze(0).repeat(steps_in_episode,1)
+        filtered_rewards = reward_batch_element[mask_for_element].reshape(steps_in_episode, -1)
+        mean_reward = torch.mean(filtered_rewards, dim=-1)
+        rewards_t_unpacked.append(mean_reward)
+    rewards_t = torch.stack(rewards_t_unpacked)
+
     log_probs_t = torch.stack(log_probs).T
     num_steps = log_probs_t.shape[-1]
 
