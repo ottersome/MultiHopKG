@@ -509,10 +509,10 @@ def dump_evaluation_metrics(
             entities_tokens = [id2entity[index] for index in pos_ids.squeeze()]
             log_file.write(f"Entity Tokens: {entities_tokens}\n")
 
-            if entity2title: 
-                entities_names = [entity2title[index] for index in entities_tokens]
-                log_file.write(f"Entity Names: {entities_names}\n")
-                wandb_positions.append(" -> ".join(entities_names))
+            # if entity2title: FIX: This keeps raising KeyError
+                # entities_names = [entity2title[index] for index in entities_tokens]
+                # log_file.write(f"Entity Names: {entities_names}\n")
+                # wandb_positions.append(" -> ".join(entities_names))
 
             position_distance = []
             for i0 in range(kge_cur_pos.shape[0]):
