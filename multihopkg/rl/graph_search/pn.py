@@ -503,9 +503,10 @@ class ITLGraphEnvironment(Environment, nn.Module):
         ann_index_manager_ent: ANN_IndexMan,
         ann_index_manager_rel: ANN_IndexMan,
         steps_in_episode: int,
-        trained_pca,
-        graph_pca,
-        graph_annotation: str,
+        graph_vis_model,
+        graph_vis_model_type: str,
+        graph_points: np.ndarray,
+        graph_annotation: List[str],
     ):
         super(ITLGraphEnvironment, self).__init__()
         # Should be injected via information extracted from Knowledge Grap
@@ -524,8 +525,9 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.ann_index_manager_ent = ann_index_manager_ent
         self.ann_index_manager_rel = ann_index_manager_rel
         self.steps_in_episode = steps_in_episode
-        self.trained_pca = trained_pca
-        self.graph_pca = graph_pca
+        self.graph_vis_model = graph_vis_model
+        self.graph_vis_model_type = graph_vis_model_type
+        self.graph_points = graph_points
         self.graph_annotation = graph_annotation
 
         self.entity2title = {}
@@ -639,6 +641,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
         #                     min=self.knowledge_graph.sun_model.entity_embedding.min(),
         #                     max=self.knowledge_graph.sun_model.entity_embedding.max()) 
 
+        print(f"self.current_position.detach().shape: {self.current_position.detach().shape}")
+        
         matched_entity_embeddings, corresponding_ent_idxs = self.ann_index_manager_ent.search(
             self.current_position.detach(), topk=1
         )
@@ -660,6 +664,11 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # ! Approach 3: Normalization on the Projection (Reduces gradients variance, but still loses it.)
         # projected_state = F.normalize(projected_state, p=2, dim=1)
+
+        # ! Approach 4: Projection with LSTM
+        # concatenations = concatenations.unsqueeze(1)
+        # projected_state, _ = self.concat_projector(concatenations)
+        # projected_state = projected_state.squeeze(1)
 
         # TODO: Think about this, we have a transformer so I dont think we need to do this.
         # concatenations_w_sequence = concatenations.unsqueeze(1)
@@ -772,6 +781,12 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # ! Approach 3: Normalization on the Projection (Reduces gradients variance, but still loses it.)
 
         # projected_state = F.normalize(projected_state, p=2, dim=1)
+
+        # ! Approach 4: Projection with LSTM
+        
+        # concatenations = concatenations.unsqueeze(1)
+        # projected_state, _ = self.concat_projector(concatenations)
+        # projected_state = projected_state.squeeze(1)
 
         # NOTE: We were using path encoder here before and are not sure if removing is good idea.
 
