@@ -584,9 +584,9 @@ def load_configs(args, config_path):
     return args
 
 
-def process_triviaqa_data(
-    raw_QAPathData_path: str,
-    cached_toked_qatriples_path: str,
+def process_and_cache_triviaqa_data(
+    raw_QAData_path: str,
+    cached_toked_qatriples_metadata_path: str,
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
 ) -> Tuple[DFSplit, Dict] :
@@ -610,7 +610,7 @@ def process_triviaqa_data(
     ## Old Data Loading has been moved elsewhere
     ## ----------
     ## Processing
-    csv_df = pd.read_csv(raw_QAPathData_path)
+    csv_df = pd.read_csv(raw_QAData_path)
     assert (
         len(csv_df.columns) > 2
     ), "The CSV file should have at least 2 columns. One triplet and one QA pair"
@@ -619,7 +619,7 @@ def process_triviaqa_data(
     answers_col_idx  = 2
 
     # Ensure directory exists
-    dir_name = os.path.dirname(cached_toked_qatriples_path)
+    dir_name = os.path.dirname(cached_toked_qatriples_metadata_path)
     os.makedirs(dir_name, exist_ok=True)
 
     ## Prepare specific triplets/path
@@ -634,8 +634,11 @@ def process_triviaqa_data(
         + answer_tokenizer.encode(x, add_special_tokens=False)
         + [answer_tokenizer.eos_token_id]
     )
-    specific_names: Dict[str, str] = {
-        name: cached_toked_qatriples_path.replace("json", f"parquet").format(name, f"Q-{question_tokenizer.name_or_path}_A-{answer_tokenizer.name_or_path}")
+
+    # timestamp without nanoseconds
+    timestamp = str(int(datetime.now().timestamp()))
+    cached_split_locations: Dict[str, str] = {
+        name: cached_toked_qatriples_metadata_path.replace(".json", "") + f"_Split-{name}" + f"_date-{timestamp}" + ".parquet"
         for name in ["train", "dev", "test"]
     }
 
@@ -643,8 +646,7 @@ def process_triviaqa_data(
     if repo_root is None:
         raise ValueError("Cannot get the git root path. Please make sure you are running a clone of the repo")
 
-    specific_names = {key : val.replace(repo_root + "/", "") for key,val in specific_names.items()}
-    no_splitlabel_name = specific_names["train"].replace("train_", "")
+    cached_split_locations = {key : val.replace(repo_root + "/", "") for key,val in cached_split_locations.items()}
 
     # Start amalgamating the data into its final form
     # TODO: test set
@@ -657,21 +659,23 @@ def process_triviaqa_data(
         raise RuntimeError("The data was not loaded properly. Please check the data loading code.")
 
     for name,df in {"train": train_df, "dev": dev_df, "test": test_df}.items():
-        df.to_parquet(specific_names[name], index=False)
+        df.to_parquet(cached_split_locations[name], index=False)
 
     ## Prepare metadata for export
     # Tokenize the text by applying a pandas map function
     # Store the metadata
     metadata = {
-        "tokenizer": question_tokenizer.name_or_path,
+        "question_tokenizer": question_tokenizer.name_or_path,
+        "answer_tokenizer": answer_tokenizer.name_or_path,
         "num_columns": question_col_idx + 1,
         "question_column": question_col_idx,
         "0-index_column": True,
         "date_processed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "saved_paths": specific_names,
+        "saved_paths": cached_split_locations,
+        "timestamp": timestamp,
     }
 
-    with open(no_splitlabel_name.replace(".parquet", ".json"), "w") as f:
+    with open(cached_toked_qatriples_metadata_path, "w") as f:
         json.dump(metadata, f)
 
     return DFSplit(train=train_df, dev=dev_df, test=test_df), metadata
@@ -690,7 +694,7 @@ def data_loading_router(
             question_tokenizer,
         )
     elif "triviaqa" in raw_QAPathData_path:
-        return process_triviaqa_data(
+        return process_and_cache_triviaqa_data(
             raw_QAPathData_path,
             cached_toked_qatriples_path,
             question_tokenizer,
