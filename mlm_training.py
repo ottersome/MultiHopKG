@@ -1014,10 +1014,11 @@ def load_qa_data(
             f"\033[93m Found cache for the QA data {cached_metadata_path} will load it instead of working on {raw_QAData_path}. \033[0m"
         )
         # Read the first line of the raw csv to count the number of columns
-        train_metadata = json.load(open(cached_metadata_path))
+        train_metadata = json.load(open(cached_metadata_path.format(question_tokenizer_name, answer_tokenizer_name)))
         saved_paths: Dict[str, str] = train_metadata["saved_paths"]
 
         train_df = pd.read_parquet(saved_paths["train"])
+        # TODO: Eventually use this to avoid data leakage
         dev_df = pd.read_parquet(saved_paths["dev"])
         test_df = pd.read_parquet(saved_paths["test"])
 
@@ -1035,7 +1036,7 @@ def load_qa_data(
         question_tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
         answer_tokenzier   = AutoTokenizer.from_pretrained(answer_tokenizer_name)
         df_split, train_metadata = (
-            data_utils.process_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
+            data_utils.process_and_cache_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
                 raw_QAData_path,
                 cached_metadata_path,
                 question_tokenizer,
@@ -1051,12 +1052,13 @@ def load_qa_data(
     # Train Validation Test split
     ########################################
 
-    # Shuffle the Questions
-    shuffled_train_df = train_df.sample(frac=1).reset_index(drop=True)
-    train_df, val_df = train_test_split(
-        shuffled_train_df, test_size=0.2, random_state=42
-    )
-    return train_df, val_df, train_metadata
+    # All of this was unecessary it was already beign done before.
+    # shuffled_train_df = train_df.sample(frac=1).reset_index(drop=True)
+    # train_df, val_df = train_test_split(
+    #     shuffled_train_df, test_size=0.2, random_state=42
+    # )
+
+    return train_df, dev_df, train_metadata
 
 
 def main():
