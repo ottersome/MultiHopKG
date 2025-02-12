@@ -513,10 +513,10 @@ def dump_evaluation_metrics(
             entities_tokens = [id2entity[index] for index in pos_ids.squeeze()]
             log_file.write(f"Entity Tokens: {entities_tokens}\n")
 
-            if entity2title: 
-                entities_names = [entity2title[index] for index in entities_tokens]
-                log_file.write(f"Entity Names: {entities_names}\n")
-                wandb_positions.append(" -> ".join(entities_names))
+            # if entity2title: FIX: This keeps raising KeyError
+                # entities_names = [entity2title[index] for index in entities_tokens]
+                # log_file.write(f"Entity Names: {entities_names}\n")
+                # wandb_positions.append(" -> ".join(entities_names))
 
             position_distance = []
             for i0 in range(kge_cur_pos.shape[0]):
@@ -712,9 +712,19 @@ def train_multihopkg(
             if torch.isnan(pg_loss).any():
                 logger.error("NaN detected in the loss. Aborting training.")
                 # pdb.set_trace()
-            reinforce_terms_mean = pg_loss.mean()
 
-            batch_rewards.append(reinforce_terms_mean.item())
+            # Logg the mean, std, min, max of the rewards
+            reinforce_terms_mean = pg_loss.mean()
+            reinforce_terms_mean_item = reinforce_terms_mean.item()
+            reinforce_terms_std_item = pg_loss.std().item()
+            reinforce_terms_min_item = pg_loss.min().item()
+            reinforce_terms_max_item = pg_loss.max().item()
+            logger.debug(f"Reinforce terms mean: {reinforce_terms_mean_item}, std: {reinforce_terms_std_item}, min: {reinforce_terms_min_item}, max: {reinforce_terms_max_item}")
+
+            # TODO: Uncomment and try: 
+            # stabilized_rewards = tensor_normalization(pg_loss)
+
+            batch_rewards.append(reinforce_terms_mean_item)
             logger.debug("Bout to go backwords")
             reinforce_terms_mean.backward()
 
@@ -868,10 +878,7 @@ def calculate_reward(
 
     # From the obtained_state we will try to find an answer
     conditioning_labels = answers_ids[:, :-1].contiguous().to(dtype=torch.int64)
-    # add bos token
-    # TODO: CHECK THIS
-    conditioning_labels = torch.cat([torch.tensor(bos_token_id).to(torch.long).unsqueeze(0).repeat(batch_size, 1), conditioning_labels], dim=1)
-    teacher_forcing_labels = answers_ids[:, :-1].contiguous().to(dtype=torch.int64)
+    teacher_forcing_labels = answers_ids[:, 1:].contiguous().to(dtype=torch.int64)
 
     answers_inf_softmax = hunch_llm(graph_embeddings=obtained_state, decoder_input_ids=conditioning_labels)
 
@@ -965,6 +972,8 @@ def rollout(
         llm_rewards, logits = calculate_reward(
             hunch_llm, stacked_states, answers_ids
         )
+        
+        # TODO: IMPORTANT: Mask the rewards 
 
         rewards.append(llm_rewards)
 
@@ -1195,6 +1204,7 @@ def main():
         pretrained_bart_model=args.pretrained_llm_for_hunch,
         answer_tokenizer=answer_tokenizer,
         # We convert the graph embeddings to state embeddings obeying current state dimensions
+        graph_embedding_dim=args.llm_model_dim, 
     ).to(args.device)
 
     # # Freeze the Hunch LLM
@@ -1310,7 +1320,7 @@ def main():
         question_tokenizer=question_tokenizer,
         answer_tokenizer=answer_tokenizer,
         track_gradients=args.track_gradients,
-        wandb_on=args.wandb
+        wandb_on=args.wandb,
     )
     logger.info("Done with everything. Exiting...")
 
