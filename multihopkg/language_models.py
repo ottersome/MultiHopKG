@@ -30,16 +30,26 @@ class HunchBart(nn.Module):
         self,
         pretrained_bart_model: str,
         answer_tokenizer: PreTrainedTokenizer,
+        graph_embedding_dim: int,
     ):
         super(HunchBart, self).__init__()
         self.bart = BartForConditionalGeneration.from_pretrained(pretrained_bart_model)
+        self.bart_hidden_dim = self.bart.config.d_model
         self.pretrained_bart_tokenizer = answer_tokenizer
+        self.embedding_translator = nn.Sequential(
+            nn.Linear(graph_embedding_dim, self.bart_hidden_dim),
+            nn.LayerNorm(self.bart_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.bart_hidden_dim, self.bart_hidden_dim)
+        )
     
     def forward(self, graph_embeddings: torch.Tensor, decoder_input_ids: Optional[torch.Tensor] = None, labels=None):
         # Pass graph embeddings through custom encoder
         # Pass the outputs to BART decoder
+        translated_embeddings = self.embedding_translator(graph_embeddings)
+
         outputs = self.bart(
-            inputs_embeds=graph_embeddings,
+            inputs_embeds=translated_embeddings,
             decoder_input_ids=decoder_input_ids, #For teacher forcing. 
         )
         return outputs
