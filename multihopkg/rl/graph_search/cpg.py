@@ -95,7 +95,7 @@ class ContinuousPolicyGradient(nn.Module):
         # # TODO: Ensure we are sampling correctly from this 
         actions = dist.rsample()
 
-        log_probs = dist.log_prob(actions).sum(dim=-1)
+        log_probs = dist.log_prob(actions).sum(dim=-1) # ONLY WORKS ASSUMING INDEPENDENCE (which so far we obey).
 
         return actions, log_probs, entropy
 

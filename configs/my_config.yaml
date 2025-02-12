@@ -6,3 +6,4 @@ gamma: 1.0
 freebaseqa_path: "data/freebaseqa"
 num_rollout_steps: 3
 batch_size_dev: 12
+batch_size: 32

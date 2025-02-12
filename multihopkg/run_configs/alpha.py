@@ -56,15 +56,16 @@ def get_args() -> argparse.Namespace:
     )
     ap.add_argument("--gpu", type=int, default=0)
     ap.add_argument("--seed", type=int, default=420, metavar="S")
-    ap.add_argument("--tokenizer_name", type=str, default="bert-base-uncased")
-    ap.add_argument("--debug", action="store_true", help="Debug mode")
+    ap.add_argument("--question_tokenizer_name", type=str, default="bert-base-uncased")
+    ap.add_argument("--answer_tokenizer_name", type=str, default="facebook/bart-base")
+    ap.add_argument("--debug", "-d", action="store_true", help="Debug mode")
     ap.add_argument('--data_dir', type=str, default="./data/FB15k",
                     help='directory where the knowledge graph data is stored (default: None)')
     ap.add_argument('--model', type=str, default='operational_rotate',
                     help='Foundational Operational Model')
     ap.add_argument('--graph_embed_model_name', type=str,default="RotatE",
                     help='The name of the graph embedding model to use')
-    ap.add_argument('--gamma', type=float, default=1,
+    ap.add_argument('--gamma', type=float, default=12,
                     help='The gamma parameter for the graph embedding model')
     ap.add_argument('--freebaseqa_path', type=str, default="./data/freebaseqa", help="The path to the freebaseqa data")
 
@@ -92,6 +93,7 @@ def get_args() -> argparse.Namespace:
         # ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/itl_data-tok_bert-base-uncased-maxpathlen_5.json", help="Path for precomputed QA knowledge graph data. Precomputing is mostly tokenizaiton.")
     ap.add_argument('--raw_QAData_path', type=str, default="./data/FB15k/freebaseqa_clean.csv", help="Directory where the QA knowledge graph data is stored (default: None)")
     ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/freebaseqa_clean.json", help="Path for precomputed QA knowledge graph data. Precomputing is mostly tokenizaiton.")
+    ap.add_argument('--force_data_prepro', '-f', action="store_true", help="Force the data prepro to run even if the data is already cached.")
     
     # Entity and Relationship Human Readability
     ap.add_argument('--node_data_path', type=str, default='./data/FB15k/node_data.csv', help='Path to the CSV file containing the name mapping for the entity.')
@@ -108,6 +110,10 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--pretrained_llm_for_hunch', type=str, default="facebook/bart-base", help="The pretrained language model to use (default: bert-base-uncased)")
     ap.add_argument('--pretrained_llm_transformer_ckpnt_path', type=str, default="models/itl/pretrained_transformer_e1_s9176.ckpt", help="The path to the pretrained language model transformer weights (default: models/itl/pretrained_transformer_e1_s9176.ckpt)")
     ap.add_argument('--pretrained_sun_model_loc', type=str, default="models/sun", help="The path to the pretrained language model transformer weights (default: models/itl/pretrained_transformer_e1_s9176.ckpt)")
+
+    # Some Verbose stuff
+    ap.add_argument('--verbose','-v',action="store_true", help="Verbose on the results of evaluation.")
+    ap.add_argument('--track_gradients', '-g', action='store_true', help='track gradients')
 
     # Wand DB Modell
     ap.add_argument("-w", "--wandb", action="store_true")
@@ -194,6 +200,7 @@ def get_args() -> argparse.Namespace:
                     help='Number of epochs to run before running evaluation')
 
     ap.add_argument('--preferred_config', type=str, default="configs/my_config.yaml", help="The path to the configuration file (default: configs/sun.json)")
+    ap.add_argument('--device', type=str, default="cuda:0", help="The device to run on (default: cuda:0)")
 
 
     return ap.parse_args()

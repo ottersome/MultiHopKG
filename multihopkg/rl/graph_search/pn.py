@@ -574,7 +574,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             )
         )
 
-    def get_llm_embeddings(self, questions: List[np.ndarray]) -> torch.Tensor:
+    def get_llm_embeddings(self, questions: List[np.ndarray], device: torch.device) -> torch.Tensor:
         """
         Will take a list of list of token ids, pad them and then pass them to the embedding module to get single embeddings for each question
         Args:
@@ -584,16 +584,15 @@ class ITLGraphEnvironment(Environment, nn.Module):
         """
         # Format the input for the legacy funciton inside
         tensorized_questions = [
-            torch.tensor(q).to(torch.int32).view(1, -1) for q in questions
+            torch.tensor(q).to(torch.int32).to(device).view(1, -1) for q in questions
         ]
         # We should conver them to embeddinggs before sending them over
 
         padded_tokens, attention_mask = ops.pad_and_cat(
             tensorized_questions, padding_value=self.padding_value, padding_dim=1
         )
-        embedding_output = self.question_embedding_module(
-            input_ids=padded_tokens, attention_mask=attention_mask
-        )
+        attention_mask = attention_mask.to(device)
+        embedding_output = self.question_embedding_module( input_ids=padded_tokens, attention_mask=attention_mask)
         last_hidden_state = embedding_output.last_hidden_state
         # TODO: Figure out if we want to grab a single one of the embeddings or just aggregaate them through mean.
         final_embedding = last_hidden_state.mean(dim=1)
@@ -800,7 +799,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         )
 
         observation = Observation(
-            position=self.current_position.detach().numpy(),
+            position=self.current_position.detach().cpu().numpy(),
             position_id=np.zeros((self.current_position.shape[0])),
             state=projected_state,
             kge_cur_pos=self.current_position.detach(),

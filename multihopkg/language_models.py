@@ -9,7 +9,7 @@ from torch import exp, nn
 from torch.nn import Embedding
 
 from multihopkg.logging import setup_logger
-from transformers import BartForConditionalGeneration, BartTokenizer
+from transformers import BartForConditionalGeneration, BartTokenizer, PreTrainedTokenizer
 
 class GraphEncoder(nn.Module):
     """
@@ -26,15 +26,30 @@ class GraphEncoder(nn.Module):
         return self.fc2(x)
 
 class HunchBart(nn.Module):
-    def __init__(self, pretrained_bart_model):
+    def __init__(
+        self,
+        pretrained_bart_model: str,
+        answer_tokenizer: PreTrainedTokenizer,
+        graph_embedding_dim: int,
+    ):
         super(HunchBart, self).__init__()
         self.bart = BartForConditionalGeneration.from_pretrained(pretrained_bart_model)
+        self.bart_hidden_dim = self.bart.config.d_model
+        self.pretrained_bart_tokenizer = answer_tokenizer
+        self.embedding_translator = nn.Sequential(
+            nn.Linear(graph_embedding_dim, self.bart_hidden_dim),
+            nn.LayerNorm(self.bart_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.bart_hidden_dim, self.bart_hidden_dim)
+        )
     
     def forward(self, graph_embeddings: torch.Tensor, decoder_input_ids: Optional[torch.Tensor] = None, labels=None):
         # Pass graph embeddings through custom encoder
         # Pass the outputs to BART decoder
+        translated_embeddings = self.embedding_translator(graph_embeddings)
+
         outputs = self.bart(
-            inputs_embeds=graph_embeddings,
+            inputs_embeds=translated_embeddings,
             decoder_input_ids=decoder_input_ids, #For teacher forcing. 
         )
         return outputs
@@ -425,12 +440,12 @@ class PathCrossAttentionTransformer(nn.Module):
         output = self.fc(dec_output)
         return output
 
-def collate_token_ids_batch(batch: List[np.ndarray]) -> torch.Tensor:
+def collate_token_ids_batch(batch: List[np.ndarray], pad_value: int) -> torch.Tensor:
     """
     Will take a list of token ids and return a tensor of shape (batch_size, seq_len)
     """
     max_seq_len = max([len(x) for x in batch])
-    batch_token_ids = torch.zeros((len(batch), max_seq_len))
+    batch_token_ids = torch.full((len(batch), max_seq_len), pad_value)
     for i, x in enumerate(batch):
         batch_token_ids[i, :len(x)] = torch.tensor(x)
     return batch_token_ids
