@@ -1,3 +1,4 @@
+import os
 from typing import Dict, List
  
 from torch import nn
@@ -74,6 +75,11 @@ class ModuleSupervisor():
         Visualize the model DAG with gradient information
         """
         G = nx.DiGraph()
+
+        # Ensure destiantion exists
+        destination_dir = os.path.dirname(destination_path)
+        if not os.path.exists(destination_dir):
+            os.makedirs(destination_dir)
 
         self.logger.debug(f"Dropping {len(self.module_stats)} modules")
         # Create nodes (same as before)
