@@ -199,7 +199,6 @@ def batch_loop(
     rewards_t = (
         torch.stack(rewards)
     ).permute(1,0,2)  # TODO: I think I need to add the gamma here
-
     # Get only masked, then mean
     rewards_t_unpacked = []
     for i, reward_batch_element in enumerate(rewards_t):
@@ -359,8 +358,9 @@ def evaluate_training(
             id2relations=kg.id2relation,
             entity2title=env.entity2title,
             relation2title=env.relation2title,
-            trained_pca=env.trained_pca,
-            graph_pca=env.graph_pca,
+            graph_vis_model=env.graph_vis_model,
+            graph_vis_model_type=env.graph_vis_model_type,
+            graph_points=env.graph_points,
             graph_annotation=graph_annotation,
             visualize=visualize,
             writer=writer,						  
@@ -412,8 +412,9 @@ def dump_evaluation_metrics(
     id2relations: Dict[int, str],
     entity2title: Dict[str, str],
     relation2title: Dict[str, str],
-    trained_pca,
-    graph_pca,
+    graph_vis_model,
+    graph_vis_model_type: str,
+    graph_points: np.ndarray,
     graph_annotation: List[str],
     visualize: bool,
     writer: SummaryWriter,
@@ -468,9 +469,15 @@ def dump_evaluation_metrics(
 
             # Get the pca of the initial position
             if visualize and initial_pos_flag:
-                initial_pos = kge_prev_pos[0][None, :]
-                initial_pos_mag = np.abs(initial_pos[:, :1000].cpu().detach().numpy() + 1j*initial_pos[:, 1000:].cpu().detach().numpy())
-                initial_pos_pca = trained_pca.transform(initial_pos_mag)
+                initial_pos = kge_prev_pos.cpu().numpy()[0][None, :]
+                initial_pos_complex = initial_pos[:, :1000] + 1j*initial_pos[:, 1000:]
+                if graph_vis_model_type == "pca":
+                    initial_pos_points = graph_vis_model.transform(np.abs(initial_pos_complex))
+                elif graph_vis_model_type == "dist":
+                    # initial_pos_points = complex_distance(initial_pos_complex, initial_pos_complex, distance_metric=l2_distance)
+                    # graph_points = complex_distance(graph_points, initial_pos_complex, distance_metric=l2_distance)
+                    pass
+                
                 initial_pos_flag = False
 
             # Reconstruct the language output
@@ -513,10 +520,9 @@ def dump_evaluation_metrics(
             entities_tokens = [id2entity[index] for index in pos_ids.squeeze()]
             log_file.write(f"Entity Tokens: {entities_tokens}\n")
 
-            # if entity2title: FIX: This keeps raising KeyError
-                # entities_names = [entity2title[index] for index in entities_tokens]
-                # log_file.write(f"Entity Names: {entities_names}\n")
-                # wandb_positions.append(" -> ".join(entities_names))
+            if entity2title: 
+                entities_names = [entity2title[index] if index in entity2title.keys() else '[unknown]' for index in entities_tokens]
+                log_file.write(f"Entity Names: {entities_names}\n")
 
             position_distance = []
             for i0 in range(kge_cur_pos.shape[0]):
@@ -561,32 +567,67 @@ def dump_evaluation_metrics(
     # Save the emebeddings of the current position and the initial position of the agent
     if visualize:
         cur_pos = kge_cur_pos.cpu().numpy()
-        cur_pos_mag = np.abs(cur_pos[:, :1000] + 1j*cur_pos[:, 1000:])
-        cur_pos_pca = trained_pca.transform(cur_pos_mag)
+        cur_pos_complex = cur_pos[:, :1000] + 1j*cur_pos[:, 1000:]
+        closest_entities_complex = entity_emb[:, :1000] + 1j*entity_emb[:, 1000:]
 
-        closest_entities_mag = np.abs(entity_emb[:, :1000] + 1j*entity_emb[:, 1000:])
-        closest_entities_pca = trained_pca.transform(closest_entities_mag)
+        if graph_vis_model_type == "pca":
+            cur_pos_points = graph_vis_model.transform(np.abs(cur_pos_complex))
+            closest_entities_points = graph_vis_model.transform(np.abs(closest_entities_complex))
+            xlabel="PCA Component 1" 
+            ylabel="PCA Component 2"
 
+            write_2d_graph_displacement(data=[graph_points, cur_pos_points, initial_pos_points, closest_entities_points], 
+                            label=["Graph", "Current Pos", "Initial Pos", "Closest Entities"], 
+                            color=['b', 'g', 'r', 'y'], 
+                            alpha=[0.4, 0.4, 0.8, 0.8], 
+                            marker=['o', 's', '^', 'x'], 
+                            title=f"Visualization of Graph and Positions | Frame {frame_count}\nEvaluation for the last Question", 
+                            xlabel=xlabel, 
+                            ylabel=ylabel,
+                            annotation=graph_annotation,
+                            writer=writer, 
+                            frame_count=frame_count)
+            
+            frame_count += 1
+        elif graph_vis_model_type == "dist":
+            for cur_pos_id in range(cur_pos_complex.shape[0]):
+                initial_pos_points = complex_distance(initial_pos_complex, cur_pos_complex[cur_pos_id], distance_metric=l2_distance)
+                graph_points_temp = complex_distance(graph_points, cur_pos_complex[cur_pos_id], distance_metric=l2_distance)
+                cur_pos_points = complex_distance(cur_pos_complex[cur_pos_id][:, None], cur_pos_complex[cur_pos_id][:, None], distance_metric=l2_distance)
+                closest_entities_points = complex_distance(closest_entities_complex, cur_pos_complex[cur_pos_id], distance_metric=l2_distance)
+                xlabel="Real Component" 
+                ylabel="Imaginary Component"
 
-        write_2d_graph_displacement(data=[graph_pca, cur_pos_pca, initial_pos_pca, closest_entities_pca], 
-                                    label=["Graph", "Current Pos", "Initial Pos", "Closest Entities"], 
-                                    color=['b', 'g', 'r', 'y'], 
-                                    alpha=[0.4, 0.4, 0.8, 0.8], 
-                                    marker=['o', 's', '^', 'x'], 
-                                    title=f"Visualization of Graph and Positions | Frame {frame_count}\nEvaluation for the last Question", 
-                                    xlabel="PCA Component 1", 
-                                    ylabel="PCA Component 2",
-                                    annotation=graph_annotation,
-                                    writer=writer, 
-                                    frame_count=frame_count)
+                write_2d_graph_displacement(data=[graph_points_temp, cur_pos_points, initial_pos_points, closest_entities_points], 
+                                        label=["Graph", "Current Pos", "Initial Pos", "Closest Entities"], 
+                                        color=['b', 'g', 'r', 'y'], 
+                                        alpha=[0.4, 0.4, 0.8, 0.8], 
+                                        marker=['o', 's', '^', 'x'], 
+                                        title=f"Visualization of Graph and Positions | Cur Pos {cur_pos_id}\nEvaluation for the last Question", 
+                                        xlabel=xlabel, 
+                                        ylabel=ylabel,
+                                        annotation=graph_annotation,
+                                        writer=writer, 
+                                        frame_count=frame_count)
+                frame_count += 1
 
         visualization_flag = False
 
         initial_pos_flag = True
-        frame_count += 1
+
 
     # TODO: Some other  metrics ?
     # sys.exit()
+
+def l2_distance(x1: np.ndarray, x2: np.ndarray):
+    return np.linalg.norm(x1 - x2, axis=1, ord=2)
+
+def l1_distance(x1: np.ndarray, x2: np.ndarray):
+    return np.linalg.norm(x1 - x2, axis=1, ord=1)
+
+def complex_distance(x1: np.ndarray, x2: np.ndarray = None, distance_metric = l1_distance):
+    if isinstance(x2, type(None)): x2 = np.zeros_like(x1)
+    return np.concat([distance_metric(x1.real, x2.real)[:, None], distance_metric(x1.imag, x2.imag)[:, None]], axis=1)
 
 def train_multihopkg(
     batch_size: int,
@@ -757,7 +798,7 @@ def train_multihopkg(
                 # Iterate and calculate gradients as needed
                 for name, param in named_params:
                     if param.requires_grad and ('bias' not in name) and (param.grad is not None):
-                        if name == 'weight': name = 'concat_projector.weight'               
+                        if name == 'weight': name = 'concat_projector.weight'
                         grads = param.grad.detach().cpu()
                         weights = param.detach().cpu()
 
@@ -787,10 +828,11 @@ def write_parameters(data: torch.Tensor, layer_name: str, value_type: str, write
     
     print(f"{layer_name} {value_type} - mean {mean:.4f} & var {var:.4f}")
 
-def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, xlabel: str, ylabel: str, writer: SummaryWriter, epoch_id: int):
+def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, xlabel: str, ylabel: str,
+                     writer: SummaryWriter, epoch_id: int, bins: int = 100):
 
     plt.figure(1)
-    plt.hist(data, bins=50, alpha=0.75, color=color)
+    plt.hist(data, bins=bins, alpha=0.50, color=color)
     plt.title(f"{layer_name} {title}")
     plt.xlabel(f"{xlabel}")
     plt.ylabel(f"{ylabel}")
@@ -825,8 +867,9 @@ def write_2d_graph_displacement(data: List[np.ndarray], label: List[str], color:
             ax.scatter(data[i0][:,0], data[i0][:,1], c=color[i0], label=label[i0], alpha=alpha[i0], marker=marker[i0])
 
         if annotation:
-            for i0, txt in enumerate(annotation):
-                ax.annotate(txt, (data[0][i0, 0], data[0][i0, 1]))
+            random_idx = np.random.choice(len(annotation), 5, replace=False)
+            for i0 in random_idx:
+                ax.annotate(annotation[i0], (data[0][i0, 0], data[0][i0, 1]))
 
         # Set the title and labels
         ax.set_title(f"{title}")
@@ -1165,30 +1208,63 @@ def main():
         nlist=100,
     )
 
+    graph_points = None
+    graph_annotation = []
+    graph_vis_model = None
     if args.visualize:
-        # Train the pca, and also get the emebeddings of the graph as an array
-        pca = PCA(n_components=2)
-        tmp_graph = (knowledge_graph.get_all_entity_embeddings_wo_dropout().cpu().detach().numpy())
-        graph_mag = np.abs(tmp_graph[:,:1000] + 1j*tmp_graph[:,1000:])
-        graph_pca = pca.fit(graph_mag).transform(graph_mag)
+        graph_emb = (knowledge_graph.get_all_entity_embeddings_wo_dropout()).cpu().detach().numpy()
+        graph_emb_complex = graph_emb[:,:1000] + 1j*graph_emb[:,1000:]
+        random_idx = np.random.choice(graph_emb.shape[0], args.graph_vis_points, replace=False)
 
+        if args.graph_vis_model == 'pca':
+            # Train the pca, and also get the emebeddings of the graph as an array
+            pca = PCA(n_components=2)
+            graph_mag = np.abs(graph_emb_complex)
+            graph_points = pca.fit(graph_mag).transform(graph_mag)
+            graph_vis_model = pca
+        elif args.graph_vis_model == 'dist':
+            # graph_points = complex_distance(graph_emb_complex, distance_metric=l1_distance)
+            graph_points = graph_emb_complex.copy()
+        else:
+            assert False, f"Error! The visualization model {args.graph_vis_model} is not available!"
+        
         # Sub-sample it to 100 elements
-        random_idx = np.random.choice(graph_pca.shape[0], 100, replace=False)
-        graph_pca = graph_pca[random_idx]
+        graph_points = graph_points[random_idx]
 
         # ! Extract annotations for the graph
         graph_annotation = []
-        for i0 in range(min(random_idx.shape[0], 15)): # improve this with an argument
+        for i0 in range(random_idx.shape[0]): # improve this with an argument
             graph_annotation.append(knowledge_graph.id2entity[random_idx[i0]])
 
         # For visualization
         plt.ion()
         fig = plt.figure(0, figsize=(8,6))
         ax = fig.add_subplot(111)
-    else:
-        graph_pca = None
-        graph_annotation = None
-        pca = None
+
+    # analyze the PCA
+    #! This can be removed if PCA analysis is no longer needed,
+    #! ow, its good to keep it here
+    # if args.visualize:
+    #     plt.close() # close any matplotlib figures 
+
+    #     graph_emb = (knowledge_graph.get_all_entity_embeddings_wo_dropout()).detach().numpy()
+    #     graph_emb_complex = graph_emb[:,:1000] + 1j*graph_emb[:,1000:]
+    #     graph_mag = np.abs(graph_emb_complex)
+    #     pca_tmp = PCA(n_components=graph_mag.shape[1])
+    #     pca_tmp.fit(graph_mag)
+
+    #     explained_variance_ratio = pca_tmp.explained_variance_ratio_
+    #     print(f"Sum of EVR = {np.sum(explained_variance_ratio)}")
+    #     num_features = np.argmax(np.cumsum(explained_variance_ratio) >= 0.95) + 1
+    #     print("Plot the PCA Explained Variance Ratio")
+    #     plt.figure(figsize=(16, 9))
+    #     plt.title(f"PCA Graph Embedding Explained Variance Ration\n{num_features} explain >= 95% of variance")
+    #     plt.plot(np.cumsum(explained_variance_ratio) * 100)
+    #     plt.xlabel("Features")
+    #     plt.ylabel("EVR in %")
+    #     plt.grid(True)
+    #     plt.savefig("saves/pca_graph_evr.png")
+    #     plt.close()
 
     # Setup the pretrained language model
     logger.info(":: Setting up the pretrained language model")
@@ -1242,8 +1318,9 @@ def main():
         ann_index_manager_ent=ann_index_manager_ent,
         ann_index_manager_rel=ann_index_manager_rel,
         steps_in_episode=args.num_rollout_steps,
-        trained_pca=pca,
-        graph_pca=graph_pca,
+        graph_vis_model=graph_vis_model,
+        graph_vis_model_type = args.graph_vis_model,
+        graph_points=graph_points,
         graph_annotation=graph_annotation,
     ).to(args.device)
 
