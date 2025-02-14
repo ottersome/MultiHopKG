@@ -75,6 +75,11 @@ class ModuleSupervisor():
         """
         G = nx.DiGraph()
 
+        # Ensure destiantion exists
+        destination_dir = os.path.dirname(destination_path)
+        if not os.path.exists(destination_dir):
+            os.makedirs(destination_dir)
+
         self.logger.debug(f"Dropping {len(self.module_stats)} modules")
         # Create nodes (same as before)
         for module in self.module_stats:

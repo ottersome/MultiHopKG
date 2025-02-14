@@ -1066,10 +1066,11 @@ def load_qa_data(
             f"\033[93m Found cache for the QA data {cached_metadata_path} will load it instead of working on {raw_QAData_path}. \033[0m"
         )
         # Read the first line of the raw csv to count the number of columns
-        train_metadata = json.load(open(cached_metadata_path))
+        train_metadata = json.load(open(cached_metadata_path.format(question_tokenizer_name, answer_tokenizer_name)))
         saved_paths: Dict[str, str] = train_metadata["saved_paths"]
 
         train_df = pd.read_parquet(saved_paths["train"])
+        # TODO: Eventually use this to avoid data leakage
         dev_df = pd.read_parquet(saved_paths["dev"])
         test_df = pd.read_parquet(saved_paths["test"])
 
@@ -1087,7 +1088,7 @@ def load_qa_data(
         question_tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
         answer_tokenzier   = AutoTokenizer.from_pretrained(answer_tokenizer_name)
         df_split, train_metadata = (
-            data_utils.process_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
+            data_utils.process_and_cache_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
                 raw_QAData_path,
                 cached_metadata_path,
                 question_tokenizer,
@@ -1103,12 +1104,13 @@ def load_qa_data(
     # Train Validation Test split
     ########################################
 
-    # Shuffle the Questions
-    shuffled_train_df = train_df.sample(frac=1).reset_index(drop=True)
-    train_df, val_df = train_test_split(
-        shuffled_train_df, test_size=0.2, random_state=42
-    )
-    return train_df, val_df, train_metadata
+    # All of this was unecessary it was already beign done before.
+    # shuffled_train_df = train_df.sample(frac=1).reset_index(drop=True)
+    # train_df, val_df = train_test_split(
+    #     shuffled_train_df, test_size=0.2, random_state=42
+    # )
+
+    return train_df, dev_df, train_metadata
 
 
 def main():
@@ -1242,27 +1244,27 @@ def main():
     # analyze the PCA
     #! This can be removed if PCA analysis is no longer needed,
     #! ow, its good to keep it here
-    if args.visualize:
-        plt.close() # close any matplotlib figures 
+    # if args.visualize:
+    #     plt.close() # close any matplotlib figures 
 
-        graph_emb = (knowledge_graph.get_all_entity_embeddings_wo_dropout()).detach().numpy()
-        graph_emb_complex = graph_emb[:,:1000] + 1j*graph_emb[:,1000:]
-        graph_mag = np.abs(graph_emb_complex)
-        pca_tmp = PCA(n_components=graph_mag.shape[1])
-        pca_tmp.fit(graph_mag)
+    #     graph_emb = (knowledge_graph.get_all_entity_embeddings_wo_dropout()).detach().numpy()
+    #     graph_emb_complex = graph_emb[:,:1000] + 1j*graph_emb[:,1000:]
+    #     graph_mag = np.abs(graph_emb_complex)
+    #     pca_tmp = PCA(n_components=graph_mag.shape[1])
+    #     pca_tmp.fit(graph_mag)
 
-        explained_variance_ratio = pca_tmp.explained_variance_ratio_
-        print(f"Sum of EVR = {np.sum(explained_variance_ratio)}")
-        num_features = np.argmax(np.cumsum(explained_variance_ratio) >= 0.95) + 1
-        print("Plot the PCA Explained Variance Ratio")
-        plt.figure(figsize=(16, 9))
-        plt.title(f"PCA Graph Embedding Explained Variance Ration\n{num_features} explain >= 95% of variance")
-        plt.plot(np.cumsum(explained_variance_ratio) * 100)
-        plt.xlabel("Features")
-        plt.ylabel("EVR in %")
-        plt.grid(True)
-        plt.savefig("saves/pca_graph_evr.png")
-        plt.close()
+    #     explained_variance_ratio = pca_tmp.explained_variance_ratio_
+    #     print(f"Sum of EVR = {np.sum(explained_variance_ratio)}")
+    #     num_features = np.argmax(np.cumsum(explained_variance_ratio) >= 0.95) + 1
+    #     print("Plot the PCA Explained Variance Ratio")
+    #     plt.figure(figsize=(16, 9))
+    #     plt.title(f"PCA Graph Embedding Explained Variance Ration\n{num_features} explain >= 95% of variance")
+    #     plt.plot(np.cumsum(explained_variance_ratio) * 100)
+    #     plt.xlabel("Features")
+    #     plt.ylabel("EVR in %")
+    #     plt.grid(True)
+    #     plt.savefig("saves/pca_graph_evr.png")
+    #     plt.close()
 
     # Setup the pretrained language model
     logger.info(":: Setting up the pretrained language model")
