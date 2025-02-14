@@ -199,7 +199,6 @@ def batch_loop(
     rewards_t = (
         torch.stack(rewards)
     ).permute(1,0,2)  # TODO: I think I need to add the gamma here
-
     # Get only masked, then mean
     rewards_t_unpacked = []
     for i, reward_batch_element in enumerate(rewards_t):
@@ -1196,46 +1195,19 @@ def main():
     ########################################
     # ! Currently using approximations, check if it this is the best way to go
     # ! Testing: exact computation
-
-    # Reduce dimensionality of the graph embeddings
-    n_comp = 20
-    if n_comp != knowledge_graph.get_all_entity_embeddings_wo_dropout().shape[1]: #* with pca
-        print(f"Applying PCA with n_components={n_comp} on the entities and relations!")
-        graph_pca = PCA(n_components=n_comp)
-        ents = knowledge_graph.get_all_entity_embeddings_wo_dropout().detach().numpy()
-        ents = np.abs(ents[:, :1000] + 1j*ents[:, 1000:])
-        rels = knowledge_graph.get_all_relations_embeddings_wo_dropout().detach().numpy()
-        # rels = np.abs(rels[:, :1000] + 1j*rels[:, 1000:])
-
-        graph_pca.fit(ents)
-        ent_emb_pca = graph_pca.transform(ents)
-        ent_emb_pca = torch.from_numpy(ent_emb_pca)
-        ann_index_manager_ent = ANN_IndexMan(
-            ent_emb_pca,
-            exact_computation=True,
-            nlist=100,
-        )
-        # rel_emb_pca = graph_pca.transform(rels)
-        # rel_emb_pca = torch.from_numpy(rel_emb_pca)
-        ann_index_manager_rel = ANN_IndexMan(
-            torch.from_numpy(rels),
-            exact_computation=True,
-            nlist=100,
-        )
-    else: #* without pca
-        ann_index_manager_ent = ANN_IndexMan(
-            knowledge_graph.get_all_entity_embeddings_wo_dropout(),
-            exact_computation=True,
-            nlist=100,
-        )
-        ann_index_manager_rel = ANN_IndexMan(
-            knowledge_graph.get_all_relations_embeddings_wo_dropout(),
-            exact_computation=True,
-            nlist=100,
-        )
+    ann_index_manager_ent = ANN_IndexMan(
+        knowledge_graph.get_all_entity_embeddings_wo_dropout(),
+        exact_computation=True,
+        nlist=100,
+    )
+    ann_index_manager_rel = ANN_IndexMan(
+        knowledge_graph.get_all_relations_embeddings_wo_dropout(),
+        exact_computation=True,
+        nlist=100,
+    )
 
     graph_points = None
-    graph_annotation = None
+    graph_annotation = []
     graph_vis_model = None
     if args.visualize:
         graph_emb = (knowledge_graph.get_all_entity_embeddings_wo_dropout()).cpu().detach().numpy()

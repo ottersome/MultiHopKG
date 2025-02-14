@@ -133,7 +133,6 @@ def get_args() -> argparse.Namespace:
     
     # Debugging Parameters
     ap.add_argument('--batches_b4_eval', type=int, default=1, help='Number of batches to run before evaluation (default: 100)')
-    ap.add_argument('--verbose','-v',action="store_true", help="Verbose on the results of evaluation.")
     ap.add_argument('--visualize','-vv',action="store_true", help="Visualize the results of evaluation.")
     ap.add_argument('--graph-vis-model', type=str, default="pca", help="The model type to use to visualize the displacement of the agent in the KGE in 2D.")
     ap.add_argument('--graph-vis-points', type=int, default=100, help="The number of graph points to use for the visualization.")

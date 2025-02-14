@@ -109,7 +109,6 @@ class ANN_IndexMan:
 
 
         # TODO: Check that we are acutally passing the right shape of input
-        print(f"target_embeddings.shape: {target_embeddings.shape}")
         distances, indices = self.index.search(target_embeddings, topk)  # type: ignore
 
         # TODO: Add them back later the exact embedding extraction

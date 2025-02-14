@@ -124,6 +124,7 @@ models/images
 wandb
 models/sun
 models/sun.tar
+models.tar
 models/sun_backup
 launch.json
 model_graph

@@ -640,8 +640,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         #                     min=self.knowledge_graph.sun_model.entity_embedding.min(),
         #                     max=self.knowledge_graph.sun_model.entity_embedding.max()) 
 
-        print(f"self.current_position.detach().shape: {self.current_position.detach().shape}")
-        
+
         matched_entity_embeddings, corresponding_ent_idxs = self.ann_index_manager_ent.search(
             self.current_position.detach(), topk=1
         )
