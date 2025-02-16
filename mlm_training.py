@@ -312,6 +312,10 @@ def evaluate_training(
         pad_token_id = answer_tokenizer.pad_token_id
         if bos_token_id is None or eos_token_id is None or pad_token_id is None:
             raise ValueError("Assumptions Wrong. The answer_tokenizer must have a bos_token_id, eos_token_id and pad_token_id")
+
+        ########################################
+        # Development/Validation Batch Loop
+        ########################################
         pg_loss, eval_extras = batch_loop_dev(
             env,
             mini_batch,
