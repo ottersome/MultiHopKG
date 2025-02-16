@@ -557,6 +557,9 @@ def dump_evaluation_metrics(
         wandb_table = wandb.Table(dataframe=wandb_df)
         wandb.log({"qa_results": wandb_table})
 
+        # wandb.log({"entropy": wandb.Histogram(evaluation_metrics_dictionary["hunch_llm_entropy"])})
+        wandb.log({"hunchllm/entropy": evaluation_metrics_dictionary["hunch_llm_entropy"].mean().item()})
+
 
     # Save the emebeddings of the current position and the initial position of the agent
     if visualize:
