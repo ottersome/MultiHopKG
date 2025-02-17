@@ -666,7 +666,9 @@ def train_multihopkg(
     ########################################
     # Epoch Loop
     ########################################
+    epoch_times = []
     for epoch_id in tqdm(range(start_epoch, epochs), desc="Epoch"):
+        epoch_start_time = time.time()
 
         logger.info("Epoch {}".format(epoch_id))
         # TODO: Perhaps evaluate the epochs?
