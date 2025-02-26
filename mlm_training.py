@@ -49,6 +49,7 @@ from multihopkg.logging import setup_logger
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 from multihopkg.run_configs import alpha
+from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
 from multihopkg.utils.convenience import tensor_normalization
 from multihopkg.utils.setup import set_seeds
 from multihopkg.vector_search import ANN_IndexMan
@@ -81,7 +82,7 @@ def initialize_model_directory(args, random_seed=None):
 def initial_setup() -> Tuple[argparse.Namespace, PreTrainedTokenizer, PreTrainedTokenizer, logging.Logger]:
     global logger
     args = alpha.get_args()
-    args = alpha.overload_parse_defaults_with_yaml(args.preferred_config, args)
+    args = overload_parse_defaults_with_yaml(args.preferred_config, args)
 
     set_seeds(args.seed)
     logger = setup_logger("__MAIN__")
