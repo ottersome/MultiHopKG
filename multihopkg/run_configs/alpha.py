@@ -10,34 +10,6 @@ import os
 import sys
 import yaml
 
-def overload_parse_defaults_with_yaml(yaml_location:str, args: argparse.Namespace):
-    with open(yaml_location, "r") as f:
-        print(f"Trying to import the yaml file {yaml_location}")
-        yaml_args = yaml.load(f, Loader=yaml.FullLoader)
-        print(f"Imported yam with keys {yaml_args.keys()}")
-        overloaded_args = recurse_til_leaf(yaml_args)
-        for k, v in overloaded_args.items():
-            if k in args.__dict__:
-                # args.__dict__[k] = v
-                # Change the property not they key
-                setattr(args, k, v)
-            else:
-                raise ValueError(f"Key {k} not found in args")
-    return args
-
-def recurse_til_leaf(d: dict, parent_key: str = "") -> dict:
-    return_dict = {}
-    for k, v in d.items():
-        next_key = f"{parent_key}_{k}" if parent_key != "" else k
-        if isinstance(v, dict):
-            deep_dict = recurse_til_leaf(v, parent_key=next_key)
-            return_dict.update(deep_dict)
-        else:
-            return_dict[next_key] = v
-    return return_dict
-
-
-
 def get_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
 
@@ -163,7 +135,7 @@ def get_args() -> argparse.Namespace:
                     help='mini-batch size during training (default: 256)')
     ap.add_argument('--batch_size_dev', type=int, default=64,
                     help='mini-batch size during inferece (default: 64)')
-    ap.add_argument('--learning_rate', type=float, default=0.0001,
+    ap.add_argument('--learning_rate', type=float, default=0.00001,
                     help='learning rate (default: 0.0001)')
     ap.add_argument('--learning_rate_decay', type=float, default=1.0,
                     help='learning rate decay factor for the Adam optimizer (default: 1)')
@@ -182,7 +154,7 @@ def get_args() -> argparse.Namespace:
                          'dropout annealing is not used when the value is >= 1000.)')
     ap.add_argument('--steps_in_episode', type=int, default=20,
                     help='number of steps in episode (default: 20)')
-    ap.add_argument('--num_rollout_steps', type=int, default=3,
+    ap.add_argument('--num_rollout_steps', type=int, default=8,
                     help='maximum path length (default: 3)')
     ap.add_argument('--beta', type=float, default=0.0,
                     help='entropy regularization weight (default: 0.0)')
@@ -194,6 +166,11 @@ def get_args() -> argparse.Namespace:
                     help='size of beam used in beam search inference (default: 100)')
     ap.add_argument('--num_epochs_till_eval', type=int, default=100,
                     help='Number of epochs to run before running evaluation')
+    ap.add_argument('--num_batches_till_eval', type=int, default=15,
+                    help='Number of batches to run before running evaluation')
+    ap.add_argument('--rl_gamma', type=float, default=0.9,
+                    help='gamma for the RL algorithm')
+    
 
     ap.add_argument('--preferred_config', type=str, default="configs/my_config.yaml", help="The path to the configuration file (default: configs/sun.json)")
     ap.add_argument('--device', type=str, default="cuda:0", help="The device to run on (default: cuda:0)")
