@@ -11,19 +11,6 @@ from torch.nn import Embedding
 from multihopkg.logging import setup_logger
 from transformers import BartForConditionalGeneration, BartTokenizer, PreTrainedTokenizer
 
-class GraphEncoder(nn.Module):
-    """
-    Simple Projection Idea for now
-    """
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super(GraphEncoder, self).__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, output_dim)
-        self.activation = nn.ReLU()
-    
-    def forward(self, graph_embeddings):
-        x = self.activation(self.fc1(graph_embeddings))
-        return self.fc2(x)
 
 class HunchBart(nn.Module):
     def __init__(
@@ -36,6 +23,7 @@ class HunchBart(nn.Module):
         self.bart = BartForConditionalGeneration.from_pretrained(pretrained_bart_model)
         self.bart_hidden_dim = self.bart.config.d_model
         self.pretrained_bart_tokenizer = answer_tokenizer
+
         self.embedding_translator = nn.Sequential(
             nn.Linear(graph_embedding_dim, self.bart_hidden_dim),
             nn.LayerNorm(self.bart_hidden_dim),
@@ -47,6 +35,7 @@ class HunchBart(nn.Module):
         # Pass graph embeddings through custom encoder
         # Pass the outputs to BART decoder
         translated_embeddings = self.embedding_translator(graph_embeddings)
+        # translated_embeddings = graph_embeddings
 
         outputs = self.bart(
             inputs_embeds=translated_embeddings,
@@ -54,6 +43,10 @@ class HunchBart(nn.Module):
         )
         return outputs
 
+    def freeeze_decoder(self):
+        """
+        Will freeze the language model, will train the graph embedding translator
+        """
 
 class ExpensiveHunchLLM(torch.nn.Module):
     """

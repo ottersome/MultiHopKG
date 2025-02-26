@@ -44,7 +44,7 @@ from transformers import (
 import multihopkg.data_utils as data_utils
 from multihopkg.environments import Observation
 from multihopkg.knowledge_graph import ITLKnowledgeGraph, SunKnowledgeGraph
-from multihopkg.language_models import HunchBart, collate_token_ids_batch, GraphEncoder
+from multihopkg.models_language.classical import HunchBart, collate_token_ids_batch, GraphEncoder
 from multihopkg.logging import setup_logger
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
