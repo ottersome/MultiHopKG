@@ -553,12 +553,7 @@ class ITLKnowledgeGraph(nn.Module):
             self.entity_embeddings is not None
         ), "No support yet for relation only graphs"
 
-        # TOTWEAK: not sure if centroid is the correct approach but seemed like the first naive idea.
-        # ! Approach 1: Calculate the centroid of the entity embeddings as a starting point
         self.centroid = calculate_entity_centroid(self.entity_embeddings)
-        
-        # ! Approach 2: Sample a random entity as a starting point
-        # self.centroid = sample_random_entity(self.entity_embeddings)
 
         # Load the dictionary here.
         # NOTE: If using embedding types other than conve, we need to implement that ourselves
@@ -589,6 +584,24 @@ class ITLKnowledgeGraph(nn.Module):
     def get_centroid(self) -> torch.Tensor:
         return self.centroid
 
+    def get_starting_embedding(self, startType: str = 'centroid', ent_id: torch.Tensor = None)   -> torch.Tensor:
+        """
+        Returns the starting point for the navigation.
+            
+            :param startType: The type of starting point to use. Options are 'centroid', 'random', 'relevant'
+            :param ent_id: The entity id to use as the starting point if 'relevant' is chosen.
+            :return: The starting point for the navigation.
+        """
+        if startType == 'centroid':
+            return self.get_centroid()
+        elif startType == 'random':
+            return sample_random_entity(self.sun_model.entity_embedding)
+        elif startType == 'relevant' and (type(ent_id) is not type(None)):
+            return get_embeddings_from_indices(self.sun_model.entity_embedding, ent_id)
+        else:
+            raise Warning("Invalid navigation starting type/point. Using centroid instead.")
+            return self.centroid
+
     def get_all_entity_embeddings_wo_dropout(self) -> torch.Tensor:
         assert self.entity_embeddings is not None  # Again, lsp
         return self.entity_embeddings.weight
@@ -612,6 +625,24 @@ def sample_random_entity(embeddings: Union[nn.Embedding, nn.Parameter]):
         sample = embeddings.weight.data[idx].squeeze()
     return sample
 
+def get_embeddings_from_indices(embeddings: Union[nn.Embedding, nn.Parameter], indices: torch.Tensor) -> torch.Tensor:
+    # ! TODO: Check that the indices are mapped correctly
+    """
+    Given a tensor of indices, returns the embeddings of the corresponding rows.
+    
+    Args:
+        embeddings (Union[nn.Embedding, nn.Parameter]): The embedding matrix.
+        indices (torch.Tensor): A tensor of indices.
+    
+    Returns:
+        torch.Tensor: The embeddings corresponding to the given indices.
+    """
+    if isinstance(embeddings, nn.Parameter):
+        return embeddings.data[indices]
+    elif isinstance(embeddings, nn.Embedding):
+        return embeddings.weight.data[indices]
+    else:
+        raise TypeError("Embeddings must be either nn.Parameter or nn.Embedding")
 
 class SunKnowledgeGraph(nn.Module):
     """
@@ -740,11 +771,7 @@ class SunKnowledgeGraph(nn.Module):
         # print(f"Sun Eval Metrics: {metrics}")
 
         # NOTE: not sure if centroid is the correct approach but seemed like the first naive idea.
-        # ! Approach 1: Calculate the centroid of the entity embeddings as a starting point
-        # self.centroid = calculate_entity_centroid(self.sun_model.entity_embedding)
-
-        # ! Approach 2: Sample a random entity as a starting point
-        self.centroid = sample_random_entity(self.sun_model.entity_embedding)
+        self.centroid = calculate_entity_centroid(self.sun_model.entity_embedding)
 
         # Load the dictionary here.
         # NOTE: If using embedding types other than conve, we need to implement that ourselves
@@ -793,10 +820,27 @@ class SunKnowledgeGraph(nn.Module):
 
     def get_relation_dim(self):
         return self.relation_dim
-
+    
     def get_centroid(self) -> torch.Tensor:
-        self.centroid = sample_random_entity(self.sun_model.entity_embedding)
         return self.centroid
+
+    def get_starting_embedding(self, startType: str = 'centroid', ent_id: int = None)   -> torch.Tensor:
+        """
+        Returns the starting point for the navigation.
+            
+            :param startType: The type of starting point to use. Options are 'centroid', 'random', 'relevant'
+            :param ent_id: The entity id to use as the starting point if 'relevant' is chosen.
+            :return: The starting point for the navigation.
+        """
+        if startType == 'centroid':
+            return self.get_centroid()
+        elif startType == 'random':
+            return sample_random_entity(self.sun_model.entity_embedding)
+        elif startType == 'relevant' and not (isinstance(ent_id, type(None))):
+            return get_embeddings_from_indices(self.sun_model.entity_embedding, ent_id)
+        else:
+            raise Warning("Invalid navigation starting type/point. Using centroid instead.")
+            return self.centroid
 
     # WE ARE USING THIS ONE
     def get_all_entity_embeddings_wo_dropout(self) -> torch.Tensor:

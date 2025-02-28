@@ -94,7 +94,9 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--raw_QAData_path', type=str, default="./data/FB15k/freebaseqa_clean.csv", help="Directory where the QA knowledge graph data is stored (default: None)")
     ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/itl/freebaseqa_clean.json", help="Path for precomputed QA knowledge graph data. Precomputing is mostly tokenizaiton.")
     ap.add_argument('--force_data_prepro', '-f', action="store_true", help="Force the data prepro to run even if the data is already cached.")
-    
+    ap.add_argument('--nav_start_emb_type', type=str, default="centroid", help="The starting position of the navigator in the graph. Can be 'centroid', 'random', or 'relevant' (default: centroid)")
+    ap.add_argument('--use_path_reward', type=bool, default=False, help="Reward the navigator for taking a relevant path (default: False)")
+
     # Entity and Relationship Human Readability
     ap.add_argument('--node_data_path', type=str, default='./data/FB15k/node_data.csv', help='Path to the CSV file containing the name mapping for the entity.')
     ap.add_argument('--node_data_key', type=str, default='MID', help='Special key type used for the entity. i.e., MID for FB15k or RDF for Qid for Fb-Wiki.')
@@ -130,9 +132,12 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--llm_ff_dropout_rate", default=0.1)
     ap.add_argument("--llm_dropout_rate", default=0.1)
     ap.add_argument("--max_seq_length", default=1024)
+    
+    # Debugging Parameters
     ap.add_argument('--batches_b4_eval', type=int, default=1, help='Number of batches to run before evaluation (default: 100)')
-    ap.add_argument('--visualize','-vv',action="store_true", help="Verbose on the results of evaluation.")
-
+    ap.add_argument('--visualize','-vv',action="store_true", help="Visualize the results of evaluation.")
+    ap.add_argument('--graph-vis-model', type=str, default="pca", help="The model type to use to visualize the displacement of the agent in the KGE in 2D.")
+    ap.add_argument('--graph-vis-points', type=int, default=100, help="The number of graph points to use for the visualization.")
 
     # NOTE: Legacy Parameters
     # Might want to get rid of them as we see fit.
