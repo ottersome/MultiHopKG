@@ -461,6 +461,52 @@ class KGEModel(nn.Module):
         im_est_tail = re_head * im_relation + im_head * re_relation
 
         return torch.cat([re_est_tail, im_est_tail], dim=-1)
+    
+    def flexible_forward_protate(
+        self, cur_states: torch.Tensor, cur_actions: torch.Tensor, angle_input: bool = False 
+    ) -> torch.Tensor:
+        """
+        Applies a phase rotation to the head entity given the relation. 
+        This is meant to work on the original RotatE model.
+        """
+        if angle_input:
+            pi = 3.14159262358979323846
+            head_rad = cur_states/(self.embedding_range.item()/pi)
+        else:
+            head = torch.complex(*torch.chunk(cur_states, 2, dim=-1))   # head is a complex number
+            head_rad = torch.angle(head)                                # angles are represented in radians
+            head_mag = torch.abs(head)
+        
+        relation = cur_actions
+        
+        rotation_rad = self.pRotatE_Eval(head_rad, relation)        # apply the phase rotation, result in rads   
+        
+        if angle_input:
+            return rotation_rad * (self.embedding_range.item()/pi)
+        else:
+            tail = head_mag * torch.exp(1j * rotation_rad)              # convert back to complex number
+            return torch.cat([tail.real, tail.imag], dim=-1)
+
+    def pRotatE_Eval(self, phase_head, relation):
+        """
+        Calculates the phase rotation of the head entity given the relation. 
+        Assumes that the entity is represented as a phase in radians (not a complex number).
+        
+        args:
+            phase_head: torch.Tensor. Phase of the head embedding (in radians)
+            relation: torch.Tensor
+
+        returns:
+            torch.Tensor. Phase of the translated head embedding (in radians). Not limited to [-pi, pi]
+        """
+        pi = 3.14159262358979323846
+        
+        #Make phases of entities and relations uniformly distributed in [-pi, pi]
+        phase_relation = relation/(self.embedding_range.item()/pi)
+
+        phase_translation = phase_head + phase_relation
+
+        return phase_translation
 
 class LegacyKGEModel(nn.Module):
     def __init__(
