@@ -23,6 +23,7 @@ from typing import Tuple, List, Optional
 import pdb
 
 import sys
+import random
 
 class GraphSearchPolicy(nn.Module):
     def __init__(
@@ -496,6 +497,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         knowledge_graph: SunKnowledgeGraph,
         relation_dim: int,
 
+        nav_start_emb_type: str,
         node_data: str,
         node_data_key: str,
         rel_data: str,
@@ -503,9 +505,10 @@ class ITLGraphEnvironment(Environment, nn.Module):
         ann_index_manager_ent: ANN_IndexMan,
         ann_index_manager_rel: ANN_IndexMan,
         steps_in_episode: int,
-        trained_pca,
-        graph_pca,
-        graph_annotation: str,
+        graph_vis_model,
+        graph_vis_model_type: str,
+        graph_points: np.ndarray,
+        graph_annotation: List[str],
     ):
         super(ITLGraphEnvironment, self).__init__()
         # Should be injected via information extracted from Knowledge Grap
@@ -524,8 +527,9 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.ann_index_manager_ent = ann_index_manager_ent
         self.ann_index_manager_rel = ann_index_manager_rel
         self.steps_in_episode = steps_in_episode
-        self.trained_pca = trained_pca
-        self.graph_pca = graph_pca
+        self.graph_vis_model = graph_vis_model
+        self.graph_vis_model_type = graph_vis_model_type
+        self.graph_points = graph_points
         self.graph_annotation = graph_annotation
 
         self.entity2title = {}
@@ -548,6 +552,9 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.current_step_no = (
             self.steps_in_episode
         )  # This value denotes being at "reset" state. As in, when episode is done
+
+        assert nav_start_emb_type in ['centroid', 'random', 'relevant'], f"Invalid start_embedding_type: {nav_start_emb_type}"
+        self.nav_start_emb_type = nav_start_emb_type
 
         ########################################
         # Get the actual torch modules defined
@@ -626,7 +633,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # ! Restraining the movement to the neighborhood
 
-        self.current_position = self.knowledge_graph.sun_model.flexible_forward_rotate(
+        # ! TODO: Make the type of rotate used a parameter, stick to protate for now
+        self.current_position = self.knowledge_graph.sun_model.flexible_forward_protate(
             self.current_position, actions, 
         )
 
@@ -637,6 +645,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # self.current_position = torch.clamp(self.current_position,
         #                     min=self.knowledge_graph.sun_model.entity_embedding.min(),
         #                     max=self.knowledge_graph.sun_model.entity_embedding.max()) 
+
 
         matched_entity_embeddings, corresponding_ent_idxs = self.ann_index_manager_ent.search(
             self.current_position.detach(), topk=1
@@ -660,6 +669,11 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # ! Approach 3: Normalization on the Projection (Reduces gradients variance, but still loses it.)
         # projected_state = F.normalize(projected_state, p=2, dim=1)
 
+        # ! Approach 4: Projection with LSTM
+        # concatenations = concatenations.unsqueeze(1)
+        # projected_state, _ = self.concat_projector(concatenations)
+        # projected_state = projected_state.squeeze(1)
+
         # TODO: Think about this, we have a transformer so I dont think we need to do this.
         # concatenations_w_sequence = concatenations.unsqueeze(1)
         # cur_state, _ = self.path_encoder(concatenations)
@@ -669,7 +683,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             position=matched_entity_embeddings,
             position_id=corresponding_ent_idxs,
             state=projected_state,
-            kge_cur_pos=self.current_position.detach(),
+            kge_cur_pos=self.current_position, #.detach(), # ! EYE ON THIS, it cannot be detached for the reward calculation
             kge_prev_pos=detached_curpos,
             kge_action=detached_actions,
         )
@@ -730,7 +744,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         return W1, W2, W1Dropout, W2Dropout, path_encoder
 
-    def reset(self, initial_states_info: torch.Tensor) -> Observation:
+    def reset(self, initial_states_info: torch.Tensor, relevant_ent: List[List[None]] = None) -> Observation:
         """
         Will reset the episode to the initial position
         This will happen by grabbign the initial_states_info embeddings, concatenating them with the centroid and then passing them to the environment
@@ -752,25 +766,53 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.current_questions_emb = initial_states_info  # (batch_size, emb_dim)
         self.current_step_no = 0
 
-        # Create more complete representation of state
-        centroid = self.knowledge_graph.get_centroid()
+        if self.nav_start_emb_type == 'centroid':
+            # Create more complete representation of state
+            centroid = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type)
 
-        tiled_centroids = centroid.unsqueeze(0).repeat(len(initial_states_info), 1)
+            init_emb = centroid.unsqueeze(0).repeat(len(initial_states_info), 1)
+
+            self.current_position = init_emb.clone()
+        elif self.nav_start_emb_type == 'random':
+            # Create more complete representation of state
+            random_pos = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type)
+
+            init_emb = random_pos.unsqueeze(0).repeat(len(initial_states_info), 1)
+
+            self.current_position = init_emb.clone()
+        elif self.nav_start_emb_type == 'relevant':
+            relevant_ent = torch.tensor([random.choice(sublist) for sublist in relevant_ent], dtype=torch.int)
+        
+            # Create more complete representation of state
+            init_emb = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, relevant_ent)
+
+            if init_emb.dim() == 1: init_emb = init_emb.unsqueeze(0)
+            assert init_emb.shape[0] == len(initial_states_info), "Error! Initial states info and relevant embeddings must have the same batch size."
+
+            self.current_position = init_emb.clone()
+        else:
+            raise NotImplementedError
 
         # ! Inspecting projections (gradients variance is too high from the start)
 
         # ! Approach 1: Normal Projection
         concatenations = torch.cat(
-            [self.current_questions_emb, tiled_centroids], dim=-1
+            [self.current_questions_emb, init_emb], dim=-1
         )
         projected_state = self.concat_projector(concatenations)
 
         # ! Approach 2: Attention Fusion (Gradients are not moving, must recheck)
-        # projected_state = self.concat_projector(self.current_questions_emb, tiled_centroids)
+        # projected_state = self.concat_projector(self.current_questions_emb, init_emb)
         
         # ! Approach 3: Normalization on the Projection (Reduces gradients variance, but still loses it.)
 
         # projected_state = F.normalize(projected_state, p=2, dim=1)
+
+        # ! Approach 4: Projection with LSTM
+        
+        # concatenations = concatenations.unsqueeze(1)
+        # projected_state, _ = self.concat_projector(concatenations)
+        # projected_state = projected_state.squeeze(1)
 
         # NOTE: We were using path encoder here before and are not sure if removing is good idea.
 
@@ -778,10 +820,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
         # projected_state = projected_concat
 
         self.current_step = 0
-
-        self.current_position = centroid.unsqueeze(0).repeat(
-            len(initial_states_info), 1
-        )
 
         observation = Observation(
             position=self.current_position.detach().cpu().numpy(),
@@ -793,11 +831,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
         )
 
         return observation
-
-    def get_centroid(self) -> torch.Tensor:
-        if not self.centroid:
-            self.centroid = self.knowledge_graph.get_centroid()
-        return self.centroid
 
     # * This is Nura's code. Might not really bee kj
     def get_action_space(self, e, obs, kg):

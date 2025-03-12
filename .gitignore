@@ -123,6 +123,9 @@ models/itl
 models/images
 wandb
 models/sun
+models/sun.tar
+models/sun_protate
+models.tar
 models/sun_backup
 launch.json
 model_graph

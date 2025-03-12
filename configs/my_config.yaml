@@ -1,7 +1,7 @@
-pretrained_sun_model_loc: "models/sun"
+pretrained_sun_model_loc: "models/sun_protate"
 data_dir: "data/FB15k"
 model: "operational_rotate"
-graph_embed_model_name: "RotatE"
+graph_embed_model_name: "pRotatE"
 gamma: 1.0
 freebaseqa_path: "data/freebaseqa"
 num_rollout_steps: 3

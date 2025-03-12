@@ -43,7 +43,7 @@ from transformers import (
 
 import multihopkg.data_utils as data_utils
 from multihopkg.environments import Observation
-from multihopkg.knowledge_graph import ITLKnowledgeGraph, SunKnowledgeGraph
+from multihopkg.knowledge_graph import ITLKnowledgeGraph, SunKnowledgeGraph, get_embeddings_from_indices
 from multihopkg.language_models import HunchBart, collate_token_ids_batch, GraphEncoder
 from multihopkg.logging import setup_logger
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
@@ -51,8 +51,11 @@ from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
 from multihopkg.run_configs import alpha
 from multihopkg.utils.convenience import tensor_normalization
 from multihopkg.utils.setup import set_seeds
-from multihopkg.vector_search import ANN_IndexMan
+from multihopkg.vector_search import ANN_IndexMan_pRotatE
 from multihopkg.logs import torch_module_logging
+
+from multihopkg.emb.operations import angular_difference, normalize_angle_smooth
+from multihopkg.emb.operations import _chamfer_distance_part1, _chamfer_distance_part2, _chamfer_distance_cosine_part1, _chamfer_distance_cosine_part2
 
 # PCA
 from sklearn.decomposition import PCA
@@ -107,6 +110,7 @@ def batch_loop_dev(
     hunch_llm: nn.Module,
     steps_in_episode: int,
     pad_token_id: int,
+    use_path_reward: bool = False,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
     """
     Specifically for computing any extra metrics on the dev set.
@@ -120,19 +124,26 @@ def batch_loop_dev(
     device = nav_agent.fc1.weight.device
 
     # Deconstruct the batch
-    questions = mini_batch["question"].tolist()
-    answers = mini_batch["answer"].tolist()
+    questions = mini_batch["Question"].tolist()
+    answers = mini_batch["Answer"].tolist()
+    relevant_entities = mini_batch["Relevant-Entities"].tolist()
+    relevant_rels = mini_batch["Relevant-Relations"].tolist()
+    answer_id = mini_batch["Answer-Entity"].tolist()
     question_embeddings = env.get_llm_embeddings(questions, device)
     answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
 
     logger.warning(f"About to go into rollout")
-    log_probs, rewards, eval_extras = rollout(
+    log_probs, rewards, path_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         hunch_llm,
         env,
         question_embeddings,
         answer_ids_padded_tensor,
+        relevant_entities = relevant_entities,
+        relevant_rels = relevant_rels,
+        answer_id = answer_id,
+        calculate_path_reward=use_path_reward,
         dev_mode=True,
     )
 
@@ -148,7 +159,10 @@ def batch_loop_dev(
         not torch.isnan(rewards_t).any() and not torch.isnan(log_probs_t).any()
     ), "NaN detected in the rewards or log probs (batch_loop_dev). Aborting training."
 
+    # ! TODO: Consider using the path reward here
     pg_loss = -1 * rewards_t * log_probs_t
+    if use_path_reward:
+        pg_loss += -1 * path_rewards.sum(dim=-1).unsqueeze(0)
 
     # logger.info(f"Does pg_loss require grad? {pg_loss.requires_grad}")
 
@@ -164,6 +178,7 @@ def batch_loop(
     bos_token_id: int,
     eos_token_id: int,
     pad_token_id: int,
+    use_path_reward: bool = False,
 ) -> Tuple[torch.Tensor, Dict[str, Any]]:
 
     ########################################
@@ -173,8 +188,11 @@ def batch_loop(
     device = nav_agent.fc1.weight.device
 
     # Deconstruct the batch
-    questions = mini_batch["question"].tolist()
-    answers = mini_batch["answer"].tolist()
+    questions = mini_batch["Question"].tolist()
+    answers = mini_batch["Answer"].tolist()
+    relevant_entities = mini_batch["Relevant-Entities"].tolist()
+    relevant_rels = mini_batch["Relevant-Relations"].tolist()
+    answer_id = mini_batch["Answer-Entity"].tolist()
     logger.debug("About to get llmb embeddings")
     question_embeddings = env.get_llm_embeddings(questions, device)
     logger.debug("About to collate llm embeddings")
@@ -182,13 +200,17 @@ def batch_loop(
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
     logger.debug("About to rollout")
-    log_probs, rewards, eval_extras = rollout(
+    log_probs, rewards, path_rewards, eval_extras = rollout(
         steps_in_episode,
         nav_agent,
         hunch_llm,
         env,
         question_embeddings,
         answer_ids_padded_tensor,
+        relevant_entities = relevant_entities,
+        relevant_rels = relevant_rels,
+        answer_id = answer_id,
+        calculate_path_reward=use_path_reward,
     )
 
     ########################################
@@ -199,7 +221,6 @@ def batch_loop(
     rewards_t = (
         torch.stack(rewards)
     ).permute(1,0,2)  # TODO: I think I need to add the gamma here
-
     # Get only masked, then mean
     rewards_t_unpacked = []
     for i, reward_batch_element in enumerate(rewards_t):
@@ -231,8 +252,13 @@ def batch_loop(
     # Normalize the rewards
     # rewards_t = (rewards_t - rewards_t.mean()) / (rewards_t.std() + 1e-8)
 
+    # ! TODO: Consider using the path reward here
     pg_loss = -discounted_rewards * log_probs_t # Have to negate it into order to do gradient ascent
     # TODO: Perhaps only use the first few steps ?
+
+    if use_path_reward:
+        pg_loss += -1 * path_rewards.sum(dim=-1).unsqueeze(1) # TOREM: path_rewards is a tensor of shape (batch_size, reward_type)
+        # current rewards types [relevant_node_reward, answer_node_reward, action_reward]
 
     # ! Approach 2: Use the discounted rewards
     # pg_loss = -1 * (discounted_rewards * log_probs_t)
@@ -260,7 +286,9 @@ def evaluate_training(
     writer: SummaryWriter,
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
-    wandb_on: bool
+    wandb_on: bool,
+    use_path_reward: bool = False,
+    answer_id: List[int] = None,
 ):
     print("Running evalute_training")
 
@@ -303,8 +331,11 @@ def evaluate_training(
         # ):  # We dont want to evaluate on incomplete batches
         #     continue
 
-        current_evaluations["reference_questions"] = mini_batch["question"]
-        current_evaluations["true_answer"] = mini_batch["answer"]
+        current_evaluations["reference_questions"] = mini_batch["Question"]
+        current_evaluations["true_answer"] = mini_batch["Answer"]
+        current_evaluations["relevant_entities"] = mini_batch["Relevant-Entities"]
+        current_evaluations["relevant_relations"] = mini_batch["Relevant-Relations"]
+        current_evaluations["true_answer_id"] = mini_batch["Answer-Entity"]
 
         # Get the Metrics
         bos_token_id = answer_tokenizer.bos_token_id
@@ -323,6 +354,7 @@ def evaluate_training(
             hunch_llm,
             steps_in_episode,
             pad_token_id,
+            use_path_reward=use_path_reward,
         )
 
         'Extract all the variables from eval_extras'
@@ -350,7 +382,14 @@ def evaluate_training(
         just_dump_it_here = "./logs/evaluation_dumps.log"
         questions = current_evaluations["reference_questions"]
         answers = current_evaluations["true_answer"]
+
+        answer_tensor = get_embeddings_from_indices(
+            env.knowledge_graph.sun_model.entity_embedding,
+            torch.tensor(answer_id, dtype=torch.int),
+        ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
+
         dump_evaluation_metrics(
+            embedding_range=env.knowledge_graph.sun_model.embedding_range.item(),
             path_to_log=just_dump_it_here,
             evaluation_metrics_dictionary=current_evaluations,
             possible_relation_embeddings=kg.sun_model.relation_embedding,
@@ -363,12 +402,14 @@ def evaluate_training(
             id2relations=kg.id2relation,
             entity2title=env.entity2title,
             relation2title=env.relation2title,
-            trained_pca=env.trained_pca,
-            graph_pca=env.graph_pca,
+            graph_vis_model=env.graph_vis_model,
+            graph_vis_model_type=env.graph_vis_model_type,
+            graph_points=env.graph_points,
             graph_annotation=graph_annotation,
             visualize=visualize,
             writer=writer,						  
             wandb_on=wandb_on,
+            answer_tensor=answer_tensor,
         )
         # TODO: Maybe dump the language metrics in wandb ?
         # table = wandb.Table(
@@ -406,22 +447,25 @@ def evaluate_training(
 
 def dump_evaluation_metrics(
     path_to_log: str,
+    embedding_range: float,
     evaluation_metrics_dictionary: Dict[str, Any],
     possible_relation_embeddings: torch.Tensor,
-	vector_entity_searcher: ANN_IndexMan,								  
-    vector_rel_searcher: ANN_IndexMan,
+	vector_entity_searcher: ANN_IndexMan_pRotatE,								  
+    vector_rel_searcher: ANN_IndexMan_pRotatE,
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
     id2entity: Dict[int, str],
     id2relations: Dict[int, str],
     entity2title: Dict[str, str],
     relation2title: Dict[str, str],
-    trained_pca,
-    graph_pca,
+    graph_vis_model,
+    graph_vis_model_type: str,
+    graph_points: np.ndarray,
     graph_annotation: List[str],
     visualize: bool,
     writer: SummaryWriter,
     wandb_on: bool,
+    answer_tensor:torch.Tensor
 ):
     global initial_pos_flag
     global frame_count
@@ -463,18 +507,31 @@ def dump_evaluation_metrics(
             # The main values to work with
             sampled_actions = evaluation_metrics_dictionary["sampled_actions"][:, element_id]
             position_ids = evaluation_metrics_dictionary["position_ids"][:, element_id]
-            kge_cur_pos = evaluation_metrics_dictionary["kge_cur_pos"][:, element_id]
-            kge_prev_pos = evaluation_metrics_dictionary["kge_prev_pos"][:, element_id]
+            kge_cur_pos = evaluation_metrics_dictionary["kge_cur_pos"][:, element_id].cpu()
+            kge_prev_pos = evaluation_metrics_dictionary["kge_prev_pos"][:, element_id].cpu()
             kge_action = evaluation_metrics_dictionary["kge_action"][:, element_id]
             hunch_llm_final_guesses = evaluation_metrics_dictionary["hunch_llm_final_guesses"][:, element_id, :]
             questions = evaluation_metrics_dictionary["reference_questions"].iloc[element_id]
             answer = evaluation_metrics_dictionary["true_answer"].iloc[element_id]
 
+            relevant_entities = evaluation_metrics_dictionary["relevant_entities"].iloc[element_id]
+            relevant_rels = evaluation_metrics_dictionary["relevant_relations"].iloc[element_id]
+            answer_id = evaluation_metrics_dictionary["true_answer_id"].iloc[element_id]
+            ans_emb = answer_tensor[element_id,0].cpu()
+
             # Get the pca of the initial position
             if visualize and initial_pos_flag:
-                initial_pos = kge_prev_pos[0][None, :]
-                initial_pos_mag = np.abs(initial_pos[:, :1000].cpu().detach().numpy() + 1j*initial_pos[:, 1000:].cpu().detach().numpy())
-                initial_pos_pca = trained_pca.transform(initial_pos_mag)
+                initial_pos = kge_prev_pos.cpu().numpy()[0][None, :]
+                assert initial_pos.ndim == 2
+
+                initial_pos_complex = initial_pos[:, :initial_pos.shape[1]//2] + 1j*initial_pos[:, initial_pos.shape[1]//2:]
+                if graph_vis_model_type == "pca":
+                    initial_pos_points = graph_vis_model.transform(np.abs(initial_pos_complex))
+                elif graph_vis_model_type == "dist":
+                    # initial_pos_points = complex_distance(initial_pos_complex, initial_pos_complex, distance_metric=l2_distance)
+                    # graph_points = complex_distance(graph_points, initial_pos_complex, distance_metric=l2_distance)
+                    pass
+                
                 initial_pos_flag = False
 
             # Reconstruct the language output
@@ -491,6 +548,7 @@ def dump_evaluation_metrics(
             _, relation_indices = vector_rel_searcher.search(kge_action, 1)
             entity_emb, entity_indices = vector_entity_searcher.search(kge_cur_pos, 1)
             prev_emb, start_index = vector_entity_searcher.search(kge_prev_pos.detach().cpu(), 1)
+            # answer_emb, answer_indices = vector_entity_searcher.search(answer_tensor.squeeze(1).cpu().numpy(), 1)
 
             # combine index of start_index with the rest of entity_indices into pos_ids
             pos_ids = np.concatenate((start_index[0][:, None], entity_indices), axis=0)
@@ -500,6 +558,28 @@ def dump_evaluation_metrics(
             #     sampled_actions.detach().numpy(),
             # )
 
+            # -----------------------------------
+            'Context Tokens'
+
+            relevant_entities_tokens = [id2entity[index] for index in relevant_entities]
+            log_file.write(f"Relevant Entity Tokens: {relevant_entities_tokens}\n")
+
+            if entity2title:
+                entities_names = [entity2title[index] for index in relevant_entities_tokens]
+                log_file.write(f"Relevant Entity Names: {entities_names}\n")
+                wandb_steps.append(" , ".join(entities_names))
+
+            relevant_relations_tokens = [id2relations[int(index)] for index in relevant_rels]
+            log_file.write(f"Relevant Relations Tokens: {relevant_relations_tokens}\n")
+
+            if relation2title: 
+                relations_names = [relation2title[index] for index in relevant_relations_tokens]
+                log_file.write(f"Relevant Relations Names: {relations_names}\n")
+                wandb_steps.append(" -- ".join(relations_names))
+
+            # -----------------------------------
+            'Navigation Agent Tokens'
+
             relations_tokens = [id2relations[int(index)] for index in relation_indices.squeeze()]
             log_file.write(f"Relations Tokens: {relations_tokens}\n")
 
@@ -508,53 +588,72 @@ def dump_evaluation_metrics(
                 log_file.write(f"Relations Names: {relations_names}\n")
                 wandb_steps.append(" -- ".join(relations_names))
 
-            action_distance = []
-            for i0 in range(kge_action.shape[0] -1 ):
-                action_distance.append(f"{torch.dist(kge_action.detach().cpu()[i0], torch.tensor(kge_action[i0+1]).cpu()).item():.2e}")
-            
-            log_file.write(f"Distance between KGE Actions: {action_distance} \n")
-
             entities_tokens = [id2entity[index] for index in pos_ids.squeeze()]
             log_file.write(f"Entity Tokens: {entities_tokens}\n")
 
-            # if entity2title: FIX: This keeps raising KeyError
-                # entities_names = [entity2title[index] for index in entities_tokens]
-                # log_file.write(f"Entity Names: {entities_names}\n")
-                # wandb_positions.append(" -> ".join(entities_names))
+            if entity2title: 
+                entities_names = [entity2title[index] for index in entities_tokens]
+                log_file.write(f"Entity Names: {entities_names}\n")
+                wandb_steps.append(" --> ".join(entities_names))
+
+            # -----------------------------------
+            'Navigation Agent Distance Metrics'
+
+            action_distance = []
+            for i0 in range(kge_action.shape[0]):
+                angle = kge_action[i0].cpu()/(embedding_range/torch.pi)
+                action_distance.append(f"{(180/torch.pi)*normalize_angle_smooth(angle).abs().sum().item():.2e}") # calculates how much rotation was done
+            
+            log_file.write(f"Current Total Absolute Rotation (deg):\n {action_distance} \n")
+            # logger.info(f"Current Total Absolute Rotation (deg): {action_distance} \n")
+
+            # TODO: Add distance of current location to the answer entity
 
             position_distance = []
+            position_distance_avg = []
+            position_distance_ans = []
+            closest_emb_distance = []
+            # This results should match action distance for pRotatE, otherwise something is wrong, sort of a sanity check
             for i0 in range(kge_cur_pos.shape[0]):
-                position_distance.append(f"{torch.dist(kge_prev_pos[i0], kge_cur_pos[i0]).item():.2e}")
-                logger.info(f"Eucledian Distance between kge_pre_pos[i0] and kge_cur_pos[i0]: {torch.dist(kge_prev_pos[i0], kge_cur_pos[i0]).item():.2e}")
+                diff = angular_difference(kge_cur_pos[i0]/(embedding_range/torch.pi), kge_prev_pos[i0]/(embedding_range/torch.pi), smooth=True)
+                rotational_total = (180/torch.pi)*(diff.sum().item())
+                rotational_avg = (180/torch.pi)*(diff.mean().item())
 
-                # Luis:
-                # Divide the entities into imaginary and real parts
-                re_prev, im_prev = torch.chunk(kge_prev_pos[i0], 2)
-                re_cur, im_cur = torch.chunk(kge_cur_pos[i0], 2)
+                diff_ans = angular_difference(kge_cur_pos[i0]/(embedding_range/torch.pi), ans_emb/(embedding_range/torch.pi), smooth=True)
+                rotation_to_answer = (180/torch.pi)*(diff_ans.mean().item())
 
-                # Calculate the distance between them 
-                phase_prev = torch.angle(torch.complex(re_prev, im_prev))
-                phase_cur = torch.angle(torch.complex(re_cur, im_cur))
-                phase_diff = phase_cur - phase_prev
+                diff_closest = angular_difference(kge_cur_pos[i0]/(embedding_range/torch.pi), entity_emb[i0]/(embedding_range/torch.pi), smooth=True)
+                rotation_to_closest = (180/torch.pi)*(diff_closest.mean().item())
 
-                # Optionally wrap within [-pi, pi] for correct interpretation
-                # phase_diff = (phase_diff + torch.pi) % (2 * torch.pi) - torch.pi
-
-                logger.info(f"Phase difference mean between KGE Positions: {phase_diff.mean()} \n")
-                logger.info(f"Phase difference p2 between KGE Positions: {torch.norm(phase_diff, p=2).mean()} \n")
+                position_distance.append(f"{rotational_total:.2e}")
+                position_distance_avg.append(f"{rotational_avg:.2e}")
+                position_distance_ans.append(f"{rotation_to_answer:.2e}")
+                closest_emb_distance.append(f"{rotation_to_closest:.2e}")
 
 
-            log_file.write(f"Distance between KGE Positions: {position_distance} \n")
+            log_file.write(f"Rotation between KGE Positions (abs total in deg):\n {position_distance} \n")
+            # logger.info(f"Rotation between KGE Positions (abs total): {position_distance} \n")
 
-            closest_distance = []
-            for i0 in range(kge_cur_pos.shape[0]):
-                closest_distance.append(f"{torch.dist(kge_cur_pos[i0].cpu(), torch.tensor(entity_emb[i0]).cpu()).item():.2e}")
+            log_file.write(f"Rotation between KGE Positions (abs avg in deg):\n {position_distance_avg} \n")
+            # logger.info(f"Rotation between KGE Positions (abs avg): {position_distance_avg} \n")
 
-            log_file.write(f"Distance between KGE Current Positions & Closest Entity: {closest_distance} \n")
+            log_file.write(f"Rotation between Current KGE and Answer (abs avg in deg):\n {position_distance_ans} \n")
+            # logger.info(f"Rotation between KGE Positions (abs total to answer): {position_distance_ans} \n")
 
-            start_distance = f"{torch.dist(kge_prev_pos[0].cpu(), torch.tensor(prev_emb[0]).cpu()).item():.2e}"
+            log_file.write(f"Rotation between Current KGE Positions and Closest Entity (abs avg in deg):\n {closest_emb_distance} \n")
+            # logger.info(f"Rotation between KGE Positions (abs total to closest entity): {closest_emb_distance} \n")
 
-            log_file.write(f"Distance between KGE Start Position & Closest Entity: {start_distance} \n")
+            wandb_positions.append(" --> ".join(position_distance))
+
+            # closest_distance = []
+            # for i0 in range(kge_cur_pos.shape[0]):
+            #     closest_distance.append(f"{torch.dist(kge_cur_pos[i0].cpu(), torch.tensor(entity_emb[i0]).cpu()).item():.2e}")
+
+            # log_file.write(f"Distance between KGE Current Positions & Closest Entity: {closest_distance} \n")
+
+            # start_distance = f"{torch.dist(kge_prev_pos[0].cpu(), torch.tensor(prev_emb[0]).cpu()).item():.2e}"
+
+            # log_file.write(f"Distance between KGE Start Position & Closest Entity: {start_distance} \n")
 
             # Craft the string for the final final output
             final_str_output = ""
@@ -585,33 +684,128 @@ def dump_evaluation_metrics(
 
     # Save the emebeddings of the current position and the initial position of the agent
     if visualize:
+        # * current position of the agent on the graph
         cur_pos = kge_cur_pos.cpu().numpy()
-        cur_pos_mag = np.abs(cur_pos[:, :1000] + 1j*cur_pos[:, 1000:])
-        cur_pos_pca = trained_pca.transform(cur_pos_mag)
+        cur_pos_complex = cur_pos[:, :cur_pos.shape[1]//2] + 1j*cur_pos[:, cur_pos.shape[1]//2:]
 
-        closest_entities_mag = np.abs(entity_emb[:, :1000] + 1j*entity_emb[:, 1000:])
-        closest_entities_pca = trained_pca.transform(closest_entities_mag)
+        # * closest entities (nodes) to a current position of the agent
+        closest_entities_complex = entity_emb[:, :entity_emb.shape[1]//2] + 1j*entity_emb[:, entity_emb.shape[1]//2:]
 
+        if graph_vis_model_type == "pca":
+            cur_pos_points = graph_vis_model.transform(np.abs(cur_pos_complex))
+            closest_entities_points = graph_vis_model.transform(np.abs(closest_entities_complex))
+            xlabel="PCA Component 1" 
+            ylabel="PCA Component 2"
 
-        write_2d_graph_displacement(data=[graph_pca, cur_pos_pca, initial_pos_pca, closest_entities_pca], 
-                                    label=["Graph", "Current Pos", "Initial Pos", "Closest Entities"], 
-                                    color=['b', 'g', 'r', 'y'], 
-                                    alpha=[0.4, 0.4, 0.8, 0.8], 
-                                    marker=['o', 's', '^', 'x'], 
-                                    title=f"Visualization of Graph and Positions | Frame {frame_count}\nEvaluation for the last Question", 
-                                    xlabel="PCA Component 1", 
-                                    ylabel="PCA Component 2",
-                                    annotation=graph_annotation,
-                                    writer=writer, 
-                                    frame_count=frame_count)
+            write_2d_graph_displacement(data=[graph_points, cur_pos_points, initial_pos_points, closest_entities_points], 
+                            label=["Graph", "Current Pos", "Initial Pos", "Closest Entities"], 
+                            color=['b', 'g', 'r', 'y'], 
+                            alpha=[0.4, 0.4, 0.8, 0.8], 
+                            marker=['o', 's', '^', 'x'], 
+                            title=f"Visualization of Graph and Positions | Frame {frame_count}\nEvaluation for the last Question", 
+                            xlabel=xlabel, 
+                            ylabel=ylabel,
+                            annotation=graph_annotation,
+                            writer=writer, 
+                            frame_count=frame_count)
+            
+            frame_count += 1
+        elif graph_vis_model_type == "dist":
+            for cur_pos_id in range(cur_pos_complex.shape[0]):
+                initial_pos_points = complex_distance(initial_pos_complex, cur_pos_complex[cur_pos_id], distance_metric=l2_distance)
+                graph_points_temp = complex_distance(graph_points, cur_pos_complex[cur_pos_id], distance_metric=l2_distance)
+                cur_pos_points = complex_distance(cur_pos_complex[cur_pos_id][:, None], cur_pos_complex[cur_pos_id][:, None], distance_metric=l2_distance)
+                closest_entities_points = complex_distance(closest_entities_complex, cur_pos_complex[cur_pos_id], distance_metric=l2_distance)
+                xlabel="Real Component" 
+                ylabel="Imaginary Component"
+
+                write_2d_graph_displacement(data=[graph_points_temp, cur_pos_points, initial_pos_points, closest_entities_points], 
+                                        label=["Graph", "Current Pos", "Initial Pos", "Closest Entities"], 
+                                        color=['b', 'g', 'r', 'y'], 
+                                        alpha=[0.4, 0.4, 0.8, 0.8], 
+                                        marker=['o', 's', '^', 'x'], 
+                                        title=f"Visualization of Graph and Positions | Cur Pos {cur_pos_id}\nEvaluation for the last Question", 
+                                        xlabel=xlabel, 
+                                        ylabel=ylabel,
+                                        annotation=graph_annotation,
+                                        writer=writer, 
+                                        frame_count=frame_count)
+                frame_count += 1
+        elif graph_vis_model_type == "phase_diff":
+            for cur_pos_id in range(cur_pos_complex.shape[0]):
+                # initial_pos_points = complex_distance(initial_pos_complex, cur_pos_complex[cur_pos_id], distance_metric=l2_distance)
+                # cur_pos_points = complex_distance(cur_pos_complex[cur_pos_id][:, None], cur_pos_complex[cur_pos_id][:, None], distance_metric=l2_distance)
+                # closest_entities_points = complex_distance(closest_entities_complex, cur_pos_complex[cur_pos_id], distance_metric=l2_distance)
+                # answer
+                # questions
+
+                # TODO: add | remove when done
+                # initial position, current position, closest entity position
+                # ? is it worth adding actions
+
+                # TODO: checklist | Do not remove
+                # current positoin added: cur_pos_complex -> shape [3, 1000]
+                # closest eneities added: closest_entities_complex -> shape [3, 1000]
+                # initial position added: closest_entities_complex -> shape [1, 1000]
+
+                # TODO: check their shapes | remove when done
+                # print(cur_pos_complex.shape)
+                # print(closest_entities_complex.shape)
+                # print(initial_pos_complex.shape)
+                # print()
+
+                xlabel="Features" 
+                ylabel="Phase (deg)"
+
+                # * use get_phase to get phase of embeddings in radiants or degrees
+
+                # * plot embeddings on the 2D surface
+                # y-axis phase
+                # x-axis feature
+                write_2d_graph_displacement(data=[cur_pos_points, initial_pos_points, closest_entities_points], 
+                                        label=["Current Pos", "Initial Pos", "Closest Entities"], 
+                                        color=['b', 'g', 'r', 'y'], 
+                                        alpha=[0.4, 0.4, 0.8, 0.8], 
+                                        marker=['o', 's', '^', 'x'], 
+                                        title=f"Visualization of Graph and Positions | Cur Pos {cur_pos_id}\nEvaluation for the last Question", 
+                                        xlabel=xlabel, 
+                                        ylabel=ylabel,
+                                        annotation=graph_annotation,
+                                        writer=writer, 
+                                        frame_count=frame_count)
+                frame_count += 1
 
         visualization_flag = False
 
         initial_pos_flag = True
-        frame_count += 1
+
 
     # TODO: Some other  metrics ?
     # sys.exit()
+
+def l2_distance(x1: np.ndarray, x2: np.ndarray):
+    return np.linalg.norm(x1 - x2, axis=1, ord=2)
+
+def l1_distance(x1: np.ndarray, x2: np.ndarray):
+    return np.linalg.norm(x1 - x2, axis=1, ord=1)
+
+def complex_distance(x1: np.ndarray, x2: np.ndarray = None, distance_metric = l1_distance):
+    if isinstance(x2, type(None)): x2 = np.zeros_like(x1)
+    return np.concat([distance_metric(x1.real, x2.real)[:, None], distance_metric(x1.imag, x2.imag)[:, None]], axis=1)
+
+def get_phase(x, metric="degree"):
+    # check if x is a complex valued array
+    assert np.iscomplexobj(x), "Array does not contain only complex values"
+
+    phase = np.angle(x)
+    if metric == "degree":
+        phase = np.rad2deg(phase)
+        return phase
+    elif metric == "radian":
+        return phase
+    else:
+        print("Wrong metrics!")
+    
 
 def train_multihopkg(
     batch_size: int,
@@ -632,6 +826,7 @@ def train_multihopkg(
     answer_tokenizer: PreTrainedTokenizer,
     track_gradients: bool,
     wandb_on: bool,
+    use_path_reward: bool = False,
 ):
     # TODO: Get the rollout working
 
@@ -704,7 +899,14 @@ def train_multihopkg(
             ########################################
             # Evaluation
             ########################################
+            mini_batch = train_data[sample_offset_idx : sample_offset_idx + batch_size]
+            # pdb.set_trace()
+            assert isinstance(
+                mini_batch, pd.DataFrame
+            )  # For the lsp to give me a break
+
             if batch_count % mbatches_b4_eval == 0:
+                answer_id = mini_batch["Answer-Entity"].tolist()  # Extract answer_id from mini_batch
                 evaluate_training(
                     env,
                     dev_df,
@@ -719,21 +921,18 @@ def train_multihopkg(
                     question_tokenizer,
                     answer_tokenizer,
                     wandb_on,
+                    use_path_reward=use_path_reward,
+                    answer_id=answer_id,
                 )
             logger.debug("Past evaluation")
             ########################################
             # Training
             ########################################
             logger.debug("Getting some train data")
-            mini_batch = train_data[sample_offset_idx : sample_offset_idx + batch_size]
-            # pdb.set_trace()
-            assert isinstance(
-                mini_batch, pd.DataFrame
-            )  # For the lsp to give me a break
             optimizer.zero_grad()
             logger.debug("About to go into batch loop")
             pg_loss, _ = batch_loop(
-                env, mini_batch, nav_agent, hunch_llm, steps_in_episode, bos_token_id, eos_token_id, pad_token_id
+                env, mini_batch, nav_agent, hunch_llm, steps_in_episode, bos_token_id, eos_token_id, pad_token_id, use_path_reward=use_path_reward,
             )
 
             if torch.isnan(pg_loss).any():
@@ -784,7 +983,7 @@ def train_multihopkg(
                 # Iterate and calculate gradients as needed
                 for name, param in named_params:
                     if param.requires_grad and ('bias' not in name) and (param.grad is not None):
-                        if name == 'weight': name = 'concat_projector.weight'               
+                        if name == 'weight': name = 'concat_projector.weight'
                         grads = param.grad.detach().cpu()
                         weights = param.detach().cpu()
 
@@ -814,10 +1013,11 @@ def write_parameters(data: torch.Tensor, layer_name: str, value_type: str, write
     
     print(f"{layer_name} {value_type} - mean {mean:.4f} & var {var:.4f}")
 
-def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, xlabel: str, ylabel: str, writer: SummaryWriter, epoch_id: int):
+def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, xlabel: str, ylabel: str,
+                     writer: SummaryWriter, epoch_id: int, bins: int = 100):
 
     plt.figure(1)
-    plt.hist(data, bins=50, alpha=0.75, color=color)
+    plt.hist(data, bins=bins, alpha=0.50, color=color)
     plt.title(f"{layer_name} {title}")
     plt.xlabel(f"{xlabel}")
     plt.ylabel(f"{ylabel}")
@@ -852,8 +1052,9 @@ def write_2d_graph_displacement(data: List[np.ndarray], label: List[str], color:
             ax.scatter(data[i0][:,0], data[i0][:,1], c=color[i0], label=label[i0], alpha=alpha[i0], marker=marker[i0])
 
         if annotation:
-            for i0, txt in enumerate(annotation):
-                ax.annotate(txt, (data[0][i0, 0], data[0][i0, 1]))
+            random_idx = np.random.choice(len(annotation), 5, replace=False)
+            for i0 in random_idx:
+                ax.annotate(annotation[i0], (data[0][i0, 0], data[0][i0, 1]))
 
         # Set the title and labels
         ax.set_title(f"{title}")
@@ -935,6 +1136,10 @@ def rollout(
     env: ITLGraphEnvironment,
     questions_embeddings: torch.Tensor,
     answers_ids: torch.Tensor,
+    relevant_entities: List[List[int]],
+    relevant_rels: List[List[int]],
+    answer_id: List[int],
+    calculate_path_reward: bool = False,
     dev_mode: bool = False,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], Dict[str, Any]]:
     """
@@ -958,6 +1163,9 @@ def rollout(
     ########################################
     log_action_probs = []
     rewards = []
+    nav_ent_distance = []
+    nav_rel_distance = []
+    nav_answer_distance = []
     eval_metrics = DefaultDict(list)
 
     # Dummy nodes ? TODO: Figur eout what they do.
@@ -967,9 +1175,28 @@ def rollout(
     # TODO: make sure we keep all seen nodes up to date
 
     # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
-    observations = env.reset(questions_embeddings)
+    observations = env.reset(questions_embeddings, relevant_ent = relevant_entities)
     cur_position, cur_state = observations.position, observations.state
     # Should be of shape (batch_size, 1, hidden_dim)
+
+    if calculate_path_reward:
+        # Calculate embeddings of the relevant entities to be used in the reward function
+        answer_tensor = get_embeddings_from_indices(
+            env.knowledge_graph.sun_model.entity_embedding,
+            torch.tensor(answer_id, dtype=torch.int),
+        ).unsqueeze(1) # Shape: (batch, 1, embedding_dim)
+
+        padded_relevant_entities = pad_and_convert_to_tensor(relevant_entities)
+        relevant_embeddings = get_embeddings_from_indices(
+            env.knowledge_graph.sun_model.entity_embedding,
+            padded_relevant_entities,
+            ) # Shape: (batch, num_relevant_entities, embedding_dim)
+
+        padded_relevant_relations = pad_and_convert_to_tensor(relevant_rels)
+        relevant_relations = get_embeddings_from_indices(
+            env.knowledge_graph.sun_model.relation_embedding,
+            padded_relevant_relations,
+            ) # Shape: (batch, num_relevant_relations, embedding_dim)
 
     # pn.initialize_path(kg) # TOREM: Unecessasry to ask pn to form it for us.
     states_so_far = []
@@ -984,8 +1211,8 @@ def rollout(
         # Ah ssampled_actions are the ones that have to go against the knowlde garph.
 
         states = observations.state
-        visited_embeddings = torch.from_numpy(observations.position)
-        position_ids = torch.from_numpy(observations.position_id)
+        visited_embeddings = observations.position.clone()
+        position_ids = observations.position_id.clone()
         # For now, we use states given by the path encoder and positions mostly for debugging
         states_so_far.append(states)
 
@@ -1004,6 +1231,15 @@ def rollout(
 
         rewards.append(llm_rewards)
 
+        if calculate_path_reward:
+            # Navigation Agent Reward
+            # nav_ent_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), relevant_embeddings))
+            # nav_answer_distance.append(_chamfer_distance_part1(observations.kge_cur_pos.unsqueeze(1), answer_tensor))
+            nav_rel_distance.append(_chamfer_distance_part1(sampled_actions.unsqueeze(1), relevant_relations))
+
+            nav_ent_distance.append(_chamfer_distance_cosine_part1(observations.kge_cur_pos.unsqueeze(1), relevant_embeddings).squeeze(1))
+            nav_answer_distance.append(_chamfer_distance_cosine_part1(observations.kge_cur_pos.unsqueeze(1), answer_tensor).squeeze(1))
+
         # TODO: Make obseervations not rely on the question
 
         ########################################
@@ -1019,7 +1255,7 @@ def rollout(
             eval_metrics["sampled_actions"].append(sampled_actions)
             eval_metrics["visited_embeddings"].append(visited_embeddings)
             eval_metrics["position_ids"].append(position_ids)
-            eval_metrics["kge_cur_pos"].append(observations.kge_cur_pos)
+            eval_metrics["kge_cur_pos"].append(observations.kge_cur_pos.detach())
             eval_metrics["kge_prev_pos"].append(observations.kge_prev_pos)
             eval_metrics["kge_action"].append(observations.kge_action)
             eval_metrics["hunch_llm_final_guesses"].append(logits.argmax(dim=-1))
@@ -1032,16 +1268,56 @@ def rollout(
     # dev_dictionary["sampled_actions"] = torch.stack(dev_dictionary["sampled_actions"])
     # dev_dictionary["visited_position"] = torch.stack(dev_dictionary["visited_position"])
 
+    path_reward = torch.zeros((questions_embeddings.shape[0], 3)) # Shape: (batch, 3)
+    if calculate_path_reward:
+        # Finish Calculating Chamfer Distance Here
+        # nav_ent_distance = torch.stack(nav_ent_distance).permute(1,0,2,3)
+        # nav_ent_reward = _chamfer_distance_part2(nav_ent_distance)
+
+        nav_ent_distance = torch.stack(nav_ent_distance).permute(1,0,2)
+        nav_ent_reward = _chamfer_distance_cosine_part2(nav_ent_distance)
+
+        # nav_answer_distance = torch.stack(nav_answer_distance).permute(1,0,2,3)
+        # nav_answer_reward = _chamfer_distance_part2(nav_answer_distance)
+
+        nav_answer_distance = torch.stack(nav_answer_distance).permute(1,0,2)
+        nav_answer_reward = _chamfer_distance_cosine_part2(nav_answer_distance)
+
+        nav_rel_distance = torch.stack(nav_rel_distance).permute(1,0,2,3)
+        nav_rel_reward = _chamfer_distance_part2(nav_rel_distance)
+
+        # path_reward = torch.stack([nav_ent_reward, nav_answer_reward, nav_rel_reward],dim=1) # Shape: (batch, 3)
+        path_reward = torch.stack([nav_ent_reward, nav_answer_reward],dim=1) # Shape: (batch, 2)
+
     # Return Rewards of Rollout as a Tensor
+    
+    return log_action_probs, rewards, path_reward, eval_metrics
 
-    return log_action_probs, rewards, eval_metrics
-
+def pad_and_convert_to_tensor(array: List[np.ndarray[int]]) -> torch.Tensor:
+    """
+    Given a list of lists of integers, pad the lists to the same length and convert the result to an int torch.Tensor.   
+    """
+    # Step 1: Extract the maximum length between the lists
+    max_length = max(len(sublist) for sublist in array)
+    
+    # Step 2: For each list smaller than this maximum size, reinsert the last element
+    padded_array = np.array([
+        np.pad(sublist, (0, max_length - len(sublist)), 'edge') if len(sublist) < max_length else sublist
+        for sublist in array
+    ])
+    
+    # Step 3: Convert the resulting list of lists into a torch.Tensor
+    tensor_array = torch.tensor(padded_array, dtype=torch.int)
+    
+    return tensor_array
 
 def load_qa_data(
     cached_metadata_path: str,
     raw_QAData_path,
     question_tokenizer_name: str,
-    answer_tokenizer_name: str, 
+    answer_tokenizer_name: str,
+    entity2id: Dict[str, int],
+    relation2id: Dict[str, int], 
     force_recompute: bool = False,
 ):
 
@@ -1077,6 +1353,8 @@ def load_qa_data(
                 cached_metadata_path,
                 question_tokenizer,
                 answer_tokenzier,
+                entity2id,
+                relation2id,
             )
         )
         train_df, dev_df, test_df = df_split.train, df_split.dev, df_split.test
@@ -1114,19 +1392,23 @@ def main():
     # Get the data
     ########################################
     logger.info(":: Setting up the data")
+
+    # Load the dictionaries
+    id2ent, ent2id, id2rel, rel2id =  data_utils.load_dictionaries(args.data_dir)
+
     train_df, dev_df, train_metadata = load_qa_data(
         args.cached_QAMetaData_path,
         args.raw_QAData_path,
         args.question_tokenizer_name,
         args.answer_tokenizer_name,
-        args.force_data_prepro,
+        force_recompute=args.force_data_prepro,
+        entity2id=ent2id,
+        relation2id=rel2id,
     )
     if not isinstance(dev_df, pd.DataFrame) or not isinstance(train_df, pd.DataFrame):
         raise RuntimeError(
             "The data was not loaded properly. Please check the data loading code."
         )
-    # Load the dictionaries
-    id2ent, ent2id, id2rel, rel2id =  data_utils.load_dictionaries(args.data_dir)
 
     # TODO: Muybe ? (They use it themselves)
     # initialize_model_directory(args, args.seed)
@@ -1161,7 +1443,6 @@ def main():
     # Information computed by knowldege graph for future dependency injection
     dim_entity = knowledge_graph.get_entity_dim()
     dim_relation = knowledge_graph.get_relation_dim()
-    logger.info("You have reached the exit")
 
     # Paths for triples
     train_triplets_path = os.path.join(args.data_dir, "train.triples")
@@ -1181,41 +1462,78 @@ def main():
     ########################################
     # ! Currently using approximations, check if it this is the best way to go
     # ! Testing: exact computation
-    ann_index_manager_ent = ANN_IndexMan(
+    ann_index_manager_ent = ANN_IndexMan_pRotatE(
         knowledge_graph.get_all_entity_embeddings_wo_dropout(),
-        exact_computation=True,
-        nlist=100,
+        embedding_range=knowledge_graph.sun_model.embedding_range.item(),
+        # exact_computation=True,
+        # nlist=100,
     )
-    ann_index_manager_rel = ANN_IndexMan(
+    ann_index_manager_rel = ANN_IndexMan_pRotatE(
         knowledge_graph.get_all_relations_embeddings_wo_dropout(),
-        exact_computation=True,
-        nlist=100,
+        embedding_range=knowledge_graph.sun_model.embedding_range.item(),
+        # exact_computation=True,
+        # nlist=100,
     )
 
+    graph_points = None
+    graph_annotation = []
+    graph_vis_model = None
     if args.visualize:
-        # Train the pca, and also get the emebeddings of the graph as an array
-        pca = PCA(n_components=2)
-        tmp_graph = (knowledge_graph.get_all_entity_embeddings_wo_dropout().cpu().detach().numpy())
-        graph_mag = np.abs(tmp_graph[:,:1000] + 1j*tmp_graph[:,1000:])
-        graph_pca = pca.fit(graph_mag).transform(graph_mag)
+        graph_emb = (knowledge_graph.get_all_entity_embeddings_wo_dropout()).cpu().detach().numpy()
+        graph_emb_complex = graph_emb[:,:1000] + 1j*graph_emb[:,1000:]
+        random_idx = np.random.choice(graph_emb.shape[0], args.graph_vis_points, replace=False)
 
+        if args.graph_vis_model == 'pca':
+            # Train the pca, and also get the emebeddings of the graph as an array
+            pca = PCA(n_components=2)
+            graph_mag = np.abs(graph_emb_complex)
+            graph_points = pca.fit(graph_mag).transform(graph_mag)
+            graph_vis_model = pca
+        elif args.graph_vis_model == 'dist':
+            # graph_points = complex_distance(graph_emb_complex, distance_metric=l1_distance)
+            graph_points = graph_emb_complex.copy()
+        elif args.graph_vis_model == 'phase_diff':
+            graph_points = graph_emb_complex.copy()
+        else:
+            assert False, f"Error! The visualization model {args.graph_vis_model} is not available!"
+        
         # Sub-sample it to 100 elements
-        random_idx = np.random.choice(graph_pca.shape[0], 100, replace=False)
-        graph_pca = graph_pca[random_idx]
+        graph_points = graph_points[random_idx]
 
         # ! Extract annotations for the graph
         graph_annotation = []
-        for i0 in range(min(random_idx.shape[0], 15)): # improve this with an argument
+        for i0 in range(random_idx.shape[0]): # improve this with an argument
             graph_annotation.append(knowledge_graph.id2entity[random_idx[i0]])
 
         # For visualization
         plt.ion()
         fig = plt.figure(0, figsize=(8,6))
         ax = fig.add_subplot(111)
-    else:
-        graph_pca = None
-        graph_annotation = None
-        pca = None
+
+    # analyze the PCA
+    #! This can be removed if PCA analysis is no longer needed,
+    #! ow, its good to keep it here
+    # if args.visualize:
+    #     plt.close() # close any matplotlib figures 
+
+    #     graph_emb = (knowledge_graph.get_all_entity_embeddings_wo_dropout()).detach().numpy()
+    #     graph_emb_complex = graph_emb[:,:1000] + 1j*graph_emb[:,1000:]
+    #     graph_mag = np.abs(graph_emb_complex)
+    #     pca_tmp = PCA(n_components=graph_mag.shape[1])
+    #     pca_tmp.fit(graph_mag)
+
+    #     explained_variance_ratio = pca_tmp.explained_variance_ratio_
+    #     print(f"Sum of EVR = {np.sum(explained_variance_ratio)}")
+    #     num_features = np.argmax(np.cumsum(explained_variance_ratio) >= 0.95) + 1
+    #     print("Plot the PCA Explained Variance Ratio")
+    #     plt.figure(figsize=(16, 9))
+    #     plt.title(f"PCA Graph Embedding Explained Variance Ration\n{num_features} explain >= 95% of variance")
+    #     plt.plot(np.cumsum(explained_variance_ratio) * 100)
+    #     plt.xlabel("Features")
+    #     plt.ylabel("EVR in %")
+    #     plt.grid(True)
+    #     plt.savefig("saves/pca_graph_evr.png")
+    #     plt.close()
 
     # Setup the pretrained language model
     logger.info(":: Setting up the pretrained language model")
@@ -1269,9 +1587,11 @@ def main():
         ann_index_manager_ent=ann_index_manager_ent,
         ann_index_manager_rel=ann_index_manager_rel,
         steps_in_episode=args.num_rollout_steps,
-        trained_pca=pca,
-        graph_pca=graph_pca,
+        graph_vis_model=graph_vis_model,
+        graph_vis_model_type = args.graph_vis_model,
+        graph_points=graph_points,
         graph_annotation=graph_annotation,
+        nav_start_emb_type=args.nav_start_emb_type,
     ).to(args.device)
 
     # Now we load this from the embedding models
@@ -1350,6 +1670,7 @@ def main():
         answer_tokenizer=answer_tokenizer,
         track_gradients=args.track_gradients,
         wandb_on=args.wandb,
+        use_path_reward=args.use_path_reward,
     )
     logger.info("Done with everything. Exiting...")
 
