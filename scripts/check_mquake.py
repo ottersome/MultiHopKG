@@ -6,11 +6,14 @@ import json
 
 def argsies() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--json_file", "-f", default="./temp/MQuAKE-T.json")
+    ap.add_argument("--json_file", "-f", default="./temp/MQuAKE-CF.json")
 
     return ap.parse_args()
 
 def main(args: argparse.Namespace):
+    """
+    Essentially now it just does 
+    """
     json_file_path: str = args.json_file
     
     # Open and load the JSON file

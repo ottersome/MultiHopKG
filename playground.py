@@ -69,6 +69,6 @@ print("Logits shape:", outputs.logits.shape)
 print("Token ids shape:", token_ids.shape)
 # Decode the output
 
-decoded_outputs = tokenizer.batch_decode(token_ids, skip_special_tokens=True)
+e{subcaptioncoded_outputs = tokenizer.batch_decode(token_ids, skip_special_tokens=True)
 
 print("Decoded outputs:", decoded_outputs)

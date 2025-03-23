@@ -54,6 +54,7 @@ from multihopkg.utils.convenience import tensor_normalization
 from multihopkg.utils.setup import set_seeds
 from multihopkg.vector_search import ANN_IndexMan
 from multihopkg.logs import torch_module_logging
+from multihopkg.utils.wandb import histogram_all_modules
 
 # PCA
 from sklearn.decomposition import PCA
@@ -632,6 +633,7 @@ def train_multihopkg(
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
     track_gradients: bool,
+    num_batches_till_eval: int,
     wandb_on: bool,
 ):
     # TODO: Get the rollout working
@@ -657,10 +659,12 @@ def train_multihopkg(
     optimizer = torch.optim.Adam(  # type: ignore
         filter(
             lambda p: p.requires_grad,
-            list(env.concat_projector.parameters()) + list(nav_agent.parameters())
+            list(env.concat_projector.parameters()) + list(nav_agent.parameters()) + list(hunch_llm.embedding_translator.parameters())
         ),
         lr=learning_rate
     )
+
+    modules_to_log: List[nn.Module] = [nav_agent]
 
     # Variable to pass for logging
     batch_count = 0
@@ -750,7 +754,7 @@ def train_multihopkg(
             logger.debug(f"Reinforce terms mean: {reinforce_terms_mean_item}, std: {reinforce_terms_std_item}, min: {reinforce_terms_min_item}, max: {reinforce_terms_max_item}")
 
             # TODO: Uncomment and try: 
-            # stabilized_rewards = tensor_normalization(pg_loss)
+            pg_loss = tensor_normalization(pg_loss)
 
             batch_rewards.append(reinforce_terms_mean_item)
             logger.debug("Bout to go backwords")
@@ -774,13 +778,21 @@ def train_multihopkg(
             # TODO: get grad distribution parameters,
             # Inspecting vanishing gradient
             
-            if sample_offset_idx == 0 and verbose:
+            if sample_offset_idx % num_batches_till_eval == 0 and verbose:
                 # Retrieve named parameters from the optimizer
                 named_params = [
                     (named_param_map[param], param)
                     for group in optimizer.param_groups
                     for param in group['params']
                 ]
+
+                # Wandb hisotram of modules
+                histograms = histogram_all_modules(modules_to_log, num_buckets=20)
+                # Report the histograms to wandb
+                if wandb:
+                    for name, histogram in histograms.items():
+                        wandb.log({f"{name}/Histogram": wandb.Histogram(np_histogram=histogram)})
+
 
                 # Iterate and calculate gradients as needed
                 for name, param in named_params:
@@ -792,7 +804,10 @@ def train_multihopkg(
                         write_parameters(grads, name, "Gradient", writer, epoch_id)
                         write_parameters(weights, name, "Weights", writer, epoch_id)
 
-                        if visualize:
+                        if wandb:
+                            wandb.log({f"{name}/Gradient": wandb.Histogram(grads.numpy().flatten())})
+                            wandb.log({f"{name}/Weights": wandb.Histogram(weights.numpy().flatten())})
+                        elif visualize:
                             write_histogram(grads.numpy().flatten(), name, 'g', "Gradient Histogram", "Grad Value", "Frequency", writer, epoch_id)
                             write_histogram(weights.numpy().flatten(), name, 'b', "Weights Histogram", "Weight Value", "Frequency", writer, epoch_id)
 
@@ -804,7 +819,11 @@ def train_multihopkg(
 
             batch_count += 1
         logger.debug(f"Epoch {epoch_id} debug ")
-        
+        epoch_laps_duration = time.time() - epoch_start_time
+        epoch_times.append(epoch_laps_duration)
+        logger.info(f"Epoch {epoch_id} took {epoch_laps_duration} seconds")
+        avg_epoch_time = sum(epoch_times) / len(epoch_times)
+        logger.info(f"Average epoch time at epoch {epoch_id} was {avg_epoch_time} seconds")
 
 def write_parameters(data: torch.Tensor, layer_name: str, value_type: str, writer: SummaryWriter, epoch_id: int):
     mean = data.mean().item()
@@ -828,7 +847,7 @@ def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, x
 
     # Save the histogram to a BytesIO buffer
     hist_buf = io.BytesIO()
-    plt.savefig(hist_buf, format='png')
+    plt.savefig(hist_buf, format="png")
     hist_buf.seek(0)
 
     # Convert the buffer content to an image and then to a NumPy array in HWC format
@@ -836,55 +855,79 @@ def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, x
     hist_image_np = np.array(hist_image)
 
     # Add the histogram to TensorBoard
-    writer.add_image(f"{layer_name}/{title}", hist_image_np, epoch_id, dataformats='HWC')
+    writer.add_image(
+        f"{layer_name}/{title}", hist_image_np, epoch_id, dataformats="HWC"
+    )
 
     # Close the buffer
     hist_buf.close()
     plt.close()
 
-def write_2d_graph_displacement(data: List[np.ndarray], label: List[str], color: List[str], alpha: List[float], marker: List[str],
-                              title: str, xlabel: str, ylabel: str, writer: SummaryWriter, frame_count: int, annotation: List[str]):
-        global ax, fig
 
-        ax.clear()
-        
-        # Plot the various data points
-        for i0 in range(len(data)):
-            ax.scatter(data[i0][:,0], data[i0][:,1], c=color[i0], label=label[i0], alpha=alpha[i0], marker=marker[i0])
+def write_2d_graph_displacement(
+    data: List[np.ndarray],
+    label: List[str],
+    color: List[str],
+    alpha: List[float],
+    marker: List[str],
+    title: str,
+    xlabel: str,
+    ylabel: str,
+    writer: SummaryWriter,
+    frame_count: int,
+    annotation: List[str],
+):
+    global ax, fig
 
-        if annotation:
-            for i0, txt in enumerate(annotation):
-                ax.annotate(txt, (data[0][i0, 0], data[0][i0, 1]))
+    ax.clear()
 
-        # Set the title and labels
-        ax.set_title(f"{title}")
-        ax.set_xlabel(f"{xlabel}")
-        ax.set_ylabel(f"{ylabel}")
+    # Plot the various data points
+    for i0 in range(len(data)):
+        ax.scatter(
+            data[i0][:, 0],
+            data[i0][:, 1],
+            c=color[i0],
+            label=label[i0],
+            alpha=alpha[i0],
+            marker=marker[i0],
+        )
 
-        # Show the grid
-        ax.grid(True)
+    if annotation:
+        for i0, txt in enumerate(annotation):
+            ax.annotate(txt, (data[0][i0, 0], data[0][i0, 1]))
 
-        ax.legend()
+    # Set the title and labels
+    ax.set_title(f"{title}")
+    ax.set_xlabel(f"{xlabel}")
+    ax.set_ylabel(f"{ylabel}")
 
-        # Save the plot to a BytesIO buffer
-        buf = io.BytesIO()
-        fig.savefig(buf, format='png')
-        buf.seek(0)
+    # Show the grid
+    ax.grid(True)
 
-        # Convert the buffer content to an image and then to a NumPy array in HWC format
-        image = Image.open(buf)
-        image_np = np.array(image)
+    ax.legend()
 
-        # Add the image to TensorBoard
-        writer.add_image("Visualization of Graph and Positions", image_np, frame_count, dataformats='HWC')
+    # Save the plot to a BytesIO buffer
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png")
+    buf.seek(0)
 
-        # Close the buffer
-        buf.close()
+    # Convert the buffer content to an image and then to a NumPy array in HWC format
+    image = Image.open(buf)
+    image_np = np.array(image)
 
-        fig.canvas.draw()
-        fig.canvas.flush_events()
+    # Add the image to TensorBoard
+    writer.add_image(
+        "Visualization of Graph and Positions", image_np, frame_count, dataformats="HWC"
+    )
 
-        time.sleep(0.1)
+    # Close the buffer
+    buf.close()
+
+    fig.canvas.draw()
+    fig.canvas.flush_events()
+
+    time.sleep(0.1)
+
 
 def initialize_path(questions: torch.Tensor):
     # Questions must be turned into queries
@@ -908,7 +951,9 @@ def calculate_reward(
     conditioning_labels = answers_ids[:, :-1].contiguous().to(dtype=torch.int64)
     teacher_forcing_labels = answers_ids[:, 1:].contiguous().to(dtype=torch.int64)
 
-    answers_inf_softmax = hunch_llm(graph_embeddings=obtained_state, decoder_input_ids=conditioning_labels)
+    answers_inf_softmax = hunch_llm(
+        graph_embeddings=obtained_state, decoder_input_ids=conditioning_labels
+    )
 
     _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
 
@@ -917,7 +962,7 @@ def calculate_reward(
     loss = loss_fn(logits.view(-1, logits.shape[-1]), teacher_forcing_labels.view(-1))
 
     # TODO: Perhaps Stabilize the loss. Normalize it or SMTH like that
-    reward = -loss # We expect this reward function to be concave rather than convex. 
+    reward = -loss  # We expect this reward function to be concave rather than convex.
 
     # Reshape the reward to the batch size
     reward = reward.view(batch_size, -1)
@@ -997,11 +1042,9 @@ def rollout(
         ########################################
         stacked_states = torch.stack(states_so_far).permute(1, 0, 2)
         # Calculate how close we are
-        llm_rewards, logits = calculate_reward(
-            hunch_llm, stacked_states, answers_ids
-        )
-        
-        # TODO: IMPORTANT: Mask the rewards 
+        llm_rewards, logits = calculate_reward(hunch_llm, stacked_states, answers_ids)
+
+        # TODO: IMPORTANT: Mask the rewards
 
         rewards.append(llm_rewards)
 
@@ -1025,6 +1068,10 @@ def rollout(
             eval_metrics["kge_action"].append(observations.kge_action)
             eval_metrics["hunch_llm_final_guesses"].append(logits.argmax(dim=-1))
 
+            llm_softmax = torch.nn.functional.softmax(logits, dim=-1)
+            llm_entropies = -torch.sum(llm_softmax * torch.log(llm_softmax), dim=-1)
+            eval_metrics["hunch_llm_entropy"].append(llm_entropies.mean().detach().cpu())
+
     # if dev_mode:
     #     pdb.set_trace()
 
@@ -1042,7 +1089,7 @@ def load_qa_data(
     cached_metadata_path: str,
     raw_QAData_path,
     question_tokenizer_name: str,
-    answer_tokenizer_name: str, 
+    answer_tokenizer_name: str,
     force_recompute: bool = False,
 ):
 
@@ -1051,7 +1098,13 @@ def load_qa_data(
             f"\033[93m Found cache for the QA data {cached_metadata_path} will load it instead of working on {raw_QAData_path}. \033[0m"
         )
         # Read the first line of the raw csv to count the number of columns
-        train_metadata = json.load(open(cached_metadata_path.format(question_tokenizer_name, answer_tokenizer_name)))
+        train_metadata = json.load(
+            open(
+                cached_metadata_path.format(
+                    question_tokenizer_name, answer_tokenizer_name
+                )
+            )
+        )
         saved_paths: Dict[str, str] = train_metadata["saved_paths"]
 
         train_df = pd.read_parquet(saved_paths["train"])
@@ -1071,7 +1124,7 @@ def load_qa_data(
             f"\033[93m Did not find cache for the QA data {cached_metadata_path}. Will now process it from {raw_QAData_path} \033[0m"
         )
         question_tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
-        answer_tokenzier   = AutoTokenizer.from_pretrained(answer_tokenizer_name)
+        answer_tokenzier = AutoTokenizer.from_pretrained(answer_tokenizer_name)
         df_split, train_metadata = (
             data_utils.process_and_cache_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
                 raw_QAData_path,
@@ -1106,7 +1159,7 @@ def main():
 
     if args.debug:
         logger.info("\033[1;33m Waiting for debugger to attach...\033[0m")
-        debugpy.listen(("0.0.0.0", 42020))
+        debugpy.listen(("0.0.0.0", 42021))
         debugpy.wait_for_client()
 
         # USe debugpy to listen
@@ -1127,7 +1180,7 @@ def main():
             "The data was not loaded properly. Please check the data loading code."
         )
     # Load the dictionaries
-    id2ent, ent2id, id2rel, rel2id =  data_utils.load_dictionaries(args.data_dir)
+    id2ent, ent2id, id2rel, rel2id = data_utils.load_dictionaries(args.data_dir)
 
     # TODO: Muybe ? (They use it themselves)
     # initialize_model_directory(args, args.seed)
@@ -1156,7 +1209,7 @@ def main():
         entity2id=ent2id,
         id2relation=id2rel,
         relation2id=rel2id,
-        device=args.device
+        device=args.device,
     )
 
     # Information computed by knowldege graph for future dependency injection
@@ -1196,8 +1249,13 @@ def main():
     if args.visualize:
         # Train the pca, and also get the emebeddings of the graph as an array
         pca = PCA(n_components=2)
-        tmp_graph = (knowledge_graph.get_all_entity_embeddings_wo_dropout().cpu().detach().numpy())
-        graph_mag = np.abs(tmp_graph[:,:1000] + 1j*tmp_graph[:,1000:])
+        tmp_graph = (
+            knowledge_graph.get_all_entity_embeddings_wo_dropout()
+            .cpu()
+            .detach()
+            .numpy()
+        )
+        graph_mag = np.abs(tmp_graph[:, :1000] + 1j * tmp_graph[:, 1000:])
         graph_pca = pca.fit(graph_mag).transform(graph_mag)
 
         # Sub-sample it to 100 elements
@@ -1206,12 +1264,12 @@ def main():
 
         # ! Extract annotations for the graph
         graph_annotation = []
-        for i0 in range(min(random_idx.shape[0], 15)): # improve this with an argument
+        for i0 in range(min(random_idx.shape[0], 15)):  # improve this with an argument
             graph_annotation.append(knowledge_graph.id2entity[random_idx[i0]])
 
         # For visualization
         plt.ion()
-        fig = plt.figure(0, figsize=(8,6))
+        fig = plt.figure(0, figsize=(8, 6))
         ax = fig.add_subplot(111)
     else:
         graph_pca = None
@@ -1234,7 +1292,7 @@ def main():
         pretrained_bart_model=args.pretrained_llm_for_hunch,
         answer_tokenizer=answer_tokenizer,
         # We convert the graph embeddings to state embeddings obeying current state dimensions
-        graph_embedding_dim=args.llm_model_dim, 
+        graph_embedding_dim=args.llm_model_dim,
     ).to(args.device)
 
     # # Freeze the Hunch LLM
@@ -1246,7 +1304,9 @@ def main():
         hunch_llm.freeze_llm()
 
     # Setup the entity embedding module
-    question_embedding_module = AutoModel.from_pretrained(args.question_embedding_model).to(args.device)
+    question_embedding_module = AutoModel.from_pretrained(
+        args.question_embedding_model
+    ).to(args.device)
 
     # # Freeze the Question Embedding Module
     # for param in question_embedding_module.parameters():
@@ -1282,7 +1342,7 @@ def main():
     nav_agent = ContinuousPolicyGradient(
         baseline=args.baseline,
         beta=args.beta,
-        gamma=args.gamma,
+        gamma=args.rl_gamma,
         action_dropout_rate=args.action_dropout_rate,
         action_dropout_anneal_factor=args.action_dropout_anneal_factor,
         action_dropout_anneal_interval=args.action_dropout_anneal_interval,
@@ -1350,6 +1410,7 @@ def main():
         question_tokenizer=question_tokenizer,
         answer_tokenizer=answer_tokenizer,
         track_gradients=args.track_gradients,
+        num_batches_till_eval=args.num_batches_till_eval,
         wandb_on=args.wandb,
     )
     logger.info("Done with everything. Exiting...")
