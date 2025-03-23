@@ -17,8 +17,17 @@ from sklearn.metrics import average_precision_score
 from torch.utils.data import DataLoader, Dataset
 
 class KGEModel(nn.Module):
-    def __init__(self, model_name, nentity, nrelation, hidden_dim, gamma, 
-                 double_entity_embedding=False, double_relation_embedding=False):
+
+    def __init__(
+        self,
+        model_name: str,
+        nentity: int,
+        nrelation: int,
+        hidden_dim: int,
+        gamma: float,
+        double_entity_embedding: bool = False,
+        double_relation_embedding: bool = False,
+    ):
         super(KGEModel, self).__init__()
         self.model_name = model_name
         self.nentity = nentity
@@ -72,6 +81,62 @@ class KGEModel(nn.Module):
         '''
         self.entity_embedding.data = torch.from_numpy(entity_embedding)
         self.relation_embedding.data = torch.from_numpy(relation_embedding)
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_name: str,
+        entity_embedding: np.ndarray,
+        relation_embedding: np.ndarray,
+        gamma: float,
+    ) -> 'KGEModel':
+        """
+        Create a KGEModel from pretrained embeddings.
+        
+        Args:
+            model_name: Name of the model (TransE, DistMult, etc.)
+            nentity: Number of entities
+            nrelation: Number of relations
+            entity_embedding: Pretrained entity embeddings as numpy array
+            relation_embedding: Pretrained relation embeddings as numpy array
+            gamma: Margin value for distance-based loss functions
+            
+        Returns:
+            Initialized KGEModel with pretrained embeddings
+        """
+        # Derive dimensions from the embeddings
+        entity_dim = entity_embedding.shape[1]
+        relation_dim = relation_embedding.shape[1]
+        
+        # Determine if using double embeddings
+        double_entity_embedding = (model_name in ['RotatE', 'ComplEx'])
+        double_relation_embedding = (model_name == 'ComplEx')
+        
+        nentity = entity_embedding.shape[0]
+        nrelation = relation_embedding.shape[0]
+
+        # Calculate hidden dim based on entity dimension and embedding type
+        if double_entity_embedding:
+            hidden_dim = entity_dim // 2
+        else:
+            hidden_dim = entity_dim
+            
+        # Create model instance
+        model = cls(
+            model_name=model_name,
+            nentity=nentity,
+            nrelation=nrelation,
+            hidden_dim=hidden_dim,
+            gamma=gamma,
+            double_entity_embedding=double_entity_embedding,
+            double_relation_embedding=double_relation_embedding,
+        )
+        
+        # Load pretrained embeddings
+        model.load_embeddings(entity_embedding, relation_embedding)
+        
+        return model
+
         
     def forward(self, sample, mode='single'):
         '''
