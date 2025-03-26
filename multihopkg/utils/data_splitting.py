@@ -9,6 +9,7 @@ import os
 import sys
 from sklearn.model_selection import train_test_split
 
+TripleIds = list[tuple[int, int, int]] 
 
 def split_dataset(file_path, train_size, test_size, val_size):
     # Read the CSV file
@@ -37,6 +38,16 @@ def split_dataset(file_path, train_size, test_size, val_size):
         "Data has been split and saved to train_data.csv, val_data.csv, and test_data.csv"
     )
 
+def read_triple(file_path: str, entity2id: dict[int, str], relation2id: dict[int, str]) -> TripleIds:
+    '''
+    Read triples and map them into ids.
+    '''
+    triples = []
+    with open(file_path) as fin:
+        for line in fin:
+            h, r, t = line.strip().split('\t')
+            triples.append((entity2id[h], relation2id[r], entity2id[t]))
+    return triples
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
