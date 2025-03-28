@@ -706,9 +706,20 @@ def train_multihopkg(
             if torch.isnan(pg_loss).any():
                 logger.error("NaN detected in the loss. Aborting training.")
                 # pdb.set_trace()
-            reinforce_terms_mean = pg_loss.mean()
 
-            batch_rewards.append(reinforce_terms_mean.item())
+            # Logg the mean, std, min, max of the rewards
+            reinforce_terms_mean = pg_loss.mean()
+            reinforce_terms_mean_item = reinforce_terms_mean.item()
+            reinforce_terms_std_item = pg_loss.std().item()
+            reinforce_terms_min_item = pg_loss.min().item()
+            reinforce_terms_max_item = pg_loss.max().item()
+            logger.debug(f"Reinforce terms mean: {reinforce_terms_mean_item}, std: {reinforce_terms_std_item}, min: {reinforce_terms_min_item}, max: {reinforce_terms_max_item}")
+
+            # TODO: Uncomment and try: 
+            # stabilized_rewards = tensor_normalization(pg_loss)
+
+            batch_rewards.append(reinforce_terms_mean_item)
+            logger.debug("Bout to go backwords")
             reinforce_terms_mean.backward()
 
             # TODO: get grad distribution parameters,
