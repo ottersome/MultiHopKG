@@ -25,6 +25,7 @@ import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import int_var_cuda, var_cuda
 from typing import Dict, List, Tuple, Optional, Union
 import pdb
+import numpy as np
 
 import sys
 
@@ -696,19 +697,21 @@ class SunKnowledgeGraph(nn.Module):
 
         state_dict = torch.load(os.path.join(pretrained_sun_model_path, "checkpoint"))
 
-        self.sun_model = KGEModel(
-            graph_embed_model_name,
-            self.num_entities,
-            self.num_relations,
-            self.entity_dim,
-            gamma,
-            double_entity_embedding=self.metadata["double_entity_embedding"],
-            double_relation_embedding=self.metadata["double_relation_embedding"],
-        )
-        self.sun_model.load_state_dict(state_dict["model_state_dict"])
-        self.sun_model_config: Dict = json.load(
-            open(os.path.join(pretrained_sun_model_path, "config.json"))
-        )
+        # self.sun_model = KGEModel(
+        #     graph_embed_model_name,
+        #     self.num_entities,
+        #     self.num_relations,
+        #     self.entity_dim,
+        #     gamma,
+        #     double_entity_embedding=self.metadata["double_entity_embedding"],
+        #     double_relation_embedding=self.metadata["double_relation_embedding"],
+        # )
+        # self.sun_model.load_state_dict(state_dict["model_state_dict"])
+        # self.sun_model_config: Dict = json.load(
+        #     open(os.path.join(pretrained_sun_model_path, "config.json"))
+        # )
+        self.sun_model, self.sun_model_config = self._load_model(pretrained_sun_model_path, device)
+
 
         # Recalculating the entity and rel size based on the loaded model
         self.entity_dim = self.sun_model.entity_embedding.shape[1]
@@ -747,6 +750,43 @@ class SunKnowledgeGraph(nn.Module):
         # NOTE: If using embedding types other than conve, we need to implement that ourselves
         # See rs_pg.py in that case
 
+    def _load_model(self, trained_model_path: str, device: str) -> Tuple[KGEModel, Dict]:
+        self.logger.info(f"Loading model from {trained_model_path}")
+        config_path = os.path.join(trained_model_path, "config.json")
+        config = json.load(open(config_path))
+
+        kge_model = KGEModel(
+            model_name=config["model"],
+            nentity=config["nentity"],
+            nrelation=config["nrelation"],
+            hidden_dim=config["hidden_dim"],
+            gamma=config["gamma"],
+            double_entity_embedding=config["double_entity_embedding"],
+            double_relation_embedding=config["double_relation_embedding"],
+        )
+
+        # Now we load the checkpointn
+        print("Checking : " + trained_model_path)
+        checkpoint = torch.load(os.path.join(trained_model_path , "checkpoint"))
+
+        entity_embeddings = np.load(
+            os.path.join(trained_model_path, "entity_embedding.npy")
+        )
+        relation_embeddings = np.load(
+            os.path.join(trained_model_path, "relation_embedding.npy")
+        )
+        kge_model.load_embeddings(entity_embeddings, relation_embeddings)
+
+        # Load the state dict
+        kge_model.load_state_dict(checkpoint["model_state_dict"])
+        kge_model.to(device)
+
+        # Restore other saved variables (for reference I guess)
+        save_variables = {k: v for k,v in checkpoint.items() if k not in ["model_state_dict", "optimizer_state_dict"]}
+
+        self.logger.info(f"Model loaded to {device}")
+
+        return kge_model, config
 
     def get_entity_dim(self):
         return self.entity_dim
