@@ -62,7 +62,7 @@ class ANN_IndexMan:
             nlist (int): Number of clusters for the IVF index if exact_computation is False.
         """
         # Ensure that vectors are in float32 for the sake of faise
-        self.embedding_vectors = embeddings_weigths.detach().numpy().astype(np.float32)
+        self.embedding_vectors = embeddings_weigths.detach().cpu().numpy().astype(np.float32)
         nlist = nlist
 
         if exact_computation:
@@ -102,6 +102,11 @@ class ANN_IndexMan:
         assert isinstance(
             target_embeddings, torch.Tensor
         ), "Target embeddings must be a torch.Tensor"
+
+        # Check if tensors are on cuda, if so, move them to cpu
+        if target_embeddings.is_cuda:
+            target_embeddings = target_embeddings.cpu()
+
 
         # TODO: Check that we are acutally passing the right shape of input
         distances, indices = self.index.search(target_embeddings, topk)  # type: ignore

@@ -194,6 +194,7 @@ def get_args() -> argparse.Namespace:
                     help='Number of epochs to run before running evaluation')
 
     ap.add_argument('--preferred_config', type=str, default="configs/my_config.yaml", help="The path to the configuration file (default: configs/sun.json)")
+    ap.add_argument('--device', type=str, default="cuda:0", help="The device to run on (default: cuda:0)")
 
 
     return ap.parse_args()
