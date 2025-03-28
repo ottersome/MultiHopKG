@@ -50,7 +50,7 @@ def find_parent_namespace(available_names_spaces: List[str], name: str) -> str:
     raise ValueError(f"Could not find parent namespace for {name} in {available_names_spaces}")
 
 def histogram_all_modules(
-    modules: Dict[str, nn.Module],
+    modules: List[nn.Module],
     provided_filter: Optional[List[str]] = None,
     num_buckets: int = 20,
 ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
@@ -71,7 +71,7 @@ def histogram_all_modules(
     # Where we store our tensors with the weight information.
     distributions_to_aggregate: Dict[str, List[np.ndarray]] = DefaultDict(list)
 
-    for module_name, module in modules.items():
+    for module in modules:
         if not isinstance(module, nn.Module):
             continue
 
@@ -86,7 +86,8 @@ def histogram_all_modules(
 
     # Now aggregate into buckets
     distributions_to_report: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
-    for report_key, distribution in distributions_to_report.items():
+    for report_key, distribution in distributions_to_aggregate.items():
+        all_dists = np.concat(distribution)
         meep = np.histogram(distribution, bins=num_buckets)
         distributions_to_report[report_key] = meep
 
