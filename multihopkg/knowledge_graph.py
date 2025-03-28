@@ -21,6 +21,8 @@ from multihopkg.data_utils import DUMMY_ENTITY_ID, DUMMY_RELATION_ID
 from multihopkg.data_utils import START_RELATION_ID
 from multihopkg.logging import setup_logger
 from multihopkg.exogenous.sun_models import KGEModel
+from multihopkg.utils.metacode import stale_code
+from multihopkg.utils.convenience import sample_random_entity
 import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import int_var_cuda, var_cuda
 from typing import Dict, List, Tuple, Optional, Union
@@ -601,18 +603,7 @@ def calculate_entity_centroid(embeddings: Union[nn.Embedding, nn.Parameter]):
         entity_centroid = torch.mean(embeddings.weight.data, dim=0)
     return entity_centroid
 
-def sample_random_entity(embeddings: Union[nn.Embedding, nn.Parameter]):
-    if isinstance(embeddings, nn.Parameter):
-        num_entities = embeddings.data.shape[0]
-        idx = torch.randint(0, num_entities, (1,))
-        sample = embeddings.data[idx].squeeze()
-    elif isinstance(embeddings, nn.Embedding):
-        num_entities = embeddings.weight.data.shape[0]
-        idx = torch.randint(0, num_entities, (1,))
-        sample = embeddings.weight.data[idx].squeeze()
-    return sample
-
-
+@stale_code(reason="This class is redundant in the presence of KGEModel (the original KG Embedding Model)")
 class SunKnowledgeGraph(nn.Module):
     """
     ITLKnowledgeGraph is a environment defined as a knowledge graph that is used *NOT* for training embeddings but rather for navigation.

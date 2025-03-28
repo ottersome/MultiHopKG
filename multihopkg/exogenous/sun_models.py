@@ -18,6 +18,8 @@ from sklearn.metrics import average_precision_score
 
 from torch.utils.data import DataLoader, Dataset
 
+from multihopkg.utils.convenience import sample_random_entity
+
 class KGEModel(nn.Module):
 
     def __init__(
@@ -530,6 +532,30 @@ class KGEModel(nn.Module):
         im_est_tail = re_head * im_relation + im_head * re_relation
 
         return torch.cat([re_est_tail, im_est_tail], dim=-1)
+
+    def get_centroid(self) -> torch.Tensor:
+        self.centroid = sample_random_entity(self.entity_embedding)
+        return self.centroid
+
+    def get_entity_dim(self):
+        return self.entity_dim
+
+    def get_relation_dim(self):
+        return self.relation_dim
+
+    def get_all_entity_embeddings_wo_dropout(self) -> torch.Tensor:
+        assert isinstance(self.entity_embedding, nn.Parameter) or isinstance(
+            self.entity_embedding, nn.Embedding
+        ), "The entity embedding must be either a nn.Parameter or nn.Embedding"
+        return self.entity_embedding.data
+
+    def get_all_relations_embeddings_wo_dropout(self) -> torch.Tensor:
+        assert isinstance(self.relation_embedding, nn.Parameter) or isinstance(
+            self.relation_embedding, nn.Embedding
+        ), "The relation embedding must be either a nn.Parameter or nn.Embedding"
+        return self.relation_embedding
+
+
 
 class LegacyKGEModel(nn.Module):
     def __init__(
