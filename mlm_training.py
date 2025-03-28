@@ -858,10 +858,7 @@ def calculate_reward(
 
     # From the obtained_state we will try to find an answer
     conditioning_labels = answers_ids[:, :-1].contiguous().to(dtype=torch.int64)
-    # add bos token
-    # TODO: CHECK THIS
-    conditioning_labels = torch.cat([torch.tensor(bos_token_id).to(torch.long).unsqueeze(0).repeat(batch_size, 1), conditioning_labels], dim=1)
-    teacher_forcing_labels = answers_ids[:, :-1].contiguous().to(dtype=torch.int64)
+    teacher_forcing_labels = answers_ids[:, 1:].contiguous().to(dtype=torch.int64)
 
     answers_inf_softmax = hunch_llm(graph_embeddings=obtained_state, decoder_input_ids=conditioning_labels)
 
