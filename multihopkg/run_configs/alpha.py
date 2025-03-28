@@ -117,6 +117,7 @@ def get_args() -> argparse.Namespace:
                     help='root directory where the model parameters are stored (default: None)')
     ap.add_argument('--model_dir', type=str, default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'model'),
                     help='directory where the model parameters are stored (default: None)')
+    ap.add_argument('--trained_model_path', type=str, default="./models/protatE_FBWikiV4/")
     ap.add_argument('--use_action_space_bucketing', action='store_true',
                     help='bucket adjacency list by outgoing degree to avoid memory blow-up (default: False)')
     ap.add_argument('--train_entire_graph', type=bool, default=False,

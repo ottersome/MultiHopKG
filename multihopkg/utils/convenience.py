@@ -1,5 +1,6 @@
 from typing import Type, TypeVar, Any
 import torch
+from torch import nn
 
 # Define a generic type variable
 T = TypeVar("T")
@@ -32,3 +33,14 @@ def tensor_normalization(tensor: torch.Tensor) -> torch.Tensor:
     mean = tensor.mean() + 1e-8
     std = tensor.std()
     return (tensor - mean) / std
+
+def sample_random_entity(embeddings: nn.Embedding | nn.Parameter):
+    if isinstance(embeddings, nn.Parameter):
+        num_entities = embeddings.data.shape[0]
+        idx = torch.randint(0, num_entities, (1,))
+        sample = embeddings.data[idx].squeeze()
+    elif isinstance(embeddings, nn.Embedding):
+        num_entities = embeddings.weight.data.shape[0]
+        idx = torch.randint(0, num_entities, (1,))
+        sample = embeddings.weight.data[idx].squeeze()
+    return sample

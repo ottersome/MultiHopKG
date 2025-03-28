@@ -43,7 +43,7 @@ from transformers import (
 
 import multihopkg.data_utils as data_utils
 from multihopkg.environments import Observation
-from multihopkg.knowledge_graph import ITLKnowledgeGraph, SunKnowledgeGraph
+from multihopkg.exogenous.sun_models import KGEModel
 from multihopkg.models_language.classical import HunchBart, collate_token_ids_batch
 from multihopkg.logging import setup_logger
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
@@ -1129,22 +1129,34 @@ def main():
     logger.info(":: Setting up the knowledge graph")
 
     # TODO: Load the weighs ?
-    knowledge_graph = SunKnowledgeGraph(
-        model=args.model,
-        pretrained_sun_model_path=args.pretrained_sun_model_loc,
-        data_path=args.data_dir,
-        graph_embed_model_name=args.graph_embed_model_name,
+    # knowledge_graph = SunKnowledgeGraph(
+    #     model=args.model,
+    #     pretrained_sun_model_path=args.pretrained_sun_model_loc,
+    #     data_path=args.data_dir,
+    #     graph_embed_model_name=args.graph_embed_model_name,
+    #     gamma=args.gamma,
+    #     id2entity=id2ent,
+    #     entity2id=ent2id,
+    #     id2relation=id2rel,
+    #     relation2id=rel2id,
+    #     device=args.device,
+    # )
+
+    # TODO: Test this replacement for SunKnowledgeGraph
+    entity_embeddings = np.load(os.path.join(args.trained_model_path, "entity_embedding.npy"))
+    relation_embeddings = np.load(os.path.join(args.trained_model_path, "relation_embedding.npy"))
+    checkpoint = torch.load(os.path.join(args.trained_model_path , "checkpoint"))
+    kge_model = KGEModel.from_pretrained(
+        model_name=args.model,
+        entity_embedding=entity_embeddings,
+        relation_embedding=relation_embeddings,
         gamma=args.gamma,
-        id2entity=id2ent,
-        entity2id=ent2id,
-        id2relation=id2rel,
-        relation2id=rel2id,
-        device=args.device
+        state_dict=checkpoint["model_state_dict"]
     )
 
     # Information computed by knowldege graph for future dependency injection
-    dim_entity = knowledge_graph.get_entity_dim()
-    dim_relation = knowledge_graph.get_relation_dim()
+    dim_entity = kge_model.get_entity_dim()
+    dim_relation = kge_model.get_relation_dim()
     logger.info("You have reached the exit")
 
     # Paths for triples
@@ -1166,12 +1178,12 @@ def main():
     # ! Currently using approximations, check if it this is the best way to go
     # ! Testing: exact computation
     ann_index_manager_ent = ANN_IndexMan(
-        knowledge_graph.get_all_entity_embeddings_wo_dropout(),
+        kge_model.get_all_entity_embeddings_wo_dropout(),
         exact_computation=True,
         nlist=100,
     )
     ann_index_manager_rel = ANN_IndexMan(
-        knowledge_graph.get_all_relations_embeddings_wo_dropout(),
+        kge_model.get_all_relations_embeddings_wo_dropout(),
         exact_computation=True,
         nlist=100,
     )
@@ -1179,7 +1191,7 @@ def main():
     if args.visualize:
         # Train the pca, and also get the emebeddings of the graph as an array
         pca = PCA(n_components=2)
-        tmp_graph = (knowledge_graph.get_all_entity_embeddings_wo_dropout().cpu().detach().numpy())
+        tmp_graph = (kge_model.get_all_entity_embeddings_wo_dropout() .cpu() .detach() .numpy())
         graph_mag = np.abs(tmp_graph[:,:1000] + 1j*tmp_graph[:,1000:])
         graph_pca = pca.fit(graph_mag).transform(graph_mag)
 
@@ -1190,7 +1202,7 @@ def main():
         # ! Extract annotations for the graph
         graph_annotation = []
         for i0 in range(min(random_idx.shape[0], 15)): # improve this with an argument
-            graph_annotation.append(knowledge_graph.id2entity[random_idx[i0]])
+            graph_annotation.append(id2ent[random_idx[i0]])
 
         # For visualization
         plt.ion()
@@ -1244,7 +1256,7 @@ def main():
         ff_dropout_rate=args.ff_dropout_rate,
         history_dim=args.history_dim,
         history_num_layers=args.history_num_layers,
-        knowledge_graph=knowledge_graph,
+        knowledge_graph=kge_model,
         relation_dim=dim_relation,
         node_data=args.node_data_path,
         node_data_key=args.node_data_key,
