@@ -743,7 +743,7 @@ def train_multihopkg(
             logger.debug(f"Reinforce terms mean: {reinforce_terms_mean_item}, std: {reinforce_terms_std_item}, min: {reinforce_terms_min_item}, max: {reinforce_terms_max_item}")
 
             # TODO: Uncomment and try: 
-            # stabilized_rewards = tensor_normalization(pg_loss)
+            pg_loss = tensor_normalization(pg_loss)
 
             batch_rewards.append(reinforce_terms_mean_item)
             logger.debug("Bout to go backwords")
@@ -1299,7 +1299,7 @@ def main():
     nav_agent = ContinuousPolicyGradient(
         baseline=args.baseline,
         beta=args.beta,
-        gamma=args.gamma,
+        gamma=args.rl_gamma,
         action_dropout_rate=args.action_dropout_rate,
         action_dropout_anneal_factor=args.action_dropout_anneal_factor,
         action_dropout_anneal_interval=args.action_dropout_anneal_interval,
@@ -1367,7 +1367,8 @@ def main():
         question_tokenizer=question_tokenizer,
         answer_tokenizer=answer_tokenizer,
         track_gradients=args.track_gradients,
-        wandb_on=args.wandb
+        num_batches_till_eval=args.num_batches_till_eval,
+        wandb_on=args.wandb,
     )
     logger.info("Done with everything. Exiting...")
 
