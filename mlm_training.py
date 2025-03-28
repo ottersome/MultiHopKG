@@ -55,6 +55,7 @@ from multihopkg.utils.convenience import tensor_normalization
 from multihopkg.utils.setup import set_seeds
 from multihopkg.vector_search import ANN_IndexMan
 from multihopkg.logs import torch_module_logging
+from multihopkg.utils.wandb import histogram_all_modules
 
 # PCA
 from sklearn.decomposition import PCA
@@ -625,6 +626,7 @@ def train_multihopkg(
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
     track_gradients: bool,
+    num_batches_till_eval: int,
     wandb_on: bool,
 ):
     # TODO: Get the rollout working
@@ -654,6 +656,8 @@ def train_multihopkg(
         ),
         lr=learning_rate
     )
+
+    modules_to_log: List[nn.Module] = [nav_agent]
 
     # Variable to pass for logging
     batch_count = 0
@@ -762,13 +766,21 @@ def train_multihopkg(
             # TODO: get grad distribution parameters,
             # Inspecting vanishing gradient
             
-            if sample_offset_idx == 0 and verbose:
+            if sample_offset_idx % num_batches_till_eval == 0 and verbose:
                 # Retrieve named parameters from the optimizer
                 named_params = [
                     (named_param_map[param], param)
                     for group in optimizer.param_groups
                     for param in group['params']
                 ]
+
+                # Wandb hisotram of modules
+                histograms = histogram_all_modules(modules_to_log, num_buckets=20)
+                # Report the histograms to wandb
+                if wandb:
+                    for name, histogram in histograms.items():
+                        wandb.log({f"{name}/Histogram": wandb.Histogram(np_histogram=histogram)})
+
 
                 # Iterate and calculate gradients as needed
                 for name, param in named_params:
@@ -780,7 +792,10 @@ def train_multihopkg(
                         write_parameters(grads, name, "Gradient", writer, epoch_id)
                         write_parameters(weights, name, "Weights", writer, epoch_id)
 
-                        if visualize:
+                        if wandb:
+                            wandb.log({f"{name}/Gradient": wandb.Histogram(grads.numpy().flatten())})
+                            wandb.log({f"{name}/Weights": wandb.Histogram(weights.numpy().flatten())})
+                        elif visualize:
                             write_histogram(grads.numpy().flatten(), name, 'g', "Gradient Histogram", "Grad Value", "Frequency", writer, epoch_id)
                             write_histogram(weights.numpy().flatten(), name, 'b', "Weights Histogram", "Weight Value", "Frequency", writer, epoch_id)
 
@@ -814,7 +829,7 @@ def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, x
 
     # Save the histogram to a BytesIO buffer
     hist_buf = io.BytesIO()
-    plt.savefig(hist_buf, format='png')
+    plt.savefig(hist_buf, format="png")
     hist_buf.seek(0)
 
     # Convert the buffer content to an image and then to a NumPy array in HWC format
@@ -822,7 +837,9 @@ def write_histogram(data: np.ndarray, layer_name: str, color: str, title: str, x
     hist_image_np = np.array(hist_image)
 
     # Add the histogram to TensorBoard
-    writer.add_image(f"{layer_name}/{title}", hist_image_np, epoch_id, dataformats='HWC')
+    writer.add_image(
+        f"{layer_name}/{title}", hist_image_np, epoch_id, dataformats="HWC"
+    )
 
     # Close the buffer
     hist_buf.close()
@@ -1008,6 +1025,10 @@ def rollout(
             eval_metrics["kge_prev_pos"].append(observations.kge_prev_pos)
             eval_metrics["kge_action"].append(observations.kge_action)
             eval_metrics["hunch_llm_final_guesses"].append(logits.argmax(dim=-1))
+
+            llm_softmax = torch.nn.functional.softmax(logits, dim=-1)
+            llm_entropies = -torch.sum(llm_softmax * torch.log(llm_softmax), dim=-1)
+            eval_metrics["hunch_llm_entropy"].append(llm_entropies.mean().detach().cpu())
 
     # if dev_mode:
     #     pdb.set_trace()
