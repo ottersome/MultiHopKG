@@ -14,9 +14,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from multihopkg.exogenous.sun_models import KGEModel
 import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import var_cuda, zeros_var_cuda
-from multihopkg.knowledge_graph import ITLKnowledgeGraph, SunKnowledgeGraph
 from multihopkg.vector_search import ANN_IndexMan
 from multihopkg.environments import Environment, Observation
 from typing import Tuple, List, Optional
@@ -493,7 +493,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
         ff_dropout_rate: float,
         history_dim: int,
         history_num_layers: int,
-        knowledge_graph: SunKnowledgeGraph,
+        knowledge_graph: KGEModel,
         relation_dim: int,
 
         node_data: str,
@@ -626,7 +626,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # ! Restraining the movement to the neighborhood
 
-        self.current_position = self.knowledge_graph.sun_model.flexible_forward_rotate(
+        self.current_position = self.knowledge_graph.flexible_forward_rotate(
             self.current_position, actions, 
         )
 
