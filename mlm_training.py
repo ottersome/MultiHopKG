@@ -114,12 +114,13 @@ def batch_loop_dev(
     # Start the batch loop with zero grad
     ########################################
     nav_agent.zero_grad()
+    device = nav_agent.fc1.weight.device
 
     # Deconstruct the batch
     questions = mini_batch["question"].tolist()
     answers = mini_batch["answer"].tolist()
-    question_embeddings = env.get_llm_embeddings(questions)
-    answer_ids_padded_tensor = collate_token_ids_batch(answers).to(torch.int32)
+    question_embeddings = env.get_llm_embeddings(questions, device)
+    answer_ids_padded_tensor = collate_token_ids_batch(answers).to(torch.int32).to(device)
 
     logger.warning(f"About to go into rollout")
     log_probs, rewards, eval_extras = rollout(
@@ -163,12 +164,13 @@ def batch_loop(
     # Start the batch loop with zero grad
     ########################################
     nav_agent.zero_grad()
+    device = nav_agent.fc1.weight.device
 
     # Deconstruct the batch
     questions = mini_batch["question"].tolist()
     answers = mini_batch["answer"].tolist()
-    question_embeddings = env.get_llm_embeddings(questions)
-    answer_ids_padded_tensor = collate_token_ids_batch(answers).to(torch.int32)
+    question_embeddings = env.get_llm_embeddings(questions, device)
+    answer_ids_padded_tensor = collate_token_ids_batch(answers).to(torch.int32).to(device)
 
     log_probs, rewards, eval_extras = rollout(
         steps_in_episode,
@@ -1050,7 +1052,8 @@ def main():
         id2entity=id2ent,
         entity2id=ent2id,
         id2relation=id2rel,
-        relation2id=rel2id
+        relation2id=rel2id,
+        device=args.device
     )
 
     # Information computed by knowldege graph for future dependency injection
@@ -1090,7 +1093,7 @@ def main():
     if args.visualize:
         # Train the pca, and also get the emebeddings of the graph as an array
         pca = PCA(n_components=2)
-        tmp_graph = (knowledge_graph.get_all_entity_embeddings_wo_dropout())
+        tmp_graph = (knowledge_graph.get_all_entity_embeddings_wo_dropout().cpu().detach().numpy())
         graph_mag = np.abs(tmp_graph[:,:1000] + 1j*tmp_graph[:,1000:])
         graph_pca = pca.fit(graph_mag).transform(graph_mag)
 
@@ -1127,7 +1130,7 @@ def main():
     # We prepare our custom encoder for Bart Here
     hunch_llm = HunchBart(
         pretrained_bart_model=args.pretrained_llm_for_hunch,
-    )
+    ).to(args.device)
 
     # # Freeze the Hunch LLM
     # for param in hunch_llm.parameters():
@@ -1138,7 +1141,7 @@ def main():
         hunch_llm.freeze_llm()
 
     # Setup the entity embedding module
-    question_embedding_module = AutoModel.from_pretrained(args.question_embedding_model)
+    question_embedding_module = AutoModel.from_pretrained(args.question_embedding_model).to(args.device)
 
     # # Freeze the Question Embedding Module
     # for param in question_embedding_module.parameters():
@@ -1165,7 +1168,7 @@ def main():
         trained_pca=pca,
         graph_pca=graph_pca,
         graph_annotation=graph_annotation,
-    )
+    ).to(args.device)
 
     # Now we load this from the embedding models
 
@@ -1182,7 +1185,7 @@ def main():
         dim_action=dim_relation,
         dim_hidden=args.rnn_hidden,
         dim_observation=args.history_dim,  # observation will be into history
-    )
+    ).to(args.device)
 
     # ======================================
     # Visualizaing nav_agent models using Netron

@@ -628,7 +628,8 @@ class SunKnowledgeGraph(nn.Module):
         id2entity: Dict[int,str],
         entity2id: Dict[str,int], 
         id2relation: Dict[int, str], 
-        relation2id: Dict[str, int]
+        relation2id: Dict[str, int],
+        device: str
     ):
         super(SunKnowledgeGraph, self).__init__()
 
