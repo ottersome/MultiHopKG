@@ -122,8 +122,8 @@ def batch_loop_dev(
     device = nav_agent.fc1.weight.device
 
     # Deconstruct the batch
-    questions = mini_batch["question"].tolist()
-    answers = mini_batch["answer"].tolist()
+    questions = mini_batch["Question"].tolist()
+    answers = mini_batch["Answer"].tolist()
     question_embeddings = env.get_llm_embeddings(questions, device)
     answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
 
@@ -175,8 +175,8 @@ def batch_loop(
     device = nav_agent.fc1.weight.device
 
     # Deconstruct the batch
-    questions = mini_batch["question"].tolist()
-    answers = mini_batch["answer"].tolist()
+    questions = mini_batch["Question"].tolist()
+    answers = mini_batch["Answer"].tolist()
     question_embeddings = env.get_llm_embeddings(questions, device)
     answer_ids_padded_tensor = collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
@@ -301,8 +301,8 @@ def evaluate_training(
         # ):  # We dont want to evaluate on incomplete batches
         #     continue
 
-        current_evaluations["reference_questions"] = mini_batch["question"]
-        current_evaluations["true_answer"] = mini_batch["answer"]
+        current_evaluations["reference_questions"] = mini_batch["Question"]
+        current_evaluations["true_answer"] = mini_batch["Answer"]
 
         # Get the Metrics
         bos_token_id = answer_tokenizer.bos_token_id
@@ -347,7 +347,7 @@ def evaluate_training(
         dump_evaluation_metrics(
             path_to_log=just_dump_it_here,
             evaluation_metrics_dictionary=current_evaluations,
-            possible_relation_embeddings=kg.sun_model.relation_embedding,
+            possible_relation_embeddings=kg.relation_embedding,
             vector_entity_searcher=env.ann_index_manager_ent,															 
             vector_rel_searcher=env.ann_index_manager_rel,
             question_tokenizer=question_tokenizer,
@@ -1231,7 +1231,7 @@ def main():
         ax = fig.add_subplot(111)
     else:
         graph_pca = None
-        graph_annotation = None
+        graph_annotation = []
         pca = None
 
     # Setup the pretrained language model
