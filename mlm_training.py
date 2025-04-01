@@ -776,7 +776,7 @@ def train_multihopkg(
                 # Wandb hisotram of modules
                 histograms = histogram_all_modules(modules_to_log, num_buckets=20)
                 # Report the histograms to wandb
-                if wandb:
+                if wandb_on:
                     for name, histogram in histograms.items():
                         wandb.log({f"{name}/Histogram": wandb.Histogram(np_histogram=histogram)})
 
@@ -791,7 +791,7 @@ def train_multihopkg(
                         write_parameters(grads, name, "Gradient", writer, epoch_id)
                         write_parameters(weights, name, "Weights", writer, epoch_id)
 
-                        if wandb:
+                        if wandb_on:
                             wandb.log({f"{name}/Gradient": wandb.Histogram(grads.numpy().flatten())})
                             wandb.log({f"{name}/Weights": wandb.Histogram(weights.numpy().flatten())})
                         elif visualize:
