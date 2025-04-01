@@ -19,7 +19,7 @@ import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import var_cuda, zeros_var_cuda
 from multihopkg.vector_search import ANN_IndexMan
 from multihopkg.environments import Environment, Observation
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Dict, Optional
 import pdb
 
 import sys
@@ -499,7 +499,11 @@ class ITLGraphEnvironment(Environment, nn.Module):
         node_data: str,
         node_data_key: str,
         rel_data: str,
-        rel_data_key: str,					  
+        rel_data_key: str,
+        id2entity: Dict[int, str],
+        entity2id: Dict[str, int],
+        id2relation: Dict[int, str],
+        relation2id: Dict[str, int],				  
         ann_index_manager_ent: ANN_IndexMan,
         ann_index_manager_rel: ANN_IndexMan,
         steps_in_episode: int,
@@ -528,6 +532,11 @@ class ITLGraphEnvironment(Environment, nn.Module):
         self.graph_pca = graph_pca
         self.graph_annotation = graph_annotation
 
+        self.id2entity = id2entity
+        self.entity2id = entity2id
+        self.id2relation = id2relation
+        self.relation2id = relation2id
+        
         self.entity2title = {}
         self.relation2title = {}
 
