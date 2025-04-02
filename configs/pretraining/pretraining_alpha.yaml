@@ -1,0 +1,7 @@
+# -- General -- #
+seed: 420
+# -- Language Parameters -- #
+question_tokenizer_name: "bert-base-uncased"
+answer_tokenizer_name: "facebook/bart-base"
+# -- Embedding Parameters -- #
+embedding_model_type: "pRotatE"
