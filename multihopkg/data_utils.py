@@ -253,6 +253,21 @@ def load_index(input_path):
             rev_index[i] = v
     return index, rev_index
 
+def load_inclusive_index(input_path: str):
+    """
+    Loads dictionaries to map int-index to str-index and vice-versa
+    This specific implementation takese the first column as embedding matrix int
+         and the second column as the RDF to a specific dataset
+    Use `load_index_column_wise` for one with int-index as the second column
+    """
+    index, rev_index = {}, {}
+    with open(input_path) as f:
+        for line in f.readlines():
+            i, v = line.strip().split()
+            index[i] = v
+            rev_index[v] = i
+    return index, rev_index
+
 def prepare_triple_dicts(
     df_split: DFSplit,
 ):
