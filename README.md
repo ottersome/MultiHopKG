@@ -52,4 +52,4 @@ To **evaluate** the model:
 - Use `kge_train.py` if you want to perform a full evaluation of the trained model. This script is intended for end-to-end testing and generating evaluation metrics.
 
 If you choose to use `kge_train.py`, you can run the following command:
-`CUDA_VISIBLE_DEVICES=[DEVICE NUMBER] python -u kge_train.py --do_test --cuda -init models/[MODEL NAME] --save_path [PATH TO SAVE RESULTS] [--autoencoder_flag]`
+`CUDA_VISIBLE_DEVICES=[DEVICE NUMBER] python -u kge_train.py --do_test --cuda -init models/[MODEL NAME] --save_path [PATH TO SAVE RESULTS] [--autoencoder_flag] [--autoencoder_hidden_dim VALUE] [--autoencoder_lambda VALUE]`

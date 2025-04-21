@@ -14,8 +14,6 @@ GPU_DEVICE=$4
 SAVE_ID=$5
 
 FULL_DATA_PATH=$DATA_PATH/$DATASET
-# ! SEE LINE 30
-# SAVE=$SAVE_PATH/"$MODEL"_"$DATASET"_"$SAVE_ID"
 
 #Only used in training
 BATCH_SIZE=$6
@@ -27,6 +25,7 @@ LEARNING_RATE=${11}
 MAX_STEPS=${12}
 TEST_BATCH_SIZE=${13}
 AUTOENCODER_STATUS=$(echo ${14} | tr '[:upper:]' '[:lower:]')
+AUTOENCODER_LAMBDA=${15}
 
 if [ "$AUTOENCODER_STATUS" = "true" ] || [ "$AUTOENCODER_STATUS" = "1" ]; then
     AUTOENCODER_FLAG="--autoencoder_flag"
@@ -52,7 +51,8 @@ CUDA_VISIBLE_DEVICES=$GPU_DEVICE python -u kge_train.py --do_train \
     -lr $LEARNING_RATE --max_steps $MAX_STEPS \
     -save $SAVE --test_batch_size $TEST_BATCH_SIZE \
     $AUTOENCODER_FLAG \
-    ${15} ${16} ${17} ${18} ${19} ${20} ${21} ${22} ${23} ${24} ${25}
+    --autoencoder_lambda $AUTOENCODER_LAMBDA \
+    ${16} ${17} ${18} ${19} ${20} ${21} ${22} ${23} ${24} ${25}
 
 elif [ $MODE == "valid" ]
 then

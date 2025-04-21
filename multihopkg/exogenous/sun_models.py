@@ -36,6 +36,7 @@ class KGEModel(nn.Module):
         double_relation_embedding: bool = False,
         autoencoder_flag = False,
         autoencoder_hidden_dim = 50,
+        autoencoder_lambda = 0.1,
     ):
         super(KGEModel, self).__init__()
         self.model_name = model_name
@@ -47,6 +48,7 @@ class KGEModel(nn.Module):
         # Autoencoder 
         self.autoencoder_flag = autoencoder_flag
         self.autoencoder_hidden_dim = autoencoder_hidden_dim
+        self.autoencoder_lambda = autoencoder_lambda
         
         self.gamma = nn.Parameter(
             torch.Tensor([gamma]), 
@@ -313,19 +315,22 @@ class KGEModel(nn.Module):
             relation_encoded = self.relation_encoder(relation)
             relation_reconstructed = self.relation_decoder(relation_encoded)
 
+            # MSE LOSS (aka, reconstruction loss)
+            mse_loss = F.mse_loss(relation_reconstructed, relation) 
+
             if self.model_name in self.model_func:
                 score = self.model_func[self.model_name](head, relation_reconstructed, tail, mode)
             else:
                 raise ValueError('model %s not supported' % self.model_name)
 
-            return score
+            return score, mse_loss
         else:
             if self.model_name in self.model_func:
                 score = self.model_func[self.model_name](head, relation, tail, mode)
             else:
                 raise ValueError('model %s not supported' % self.model_name)
             
-            return score
+            return score, torch.tensor([0.0], device=score.device) # No MSE loss in this case
         
     #-----------------------------------------------------------------------
     'Scoring Functions'
@@ -433,7 +438,7 @@ class KGEModel(nn.Module):
             negative_sample = negative_sample.cuda()
             subsampling_weight = subsampling_weight.cuda()
 
-        negative_score = model((positive_sample, negative_sample), mode=mode)
+        negative_score, negative_mse = model((positive_sample, negative_sample), mode=mode)
 
         if args.negative_adversarial_sampling:
             #In self-adversarial sampling, we do not apply back-propagation on the sampling weight
@@ -442,7 +447,7 @@ class KGEModel(nn.Module):
         else:
             negative_score = F.logsigmoid(-negative_score).mean(dim = 1)
 
-        positive_score = model(positive_sample)
+        positive_score, positive_mse = model(positive_sample)
 
         positive_score = F.logsigmoid(positive_score).squeeze(dim = 1)
 
@@ -452,8 +457,14 @@ class KGEModel(nn.Module):
         else:
             positive_sample_loss = - (subsampling_weight * positive_score).sum()/subsampling_weight.sum()
             negative_sample_loss = - (subsampling_weight * negative_score).sum()/subsampling_weight.sum()
-
-        loss = (positive_sample_loss + negative_sample_loss)/2
+        
+        if model.autoencoder_flag:
+            score_loss = (positive_sample_loss + negative_sample_loss)/2
+            reconstruction_loss = model.autoencoder_lambda * (positive_mse + negative_mse) / 2
+            loss = score_loss + reconstruction_loss
+        else:
+            score_loss = positive_sample_loss + negative_sample_loss
+            loss = score_loss
         
         if args.regularization != 0.0:
             #Use L3 regularization for ComplEx and DistMult
@@ -470,12 +481,22 @@ class KGEModel(nn.Module):
 
         optimizer.step()
 
-        log = {
-            **regularization_log,
-            'positive_sample_loss': positive_sample_loss.item(),
-            'negative_sample_loss': negative_sample_loss.item(),
-            'loss': loss.item()
-        }
+        if not model.autoencoder_flag:
+            log = {
+                **regularization_log,
+                'positive_sample_loss': positive_sample_loss.item(),
+                'negative_sample_loss': negative_sample_loss.item(),
+                'score_loss': score_loss.item(),
+            }
+        else:
+            log = {
+                **regularization_log,
+                'positive_sample_loss': positive_sample_loss.item(),
+                'negative_sample_loss': negative_sample_loss.item(),
+                'score_loss': score_loss.item(),
+                'reconstruction_loss': positive_mse.item(),
+                'loss': loss.item()
+            }
 
         return log
 
@@ -503,7 +524,8 @@ class KGEModel(nn.Module):
                 sample = sample.cuda()
 
             with torch.no_grad():
-                y_score = model(sample).squeeze(1).cpu().numpy()
+                # during test we don't need to calculate the mse loss
+                y_score, _ = model(sample).squeeze(1).cpu().numpy()
 
             y_true = np.array(y_true)
 
@@ -558,7 +580,8 @@ class KGEModel(nn.Module):
 
                         batch_size = positive_sample.size(0)
 
-                        score = model((positive_sample, negative_sample), mode)
+                        # during test we don't need to calculate the mse loss
+                        score, _ = model((positive_sample, negative_sample), mode)
                         score += filter_bias
 
                         #Explicitly sort all the entities to ensure that there is no test exposure bias
