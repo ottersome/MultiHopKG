@@ -26,6 +26,13 @@ ALPHA=${10}
 LEARNING_RATE=${11}
 MAX_STEPS=${12}
 TEST_BATCH_SIZE=${13}
+AUTOENCODER_STATUS=$(echo ${14} | tr '[:upper:]' '[:lower:]')
+
+if [ "$AUTOENCODER_STATUS" = "true" ] || [ "$AUTOENCODER_STATUS" = "1" ]; then
+    AUTOENCODER_FLAG="--autoencoder_flag"
+else
+    AUTOENCODER_FLAG=""
+fi
 
 SAVE=$SAVE_PATH/"$MODEL"_"$DATASET"_dim"$HIDDEN_DIM"
 
@@ -44,7 +51,8 @@ CUDA_VISIBLE_DEVICES=$GPU_DEVICE python -u kge_train.py --do_train \
     -g $GAMMA -a $ALPHA -adv \
     -lr $LEARNING_RATE --max_steps $MAX_STEPS \
     -save $SAVE --test_batch_size $TEST_BATCH_SIZE \
-    ${14} ${15} ${16} ${17} ${18} ${19} ${20}
+    $AUTOENCODER_FLAG \
+    ${15} ${16} ${17} ${18} ${19} ${20} ${21} ${22} ${23} ${24} ${25}
 
 elif [ $MODE == "valid" ]
 then
