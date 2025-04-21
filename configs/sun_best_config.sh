@@ -20,8 +20,9 @@ bash kge_run.sh train pRotatE countries_S2 0 0 512 64 1000 0.1 1.0 0.000002 4000
 bash kge_run.sh train pRotatE countries_S3 0 0 512 64 1000 0.1 1.0 0.000002 40000 8 --countries
 #
 # pRotatE example with Autoencoder (14th value should be True or False)
+# Notice that at 15th argument we got the lambda value for the autoencoder
 #
-bash kge_run.sh train pRotatE FB15k 0 0 1024 256 1000 24.0 1.0 0.0001 150000 16 True
+bash kge_run.sh train pRotatE FB15k 0 0 1024 256 1000 24.0 1.0 0.0001 150000 16 True 0.5
 #
 # Best Configuration for TransE
 # 

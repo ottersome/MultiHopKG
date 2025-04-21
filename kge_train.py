@@ -71,6 +71,7 @@ def parse_args(args=None):
 
     parser.add_argument('--autoencoder_flag', action='store_true', help='Toggle autoencoder')
     parser.add_argument('--autoencoder_hidden_dim', default=50, type=int, help='Autoencoder hidden dimension')
+    parser.add_argument('--autoencoder_lambda', default=0.1, type=float, help='Autoencoder regularization')
     
     return parser.parse_args(args)
 
@@ -227,6 +228,7 @@ def main(args):
     if args.autoencoder_flag and not args.double_relation_embedding:
         logging.info('Autoencoder toggled ON')
         logging.info(f'Autoencoder hidden dim: {args.autoencoder_hidden_dim}')
+        logging.info(f'Autoencoder lambda: {args.autoencoder_lambda}')
     else:
         logging.info('Autoencoder toggled OFF')
         args.autoencoder_flag = False # in case if double_relation_embedding is set to True
@@ -241,6 +243,7 @@ def main(args):
         double_relation_embedding=args.double_relation_embedding,
         autoencoder_flag=args.autoencoder_flag,
         autoencoder_hidden_dim=args.autoencoder_hidden_dim,
+        autoencoder_lambda=args.autoencoder_lambda,
     )
     
     logging.info('Model Parameter Configuration:')
