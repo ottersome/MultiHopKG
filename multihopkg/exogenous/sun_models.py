@@ -34,6 +34,8 @@ class KGEModel(nn.Module):
         gamma: float,
         double_entity_embedding: bool = False,
         double_relation_embedding: bool = False,
+        autoencoder_flag = False,
+        autoencoder_hidden_dim = 50,
     ):
         super(KGEModel, self).__init__()
         self.model_name = model_name
@@ -41,6 +43,10 @@ class KGEModel(nn.Module):
         self.nrelation = nrelation
         self.hidden_dim = hidden_dim
         self.epsilon = 2.0
+
+        # Autoencoder 
+        self.autoencoder_flag = autoencoder_flag
+        self.autoencoder_hidden_dim = autoencoder_hidden_dim
         
         self.gamma = nn.Parameter(
             torch.Tensor([gamma]), 
@@ -135,6 +141,18 @@ class KGEModel(nn.Module):
             "RotatE": lambda x: x, # no operation is needed, complex number
             "pRotatE": self.wrap_rotate_embedding,
         }
+
+        # Autoencoder
+        if self.autoencoder_flag:
+            self.relation_encoder = nn.Sequential(
+                nn.Linear(hidden_dim, autoencoder_hidden_dim),
+                nn.Tanh(), # ReLU()
+            )
+
+            self.relation_decoder = nn.Sequential(
+                nn.Linear(autoencoder_hidden_dim, hidden_dim),
+                nn.Tanh()  # ReLU(), I don't notice significant difference in model performance
+            )
 
     def load_embeddings(self, entity_embedding: np.ndarray, relation_embedding: np.ndarray):
         '''
@@ -285,14 +303,30 @@ class KGEModel(nn.Module):
         else:
             raise ValueError('mode %s not supported' % mode)
 
-        
-        if self.model_name in self.model_func:
-            score = self.model_func[self.model_name](head, relation, tail, mode)
+        # Autoencoder 
+        if self.autoencoder_flag:
+            # relations are not transformed, 
+            # I don't notice a difference in model performance 
+            # from wrapping around phase
+            # or 
+            # from transforming phase to euclidian space
+            relation_encoded = self.relation_encoder(relation)
+            relation_reconstructed = self.relation_decoder(relation_encoded)
+
+            if self.model_name in self.model_func:
+                score = self.model_func[self.model_name](head, relation_reconstructed, tail, mode)
+            else:
+                raise ValueError('model %s not supported' % self.model_name)
+
+            return score
         else:
-            raise ValueError('model %s not supported' % self.model_name)
+            if self.model_name in self.model_func:
+                score = self.model_func[self.model_name](head, relation, tail, mode)
+            else:
+                raise ValueError('model %s not supported' % self.model_name)
+            
+            return score
         
-        return score
-    
     #-----------------------------------------------------------------------
     'Scoring Functions'
 

@@ -68,6 +68,9 @@ def parse_args(args=None):
     
     parser.add_argument('--nentity', type=int, default=0, help='DO NOT MANUALLY SET')
     parser.add_argument('--nrelation', type=int, default=0, help='DO NOT MANUALLY SET')
+
+    parser.add_argument('--autoencoder_flag', action='store_true', help='Toggle autoencoder')
+    parser.add_argument('--autoencoder_hidden_dim', default=50, type=int, help='Autoencoder hidden dimension')
     
     return parser.parse_args(args)
 
@@ -116,6 +119,18 @@ def save_model(model, optimizer, save_variable_list, args):
         os.path.join(args.save_path, 'relation_embedding'), 
         relation_embedding
     )
+
+    if args.autoencoder_flag:
+        encoded_relation = model.relation_encoder(model.relation_embedding)
+        np.save(
+            os.path.join(args.save_path, 'encoded_relation'),
+            encoded_relation.detach().cpu().numpy()
+        )     
+        decoded_relation = model.relation_decoder(encoded_relation)
+        np.save(
+            os.path.join(args.save_path, 'decoded_relation'),
+            decoded_relation.detach().cpu().numpy()
+        )
 
 def set_logger(args):
     '''
@@ -207,7 +222,15 @@ def main(args):
     
     #All true triples
     all_true_triples = train_triples + valid_triples + test_triples
-    
+
+    # Logging before initializing the model
+    if args.autoencoder_flag and not args.double_relation_embedding:
+        logging.info('Autoencoder toggled ON')
+        logging.info(f'Autoencoder hidden dim: {args.autoencoder_hidden_dim}')
+    else:
+        logging.info('Autoencoder toggled OFF')
+        args.autoencoder_flag = False # in case if double_relation_embedding is set to True
+
     kge_model = KGEModel(
         model_name=args.model,
         nentity=nentity,
@@ -215,7 +238,9 @@ def main(args):
         hidden_dim=args.hidden_dim,
         gamma=args.gamma,
         double_entity_embedding=args.double_entity_embedding,
-        double_relation_embedding=args.double_relation_embedding
+        double_relation_embedding=args.double_relation_embedding,
+        autoencoder_flag=args.autoencoder_flag,
+        autoencoder_hidden_dim=args.autoencoder_hidden_dim,
     )
     
     logging.info('Model Parameter Configuration:')
