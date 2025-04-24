@@ -34,6 +34,7 @@ rich = "^13.9.3"
 debugpy = "^1.8.9"
 pytest = "^8.3.5"
 pytest-sugar = "^1.0.0"
+pandas-stubs = "^2.2.3.250308"
 
 [build-system]
 requires = ["poetry-core"]
