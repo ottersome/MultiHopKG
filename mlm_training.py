@@ -14,6 +14,7 @@ import os
 from typing import List, Tuple, Dict, Any, DefaultDict
 import debugpy
 import sys
+import time
 
 import numpy as np
 import pandas as pd
@@ -375,6 +376,7 @@ def evaluate_training(
     answer_tokenizer: PreTrainedTokenizer,
     wandb_on: bool,
     iteration: int,
+    timestamp: str,
 ):
     """
     Evaluates the performance of the navigation agent and language model on the development set.
@@ -502,7 +504,7 @@ def evaluate_training(
                         graph_annotation.append("")
 
             # eval_extras has variables that we need
-            just_dump_it_here = "./logs/evaluation_dumps.log"
+            just_dump_it_here = f"./logs/mlm_{env.knowledge_graph.model_name.lower()}_{timestamp}_evaluation_dumps.log"
 
             answer_id = mini_batch["Answer-Entity"].tolist()
 
@@ -670,7 +672,9 @@ def train_multihopkg(
         for name, param in env.named_parameters():
             if param.requires_grad: print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
 
-    writer = SummaryWriter(log_dir=f'runs/mlm/')
+    local_time = time.localtime()
+    timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+    writer = SummaryWriter(log_dir=f'runs/mlm/{env.knowledge_graph.model_name.lower()}/{timestamp}/')
 
     named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()) + list(hunch_llm.named_parameters()))}
     optimizer = torch.optim.Adam(  # type: ignore
@@ -739,6 +743,7 @@ def train_multihopkg(
                     answer_tokenizer,
                     wandb_on,
                     iteration = epoch_id * (len(train_data) // batch_size // mbatches_b4_eval) + (batch_count // mbatches_b4_eval),
+                    timestamp = timestamp,
                 )
 
             ########################################

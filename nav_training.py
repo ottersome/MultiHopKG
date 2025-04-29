@@ -19,6 +19,7 @@ from the KGE model.
 import argparse
 import os
 import sys
+import time
 
 # Debugging and Development Tools
 import debugpy
@@ -445,6 +446,7 @@ def evaluate_training(
     question_tokenizer: PreTrainedTokenizer,
     wandb_on: bool,
     iteration: int,
+    timestamp: str,
 ):
     """
     Evaluates the performance of the navigation agent on the development set.
@@ -552,7 +554,7 @@ def evaluate_training(
         if verbose and logger:
 
             # eval_extras has variables that we need
-            just_dump_it_here = "./logs/nav_evaluation_dumps.log"
+            just_dump_it_here = f"./logs/nav_{env.knowledge_graph.model_name.lower()}_{timestamp}_evaluation_dumps.log"
 
             answer_id = current_evaluations["true_answer_id"].tolist()
 
@@ -684,7 +686,9 @@ def train_nav_multihopkg(
         for name, param in env.named_parameters():
             if param.requires_grad: print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
 
-    writer = SummaryWriter(log_dir=f'runs/nav/')
+    local_time = time.localtime()
+    timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+    writer = SummaryWriter(log_dir=f'runs/nav/{env.knowledge_graph.model_name.lower()}/{timestamp}/')
 
     named_param_map = {param: name for name, param in (list(nav_agent.named_parameters()) + list(env.named_parameters()))}
     optimizer = torch.optim.Adam(  # type: ignore
@@ -745,6 +749,7 @@ def train_nav_multihopkg(
                     question_tokenizer,
                     wandb_on,
                     iteration = epoch_id * (len(train_data) // batch_size // mbatches_b4_eval) + (batch_count // mbatches_b4_eval),
+                    timestamp=timestamp,
                 )
 
             ########################################
