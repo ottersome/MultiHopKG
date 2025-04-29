@@ -68,6 +68,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--force_data_prepro', '-f', action="store_true", help="Force the data prepro to run even if the data is already cached.")
     ap.add_argument('--nav_start_emb_type', type=str, default="centroid", help="The starting position of the navigator in the graph. Can be 'centroid', 'random', or 'relevant' (default: centroid)")
     ap.add_argument('--nav_epsilon_error', type=float, default=50.0, help="Permisable epsilon error for the navigator arriving at the answer. (default: 50.0)")
+    ap.add_argument('--nav_epsilon_metric', type=str, default="l2", help="The metric to use for the navigator. Can be 'l2', 'l1', or 'deg', the last of which is only supported by pRotatE (default: l2)")
 
     # Entity and Relationship Human Readability
     ap.add_argument('--node_data_path', type=str, default='./data/FB15k/node_data.csv', help='Path to the CSV file containing the name mapping for the entity.')
