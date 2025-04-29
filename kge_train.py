@@ -9,6 +9,8 @@ import json
 import logging
 import os
 import random
+import wandb
+import time
 
 import numpy as np
 import torch
@@ -72,7 +74,10 @@ def parse_args(args=None):
     parser.add_argument('--autoencoder_flag', action='store_true', help='Toggle autoencoder')
     parser.add_argument('--autoencoder_hidden_dim', default=50, type=int, help='Autoencoder hidden dimension')
     parser.add_argument('--autoencoder_lambda', default=0.1, type=float, help='Autoencoder regularization')
-    
+
+    parser.add_argument('--wandb_project', type=str, default='', help='wandb project name')
+    parser.add_argument('-track', action='store_true', help='track wandb')
+
     return parser.parse_args(args)
 
 def override_config(args):
@@ -162,9 +167,25 @@ def log_metrics(mode, step, metrics):
     '''
     for metric in metrics:
         logging.info('%s %s at step %d: %f' % (mode, metric, step, metrics[metric]))
-        
+
+    # Log to wandb as well
+    if wandb.run is not None:
+        wandb.log({f"{mode}_{metric}": value for metric, value in metrics.items()}, step=step)    
         
 def main(args):
+    # Initialize wandb
+    if args.track:
+        if args.wandb_project == '':
+            raise ValueError('wandb_project must be specified if tracking is enabled.')
+        local_time = time.localtime()
+        timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+        wandb.init(
+            project=f"{args.wandb_project}",
+            config=vars(args),
+            name=f"{args.model}-{args.data_path.split('/')[1]}-{timestamp}"
+        )
+        args = argparse.Namespace(**wandb.config)  # <-- Make sure args is overwritten
+
     if (not args.do_train) and (not args.do_valid) and (not args.do_test):
         raise ValueError('one of train/val/test mode must be choosed.')
     
@@ -313,7 +334,7 @@ def main(args):
     # Set valid dataloader as it would be evaluated during training
     
     if args.do_train:
-        logging.info('learning_rate = %d' % current_learning_rate)
+        logging.info('learning_rate = %f' % current_learning_rate)
 
         training_logs = []
         
