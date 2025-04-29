@@ -1,0 +1,13 @@
+# Configurations for Training TransE on FB15k
+data_dir: "data/FB15k"
+model: "TransE"
+trained_model_path: "models/TransE_FB15k_dim500"
+nav_epsilon_error: 0.05 # 0.05 for FB15k dim 500
+nav_epsilon_metric: "l2"
+rl_gamma: 0.9
+freebaseqa_path: "data/freebaseqa"
+nav_start_emb_type: "relevant"
+num_rollout_steps: 3
+batch_size: 36
+batch_size_dev: 12
+batches_b4_eval: 100
