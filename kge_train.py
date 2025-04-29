@@ -78,6 +78,9 @@ def parse_args(args=None):
     parser.add_argument('--wandb_project', type=str, default='', help='wandb project name')
     parser.add_argument('-track', action='store_true', help='track wandb')
 
+    parser.add_argument('--saving_metric', default='', type=str, help='Metric used for the threshold required for saving model. If empty, no conditioning for saving model.')
+    parser.add_argument('--saving_threshold', default=0.0, type=float, help='threshold required for saving model')
+
     return parser.parse_args(args)
 
 def override_config(args):
@@ -305,6 +308,11 @@ def main(args):
         else:
             warm_up_steps = args.max_steps // 2
 
+        if not(args.do_valid): args.saving_metric = '' # No validation, no saving condition
+        if args.saving_metric not in ['', 'MRR', 'HITS@1', 'HITS@3', 'HITS@10']:
+            logging.warning(f'Invalid saving metrics: {args.saving_metric}. Must be one of MRR, HITS@1, HITS@3, HITS@10 or empty. Setting to empty.')
+            args.saving_metric = ''
+
     if args.init_checkpoint:
         # Restore model from checkpoint directory
         logging.info('Loading checkpoint %s...' % args.init_checkpoint)
@@ -354,7 +362,7 @@ def main(args):
                 )
                 warm_up_steps = warm_up_steps * 3
             
-            if step % args.save_checkpoint_steps == 0:
+            if step % args.save_checkpoint_steps == 0 and args.saving_metric == '':
                 save_variable_list = {
                     'step': step, 
                     'current_learning_rate': current_learning_rate,
@@ -373,13 +381,38 @@ def main(args):
                 logging.info('Evaluating on Valid Dataset...')
                 metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
                 log_metrics('Valid', step, metrics)
+
+                # If the metric is present and above the threshold, save the model
+                if args.saving_metric in metrics and metrics[args.saving_metric] > args.saving_threshold:
+                    
+                    save_variable_list = {
+                        'step': step, 
+                        'current_learning_rate': current_learning_rate,
+                        'warm_up_steps': warm_up_steps
+                    }
+                    save_model(kge_model, optimizer, save_variable_list, args)
         
-        save_variable_list = {
-            'step': step, 
-            'current_learning_rate': current_learning_rate,
-            'warm_up_steps': warm_up_steps
-        }
-        save_model(kge_model, optimizer, save_variable_list, args)
+        # Save the final model
+        if args.saving_metric == '':
+            logging.info('Final Evaluation on Valid Dataset...')
+            save_variable_list = {
+                'step': step, 
+                'current_learning_rate': current_learning_rate,
+                'warm_up_steps': warm_up_steps
+            }
+            save_model(kge_model, optimizer, save_variable_list, args)
+        else:
+            logging.info('Final Evaluation on Valid Dataset...')
+            metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
+            log_metrics('Valid', step, metrics)
+
+            if args.saving_metric in metrics and metrics[args.saving_metric] > args.saving_threshold:
+                save_variable_list = {
+                    'step': step, 
+                    'current_learning_rate': current_learning_rate,
+                    'warm_up_steps': warm_up_steps
+                }
+                save_model(kge_model, optimizer, save_variable_list, args)
         
     if args.do_valid:
         logging.info('Evaluating on Valid Dataset...')

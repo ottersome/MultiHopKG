@@ -31,6 +31,8 @@ def main():
     print(f"Autoencoder Flag: {config.autoencoder_flag}")
     print(f"Autoencoder Hidden Dim: {config.autoencoder_hidden_dim}")
     print(f"Autoencoder Lambda: {config.autoencoder_lambda}")
+    print(f"Saving Metric: {config.saving_metric}")
+    print(f"Saving Threshold: {config.saving_threshold}")
     print(f"Additional Params: {config.additional_params}")
     print("==========================================")
 
@@ -52,7 +54,9 @@ def main():
             "-lr", str(config.learning_rate),
             "--max_steps", str(config.max_steps),
             "-save", f"models/{config.model}_{config.dataset}_dim{config.hidden_dim}",
-            "--test_batch_size", str(config.test_batch_size)
+            "--test_batch_size", str(config.test_batch_size),
+            "--saving_metric", config.saving_metric,
+            "--saving_threshold", str(config.saving_threshold),
         ]
 
         if config.additional_params:

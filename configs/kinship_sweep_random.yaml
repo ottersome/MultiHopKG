@@ -10,8 +10,8 @@ project: kinship-hinton
 method: random
 
 metric:
-  name: Valid_MR  # Mean Rank (lower is better)
-  goal: minimize
+  name: Valid_HITS@1  # (higher is better)
+  goal: maximize  # Higher is better
 
 parameters:
   # Positional argument 1
@@ -52,14 +52,14 @@ parameters:
   hidden_dim:
     distribution: q_log_uniform_values
     q: 1
-    min: 5
+    min: 4
     max: 20
 
   # Positional argument 9
   gamma:
     distribution: uniform
-    min: 0.1
-    max: 24.0
+    min: 0.5
+    max: 4.5
 
   # Positional argument 10
   alpha:
@@ -70,14 +70,14 @@ parameters:
   # Positional argument 11
   learning_rate:
     distribution: log_uniform_values
-    min: 2e-6
-    max: 1e-4
+    min: 2e-5
+    max: 8e-4
 
   # Positional argument 12
   max_steps:
     distribution: q_uniform
     q: 10000
-    min: 40000
+    min: 80000
     max: 150000
 
   # Positional argument 13
@@ -91,6 +91,12 @@ parameters:
   # Positional argument 15
   track:
     value: true  # Always track with wandb
+
+  saving_metric:
+    value: HITS@1  # Metric to save the best model
+  
+  saving_threshold:
+    value: 0.75  # Threshold for saving the best model
 
   # (Optional) Positional argument 16+
   additional_params:
