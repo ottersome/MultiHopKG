@@ -1,3 +1,20 @@
+bash kge_run.sh train <MODEL> <DATASET> <GPU_ID> <SEED> <BATCH_SIZE> <NEGATIVE_SAMPLE_SIZE> <HIDDEN_DIM> <GAMMA> <ALPHA> <LEARNING_RATE> <MAX_STEPS> <TEST_BATCH_SIZE> <ADDITIONAL_PARAMS>
+:: << 'END'
+    <MODEL>: Name of the embedding model (e.g., RotatE, pRotatE, TransE, ComplEx, DistMult).
+    <DATASET>: Name of the dataset (e.g., FB15k, FB15k-237, wn18, wn18rr, countries_S1, YAGO3-10).
+    <GPU_ID>: ID of the GPU to use (e.g., 0).
+    <SEED>: Random seed for reproducibility (e.g., 0).
+    <BATCH_SIZE>: Batch size for training (e.g., 256, 64, 1024).
+    <NEGATIVE_SAMPLE_SIZE>: Number of negative samples (e.g., 1000, 500, 2000).
+    <HIDDEN_DIM>: Dimensionality of the hidden layers (e.g., 1024, 512).
+    <GAMMA>: Margin value for the loss function (e.g., 24.0, 9.0, 12.0, 0.1).
+    <ALPHA>: Weight for the regularization term (e.g., 1.0, 0.5).
+    <LEARNING_RATE>: Learning rate for optimization (e.g., 0.0001, 0.00005).
+    <MAX_STEPS>: Maximum number of training steps (e.g., 150000, 100000, 80000, 40000).
+    <TEST_BATCH_SIZE>: Batch size for testing (e.g., 16, 8, 4).
+    <ADDITIONAL_PARAMS>: Additional parameters/flags (e.g., -de, -dr, --countries, -r 0.000002).
+END
+
 # Best Configuration for RotatE
 #
 bash kge_run.sh train RotatE FB15k 0 0 1024 256 1000 24.0 1.0 0.0001 150000 16 -de
