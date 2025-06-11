@@ -33,6 +33,8 @@ def main():
         print(f"Autoencoder Flag: {config.autoencoder_flag}")
         print(f"Autoencoder Hidden Dim: {config.autoencoder_hidden_dim}")
         print(f"Autoencoder Lambda: {config.autoencoder_lambda}")
+    if 'clean_up' in config:
+        print(f"Clean Up: {config.clean_up}")
     print(f"Saving Metric: {config.saving_metric}")
     print(f"Saving Threshold: {config.saving_threshold}")
     print(f"Additional Params: {config.additional_params}")
@@ -72,6 +74,9 @@ def main():
 
         if str(config.model).lower() == "rotate":
             cmd += ["--double_entity_embedding"]
+
+        if str(config.clean_up).lower() == "true":
+            cmd += ["--clean_up"]
 
         if str(config.track).lower() == "true":
             cmd += ["-track", "--wandb_project", config.wandb_project]

@@ -11,6 +11,7 @@ import os
 import random
 import wandb
 import time
+import shutil
 
 import numpy as np
 import torch
@@ -66,6 +67,7 @@ def parse_args(args=None):
     parser.add_argument('--warm_up_steps', default=None, type=int)
     
     parser.add_argument('--save_checkpoint_steps', default=10000, type=int)
+    parser.add_argument('--clean_up', action='store_true', help='Clean up checkpoints after training')
     parser.add_argument('--valid_steps', default=10000, type=int)
     parser.add_argument('--log_steps', default=100, type=int, help='train log every xx steps')
     parser.add_argument('--test_log_steps', default=1000, type=int, help='valid/test log every xx steps')
@@ -105,46 +107,75 @@ def override_config(args):
     args.hidden_dim = argparse_dict['hidden_dim']
     args.test_batch_size = argparse_dict['test_batch_size']
 
-def save_model(model, optimizer, save_variable_list, args):
+def save_configs(args):
     '''
-    Save the parameters of the model and the optimizer,
-    as well as some other variables such as step and learning_rate
+    Save the configurations to a json file
     '''
     
     argparse_dict = vars(args)
     with open(os.path.join(args.save_path, 'config.json'), 'w') as fjson:
         json.dump(argparse_dict, fjson)
 
+def save_model(model, optimizer, save_variable_list, save_dir, autoencoder_flag=False):
+    '''
+    Save the parameters of the model and the optimizer,
+    as well as some other variables such as step and learning_rate
+    '''
+    
     torch.save({
         **save_variable_list,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict()},
-        os.path.join(args.save_path, 'checkpoint')
+        os.path.join(save_dir, 'checkpoint')
     )
     
     entity_embedding = model.entity_embedding.detach().cpu().numpy()
     np.save(
-        os.path.join(args.save_path, 'entity_embedding'), 
+        os.path.join(save_dir, 'entity_embedding'), 
         entity_embedding
     )
     
     relation_embedding = model.relation_embedding.detach().cpu().numpy()
     np.save(
-        os.path.join(args.save_path, 'relation_embedding'), 
+        os.path.join(save_dir, 'relation_embedding'), 
         relation_embedding
     )
 
-    if args.autoencoder_flag:
+    if autoencoder_flag:
         encoded_relation = model.relation_encoder(model.relation_embedding)
         np.save(
-            os.path.join(args.save_path, 'encoded_relation'),
+            os.path.join(save_dir, 'encoded_relation'),
             encoded_relation.detach().cpu().numpy()
         )     
         decoded_relation = model.relation_decoder(encoded_relation)
         np.save(
-            os.path.join(args.save_path, 'decoded_relation'),
+            os.path.join(save_dir, 'decoded_relation'),
             decoded_relation.detach().cpu().numpy()
         )
+
+def update_best_model(model, optimizer, save_variable_list, save_dir, 
+                     metric_name, metric_value, best_metric_value, 
+                     best_model_path, autoencoder_flag=False, maximize=True):
+    """
+    Overwrite previous best model in root save_dir if metric is improved.
+    """
+    improved = (best_metric_value is None) or ((metric_value > best_metric_value) if maximize else (metric_value < best_metric_value))
+    if improved:
+        old = best_metric_value
+        best_metric_value = metric_value
+        save_model(model, optimizer, save_variable_list, save_dir, autoencoder_flag)
+        logging.info(f"Best model updated in root: {save_dir} with {metric_name}: {metric_value:.5f} (prev best: {old})")
+        best_metric_value = metric_value
+        best_model_path = save_dir
+    else:
+        logging.info(f"Current {metric_name}: {metric_value:.5f} did not improve over best {metric_name}: {best_metric_value:.5f}. Best model remains at: {best_model_path}")
+    return best_metric_value, best_model_path
+
+def clean_up_checkpoints(save_path):
+    checkpoints_dir = os.path.join(save_path, "checkpoints")
+    if os.path.exists(checkpoints_dir):
+        shutil.rmtree(checkpoints_dir)
+        logging.info(f"Checkpoints directory '{checkpoints_dir}' has been deleted.")
 
 def set_logger(args):
     '''
@@ -352,6 +383,9 @@ def main(args):
     
     # Set valid dataloader as it would be evaluated during training
     
+
+    best_metric_value = None
+    best_model_path = None
     if args.do_train:
         logging.info('learning_rate = %f' % current_learning_rate)
 
@@ -374,12 +408,20 @@ def main(args):
                 warm_up_steps = warm_up_steps * 3
             
             if step % args.save_checkpoint_steps == 0 and args.saving_metric == '':
+                # Normal saving without metric condition
                 save_variable_list = {
                     'step': step, 
                     'current_learning_rate': current_learning_rate,
                     'warm_up_steps': warm_up_steps
                 }
-                save_model(kge_model, optimizer, save_variable_list, args)
+                save_configs(args)
+                save_model(
+                    kge_model,
+                    optimizer,
+                    save_variable_list,
+                    args.save_path,
+                    args.autoencoder_flag
+                )
                 
             if step % args.log_steps == 0:
                 metrics = {}
@@ -401,7 +443,25 @@ def main(args):
                         'current_learning_rate': current_learning_rate,
                         'warm_up_steps': warm_up_steps
                     }
-                    save_model(kge_model, optimizer, save_variable_list, args)
+                    save_configs(args)
+                    save_dir = os.path.join(args.save_path, 'checkpoints', str(step))
+                    os.makedirs(save_dir, exist_ok=True)
+                    save_model(
+                        kge_model,
+                        optimizer, 
+                        save_variable_list, 
+                        save_dir, 
+                        args.autoencoder_flag
+                    )
+
+                    # Track the best model (assuming higher is better for your metric; set maximize=False if lower is better)
+                    if args.saving_metric in metrics:
+                        best_metric_value, best_model_path = update_best_model(
+                            kge_model, optimizer, save_variable_list, args.save_path,
+                            args.saving_metric, metrics[args.saving_metric], 
+                            best_metric_value, best_model_path,
+                            autoencoder_flag=args.autoencoder_flag, maximize=True
+                        )
         
         # Save the final model
         if args.saving_metric == '':
@@ -411,7 +471,14 @@ def main(args):
                 'current_learning_rate': current_learning_rate,
                 'warm_up_steps': warm_up_steps
             }
-            save_model(kge_model, optimizer, save_variable_list, args)
+            save_configs(args)
+            save_model(
+                kge_model,
+                optimizer,
+                save_variable_list,
+                args.save_path,
+                args.autoencoder_flag
+            )
         else:
             logging.info('Final Evaluation on Valid Dataset...')
             metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
@@ -423,7 +490,25 @@ def main(args):
                     'current_learning_rate': current_learning_rate,
                     'warm_up_steps': warm_up_steps
                 }
-                save_model(kge_model, optimizer, save_variable_list, args)
+                save_configs(args)
+                os.path.join(args.save_path, 'checkpoints', str(step))
+                os.makedirs(save_dir, exist_ok=True)
+                save_model(
+                    kge_model,
+                    optimizer, 
+                    save_variable_list, 
+                    save_dir, 
+                    args.autoencoder_flag
+                )
+                best_metric_value, best_model_path = update_best_model(
+                    kge_model, optimizer, save_variable_list, args.save_path,
+                    args.saving_metric, metrics[args.saving_metric], 
+                    best_metric_value, best_model_path,
+                    autoencoder_flag=args.autoencoder_flag, maximize=True
+                )
+            
+            if getattr(args, 'clean_up', False):
+                clean_up_checkpoints(args.save_path)
         
     if args.do_valid:
         logging.info('Evaluating on Valid Dataset...')
