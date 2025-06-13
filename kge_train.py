@@ -204,13 +204,13 @@ def main(args):
         )
         args = argparse.Namespace(**wandb.config)  # <-- Make sure args is overwritten
 
-    if (not args.do_train) and (not args.do_valid) and (not args.do_test):
-        raise ValueError('one of train/val/test mode must be choosed.')
-    
     if args.init_checkpoint:
         override_config(args)
     elif args.saved_config_path: 
         overload_parse_defaults_with_yaml(args.saved_config_path, args)
+
+    if (not args.do_train) and (not args.do_valid) and (not args.do_test):
+        raise ValueError('one of train/val/test mode must be choosed.')
 
     elif args.data_path is None:
         raise ValueError('one of init_checkpoint/data_path must be choosed.')
@@ -366,9 +366,18 @@ def main(args):
         
         #Training Loop
         for step in range(init_step, args.max_steps):
-            
-            log = kge_model.train_step(kge_model, optimizer, train_iterator, args)
-            
+
+            log = kge_model.train_step(
+                kge_model,
+                optimizer,
+                train_iterator,
+                args.cuda,
+                args.negative_adversarial_sampling,
+                args.adversarial_temperature,
+                args.uni_weight,
+                args.regularization,
+            )
+
             training_logs.append(log)
             
             if step >= warm_up_steps:
