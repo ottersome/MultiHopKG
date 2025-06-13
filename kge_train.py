@@ -14,6 +14,7 @@ import time
 
 import numpy as np
 import torch
+import debugpy
 
 from torch.utils.data import DataLoader
 
@@ -89,6 +90,7 @@ def parse_args(args=None):
     parser.add_argument("--timestamp", type=str, default=None, help="Timestamp for the run. If None, current time is used.")
 
     parser.add_argument("--saved_config_path",  default=None, type=str, help="Path pointing to a yaml configuration to run a specific training")
+    parser.add_argument("--debug", action="store_true", help="Whether to use debugpy for training")
 
     return parser.parse_args(args)
 
@@ -185,7 +187,17 @@ def log_metrics(mode, step, metrics):
         wandb.log({f"{mode}_{metric}": value for metric, value in metrics.items()}, step=step)    
         
 def main(args):
-    # Initialize wandb
+
+    if args.init_checkpoint:
+        override_config(args)
+    elif args.saved_config_path: 
+        overload_parse_defaults_with_yaml(args.saved_config_path, args)
+
+    if args.debug:
+        print("Waiting for debugger to attach...")
+        debugpy.listen(("0.0.0.0", 42023))
+        debugpy.wait_for_client()
+        print("Debugger attached.")
 
     if args.random_seed is not None:
         set_seeds(args.random_seed)
@@ -203,11 +215,6 @@ def main(args):
             name=f"{args.model}-{args.data_path.split('/')[1]}-{args.timestamp}"
         )
         args = argparse.Namespace(**wandb.config)  # <-- Make sure args is overwritten
-
-    if args.init_checkpoint:
-        override_config(args)
-    elif args.saved_config_path: 
-        overload_parse_defaults_with_yaml(args.saved_config_path, args)
 
     if (not args.do_train) and (not args.do_valid) and (not args.do_test):
         raise ValueError('one of train/val/test mode must be choosed.')
@@ -227,13 +234,13 @@ def main(args):
     with open(os.path.join(args.data_path, 'entities.dict')) as fin:
         entity2id = dict()
         for line in fin:
-            eid, entity = line.strip().split('\t')
+            eid, entity = line.strip().split()
             entity2id[entity] = int(eid)
 
     with open(os.path.join(args.data_path, 'relations.dict')) as fin:
         relation2id = dict()
         for line in fin:
-            rid, relation = line.strip().split('\t')
+            rid, relation = line.strip().split()
             relation2id[relation] = int(rid)
     
     # Read regions for Countries S* datasets

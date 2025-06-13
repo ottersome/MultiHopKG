@@ -6,7 +6,7 @@ from __future__ import print_function
 
 import logging
 from collections.abc import Mapping
-from typing import Any, Union
+from typing import Any, Iterator, Union
 
 import numpy as np
 
