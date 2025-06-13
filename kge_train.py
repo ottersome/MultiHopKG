@@ -25,6 +25,8 @@ from multihopkg.utils.setup import set_seeds
 from multihopkg.datasets import TrainDataset
 from multihopkg.datasets import BidirectionalOneShotIterator
 
+from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
+
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
         description='Training and Testing Knowledge Graph Embedding Models',
@@ -85,6 +87,8 @@ def parse_args(args=None):
 
     parser.add_argument("--random_seed", type=int, default=None, help="Random seed for the environment. If None, not used.")
     parser.add_argument("--timestamp", type=str, default=None, help="Timestamp for the run. If None, current time is used.")
+
+    parser.add_argument("--saved_config_path",  default=None, type=str, help="Path pointing to a yaml configuration to run a specific training")
 
     return parser.parse_args(args)
 
@@ -205,6 +209,9 @@ def main(args):
     
     if args.init_checkpoint:
         override_config(args)
+    elif args.saved_config_path: 
+        overload_parse_defaults_with_yaml(args.saved_config_path, args)
+
     elif args.data_path is None:
         raise ValueError('one of init_checkpoint/data_path must be choosed.')
 
