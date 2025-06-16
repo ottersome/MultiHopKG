@@ -16,18 +16,21 @@ def get_args() -> argparse.Namespace:
 
     # -------------------- General Parameters --------------------
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--recompute_cache", action="store_true", help="Will wipe old cache and recalculate it.")
+    ap.add_argument("--debug", "-d", action="store_true", help="Debugpy activation")
 
     # -------------------- General Data Parameters --------------------
-    ap.add_argument("--path_dataraw", type=str, default="./data/FBWikiV4/MQuAKE-CF.json")
+    ap.add_argument("--path_dataraw", type=str, default="./data/mquake/MQuAKE-CF.json")
     ap.add_argument("--path_cache_dir", type=str, default="./.cache/")
     ap.add_argument("--tvt_split", type=list, default=[0.8, 0.1, 0.1], help="Train-Valid-Test Splits")
-    ap.add_argument("--path_entities_dict", type=str, default="./data/FBWikiV4/entities.dict", help="Entities Dictionary")
-    ap.add_argument("--path_relations_dict", type=str, default="./data/FBWikiV4/relations.dict", help="Relations Dictionary")
+    ap.add_argument("--path_entities_dict", type=str, default="./data/mquake/entities.dict", help="Entities Dictionary")
+    ap.add_argument("--path_relations_dict", type=str, default="./data/mquake/relations.dict", help="Relations Dictionary")
 
     # -------------------- Embeddings Configs --------------------
-    ap.add_argument("--embedding_model_type", type=str, default="pRotatE")
-    ap.add_argument("--path_entities_embeddings", type=str, default="./models/protatE_FBWikiV4/entity_embedding.npy", help="Path to Entity Embeddings")
-    ap.add_argument("--path_relations_embeddings", type=str, default="./models/protatE_FBWikiV4/relation_embedding.npy", help="Path Relations Embeddings")
+    ap.add_argument("--kge_checkpoint_path", type=str, default="./models/mquake/checkpoint", help="Path to the checkpoint that contains the model state dict")
+    ap.add_argument("--path_entities_embeddings", type=str, default="./models/mquake/entity_embedding.npy", help="Path to Entity Embeddings")
+    ap.add_argument("--path_relations_embeddings", type=str, default="./models/mquake/relation_embedding.npy", help="Path Relations Embeddings")
+    ap.add_argument("--path_embedding_training_config", type=str, default="./models/mquake/config.json")
 
     # -------------------- Language Modeling Parameters --------------------
     ap.add_argument("--question_tokenizer_name", type=str, default="bert-base-uncased")
