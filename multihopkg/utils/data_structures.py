@@ -1,8 +1,10 @@
 """
 Mostly for convenience of moving data around and keeping the code "typed"
 """
+import pandas as pd
+
 class DataPartitions:
-    def __init__(self, train, validation, test):
+    def __init__(self, train: pd.DataFrame, validation: pd.DataFrame, test: pd.DataFrame):
         self._train = train
         self._validation = validation
         self._test = test
