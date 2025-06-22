@@ -1,41 +1,30 @@
-from collections import deque
 import json
 import os
 import random
 from math import ceil
-from symbol import pass_stmt
-from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Tuple
 import time
-import threading
 
 import debugpy
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from rich import progress
 import torch
 from rich import traceback
-from rich.live import Live
-from rich.layout import Layout
-from rich.console import Console, ConsoleRenderable, Group, RichCast
-from rich.table import Table
-from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
-from torch import batch_norm_stats, nn
+from torch import nn
 from torch.types import Device
 from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
 from transformers import (
     AutoTokenizer,  # type: ignore
 )
 from transformers.models.bart import BartTokenizer
-from transformers.utils.dummy_pt_objects import LayoutLMv2Model
 
 from multihopkg.logging import setup_logger
 from multihopkg.models_language.classical import HunchBart
 from multihopkg.run_configs.pretraining import get_args
-from multihopkg.utils import data_structures
 from multihopkg.utils.data_structures import DataPartitions
 from multihopkg.utils.setup import set_seeds
+from multihopkg.utils.vis import CustomProgress
 
 # import nice traceback from rich
 traceback.install()
@@ -265,13 +254,18 @@ def collate_wrapper(pad_value:int) -> Callable:
         return collate_fn(batch, pad_value)
     return _collate_fn
 
-def validation_loop(model:nn.Module, val_dataloader: DataLoader) -> List[float]:
+def validation_loop(
+    model: nn.Module,
+    val_dataloader: DataLoader,
+    tokenizer: BartTokenizer,
+    verbose: bool,
+) -> List[float]:
     # TODO: Implement some other more sophisticated validation metrics
     loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
     validation_metrics = [] 
     model.eval()
     with torch.no_grad():
-        for batch in val_dataloader:
+        for batch_idx, batch in enumerate(val_dataloader):
             # Turn of all backprop
             qna_tokens, graph_embeddings = batch
             # Compute the loss
@@ -280,33 +274,20 @@ def validation_loop(model:nn.Module, val_dataloader: DataLoader) -> List[float]:
             loss = loss_fn(logits.view(-1, logits.shape[-1]), qna_tokens.view(-1)).mean()
 
             validation_metrics.append(loss.item())
+            if verbose and batch_idx == 0:
+                # Take logits and covert them into idxs:
+                qna_strs = tokenizer.batch_decode(qna_tokens)
+                inference_ids = logits.argmax(dim=-1)
+                inference_strs = tokenizer.batch_decode(inference_ids)
+                logger.debug(
+                    "----------------------------------------\n"
+                    "For this batch ({batch_idx}) of validtion. We end up with the metrics\n"
+                        f"\033[1;33m(Truth)\033[0m qna_tokens: \n\t{qna_strs}\n"
+                        f"\033[1;32m(Inference)\033[0m answer_: \n\t{inference_strs}\n"
+                    "----------------------------------------\n\n"
+                )
     return validation_metrics
     
-
-class CustomProgress(Progress):
-    def __init__(self, table_max_rows: int, column_names: Sequence[str], *args, **kwargs) -> None:
-        self.results: Deque[Sequence[str]] = deque(maxlen=table_max_rows)
-        self.column_names = column_names
-        self.update_table()
-        super().__init__(*args, **kwargs)
-
-    def update_table(self, result: Optional[Tuple[str,...]] = None):
-        if result is not None:
-            self.results.append(result)
-
-        table = Table()
-        for cn in self.column_names:
-            table.add_column(cn)
-
-        for row_cells in self.results:
-            table.add_row(*row_cells)
-
-        self.table = table
-
-    def get_renderable(self) -> Union[ConsoleRenderable, RichCast, str]:
-        renderable = Group(self.table, *self.get_renderables())
-        return renderable
-
 
 def train_loop(
     dataset_partitions: DataPartitions,
@@ -320,6 +301,7 @@ def train_loop(
     learning_rate: float,
     # --- Validation Parameters -- #
     val_every_n_batches: int,
+    verbose: bool,
 ):
     device = next(model.parameters()).device
     ########################################
@@ -345,7 +327,6 @@ def train_loop(
     loss_reports = []
     validation_reports: List[Tuple[int, Any]] = []
     num_batches = 0
-    train_live = TrainLive(epochs, len(train_dataloader))
 
     with CustomProgress(column_names=["Train Loss", "Val  Loss"],table_max_rows=10) as progress:
         task_epoch = progress.add_task("Epochs", total=epochs)
@@ -356,8 +337,8 @@ def train_loop(
                 # Validation
                 if num_batches % val_every_n_batches == 0:
                     validation_reports.append((
-                            num_batches,
-                            validation_loop(model, val_dataloader),
+                        num_batches,
+                        validation_loop(model, val_dataloader, word_tokenizer, verbose),
                     ))
 
                 num_batches += 1
@@ -428,7 +409,7 @@ def main():
         logger.info(f"Loading data from cache {args.path_cache_dir}")
         dataset_partitions = load_from_cache(args.path_cache_dir)
     else:
-        logger.info(f"Either cache does not exist or is being force to be recomuted... ")
+        logger.info("Either cache does not exist or is being force to be recomuted... ")
         dataset_partitions = process_qa_dataset(
             args.path_dataraw,
             args.path_cache_dir,
@@ -450,6 +431,8 @@ def main():
     # Model Hyperparameters
     # gamma = embedding_training_metaparameters["gamma"]
     # model_name = embedding_training_metaparameters["model"]
+
+
     checkpoint = torch.load(args.kge_checkpoint_path)
     # state_dict=checkpoint["model_state_dict"]
     assert entity_embeddings.shape[-1] == relation_embeddings.shape[-1], "Relation and Embedding Dimensions are different. Assumption broken. Exiting"
@@ -477,11 +460,14 @@ def main():
         word_tokenizer,
         hunch_llm,
         entity_embeddings,
+
         relation_embeddings,
         args.epochs,
         args.batch_size,
         args.lr,
         args.val_every_n_batches,
+
+        args.verbose,
     )
 
     logger.info("Training Finsihed")
