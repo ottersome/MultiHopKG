@@ -7,7 +7,12 @@
  Visualize beam search in the knowledge graph.
 """
 
+from collections import deque
+from typing import Deque, Optional, Sequence, Tuple, Union
 import matplotlib
+from rich.progress import Progress
+from rich.console import ConsoleRenderable, Group, RichCast
+from rich.table import Table
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
@@ -51,3 +56,48 @@ def visualize_path(query, path_components, output_path=None):
         print('path visualization saved to {}'.format(output_path))
 
     plt.close(f)
+
+class CustomProgress(Progress):
+    """
+    A class meant to display a dashboard of current training in the terminal. 
+    The number of rows and columsn displayed is completely up to the user.
+    See below for an example:
+        ┏━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓
+        ┃ Train Loss             ┃ Val  Loss             ┃
+        ┡━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━┩
+        │ 0.00043459577136673033 │ 0.0004606733564287424 │
+        │ 0.0011569095076993108  │ 0.0004606733564287424 │
+        └────────────────────────┴───────────────────────┘
+        Epochs ╸━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   2% -:--:--
+        Batch  ━━━╸━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  10% 0:03:29
+    Args:
+        table_max_rows: The number of rows to display in the table.
+        column_names: The names of the columns to display in the table.
+        *args: Additional arguments to pass to the Progress class.
+        **kwargs: Additional keyword arguments to pass to the Progress class.
+    Returns:
+        A CustomProgress object.
+    """
+    def __init__(self, table_max_rows: int, column_names: Sequence[str], *args, **kwargs) -> None:
+        self.results: Deque[Sequence[str]] = deque(maxlen=table_max_rows)
+        self.column_names = column_names
+        self.update_table()
+        super().__init__(*args, **kwargs)
+
+    def update_table(self, result: Optional[Tuple[str,...]] = None):
+        if result is not None:
+            self.results.append(result)
+
+        table = Table()
+        for cn in self.column_names:
+            table.add_column(cn)
+
+        for row_cells in self.results:
+            table.add_row(*row_cells)
+
+        self.table = table
+
+    def get_renderable(self) -> Union[ConsoleRenderable, RichCast, str]:
+        renderable = Group(self.table, *self.get_renderables())
+        return renderable
+

@@ -19,6 +19,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--recompute_cache", action="store_true", help="Will wipe old cache and recalculate it.")
     ap.add_argument("--debug", "-d", action="store_true", help="Debugpy activation")
     ap.add_argument("--device", type=str, default="cuda", help="What device will be used for training.")
+    ap.add_argument("--verbose", "-v",action="store_true", help="Whether to run more verbosely")
 
     # -------------------- Training Parameters --------------------
     ap.add_argument("--epochs", type=int, default=5, help="How many epochs to use")
@@ -39,7 +40,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--path_embedding_training_config", type=str, default="./models/mquake/config.json")
 
     # -------------------- Language Modeling Parameters --------------------
-    ap.add_argument("--question_tokenizer_name", type=str, default="bert-base-uncased")
+    ap.add_argument("--question_tokenizer_name", type=str, default="facebook/bart-base")
     ap.add_argument("--answer_tokenizer_name", type=str, default="facebook/bart-base")
     ap.add_argument("--hunch_answer_model", type=str, default="facebook/bart-base")
     ap.add_argument("--lr", type=float, default=1e-5)
