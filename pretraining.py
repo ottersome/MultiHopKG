@@ -1,7 +1,7 @@
 import json
 import os
 import random
-from math import ceil
+from math import ceil, inf
 from typing import Any, Callable, Dict, List, Tuple
 import time
 
@@ -9,9 +9,11 @@ import debugpy
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from sympy.logic.boolalg import truth_table
 import torch
 from rich import traceback
 from torch import nn
+from torch._dynamo.utils import is_int_specialization_case
 from torch.types import Device
 from torch.utils.data import DataLoader, Dataset
 from transformers import (
@@ -171,16 +173,20 @@ def load_dictionaries(path_entities_dict: str, path_relations_dict):
 def collate_fn(batch, padding_value: int):
     batch_deconstructed = zip(*batch)
     qna: List[torch.Tensor] = list(next(batch_deconstructed))
+    ans_masks: List[torch.Tensor] = list(next(batch_deconstructed))
     paths: List[torch.Tensor] = list(next(batch_deconstructed))
 
     qna_padded = torch.nn.utils.rnn.pad_sequence(
         qna, batch_first=True, padding_value=padding_value
     )
+    ans_masks_padded = torch.nn.utils.rnn.pad_sequence(
+        ans_masks, batch_first=True, padding_value=0
+    )
     paths_padded = torch.nn.utils.rnn.pad_sequence(
         paths, batch_first=True, padding_value=padding_value
     )
 
-    new_batch = (qna_padded, paths_padded)
+    new_batch = (qna_padded, ans_masks_padded, paths_padded)
 
     return new_batch
 
@@ -201,7 +207,7 @@ class GraphEmbeddingDataset(Dataset):
         self.device = device
 
         # Get questions and answers a single string but separated by some token.
-        self.ques_n_ans = self._merge_questions_and_answers(
+        self.ques_n_ans, self.answer_masks = self._merge_questions_and_answers(
             dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[0]],
             dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[1]],
             self.separator_token_id,
@@ -212,25 +218,35 @@ class GraphEmbeddingDataset(Dataset):
         self.id2rel = id2rel
         self.embeddings_dim = id2ent.embedding_dim
 
-    def _merge_questions_and_answers(self, questions: List[List[int]], answers: List[List[int]], sep_token: int) -> List[List[int]]:
+    def _merge_questions_and_answers(
+        self, questions: List[List[int]], answers: List[List[int]], sep_token: int
+    ) -> Tuple[List[List[int]], List[List[int]]]:
         """
         Merges questions and answers into a single string, separated by a token.
         """
         assert len(questions) == len(answers), "Expected questions and answers to have the same length"
         merged_questions_answers = []
+        answer_masks = []
 
         for question, answer in zip(questions, answers):
             qna = question + [sep_token] + answer
+            mask = [0] * (len(question) + 1) + [1] * len(answer)
             merged_questions_answers.append(qna)
+            answer_masks.append(mask)
 
-        return merged_questions_answers
+            # Create the attention mask 1 on the answer and 0 on question and paddin:
+            torch_zeros = torch.zeros(len(qna), dtype=torch.long)
+
+
+        return merged_questions_answers, answer_masks
 
     def __len__(self):
         return len(self.dataset)
 
-    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # All of these are ids
         qna_tokens = torch.tensor(self.ques_n_ans[idx], dtype=torch.long)
+        ans_masks = torch.tensor(self.answer_masks[idx], dtype=torch.long)
         path = self.path[idx]
 
         entities_ids = torch.tensor(path[::2], dtype=torch.long)
@@ -247,7 +263,7 @@ class GraphEmbeddingDataset(Dataset):
 
         # Dump the question and answer througth the normal embedding
 
-        return qna_tokens.to(self.device), path_embedding.to(self.device)
+        return qna_tokens.to(self.device), ans_masks.to(self.device), path_embedding.to(self.device)
 
 def collate_wrapper(pad_value:int) -> Callable:
     def _collate_fn(batch):
@@ -261,17 +277,29 @@ def validation_loop(
     verbose: bool,
 ) -> List[float]:
     # TODO: Implement some other more sophisticated validation metrics
-    loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
+    pad_token_id = tokenizer.pad_token_id
+    assert isinstance(pad_token_id, int), "Expected the pad token to be an integer. Instead we get {pad_token_id}"
+    loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
     validation_metrics = [] 
     model.eval()
     with torch.no_grad():
         for batch_idx, batch in enumerate(val_dataloader):
             # Turn of all backprop
-            qna_tokens, graph_embeddings = batch
+            qna_tokens, ans_masks, graph_embeddings = batch
+
+            padding_mask = qna_tokens == tokenizer.pad_token_id
+            truth_answers = qna_tokens.clone()
+            truth_answers[ans_masks == 0] = tokenizer.pad_token_id  # For the loss function.
+            truth_answers = truth_answers[:, 1:].contiguous()
+
             # Compute the loss
-            answers_inf_softmax = model(graph_embeddings, qna_tokens)
+            answers_inf_softmax = model(
+                graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
+            )
             _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
-            loss = loss_fn(logits.view(-1, logits.shape[-1]), qna_tokens.view(-1)).mean()
+
+            # Loss Calculation
+            loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
 
             validation_metrics.append(loss.item())
             if verbose and batch_idx == 0:
@@ -279,13 +307,11 @@ def validation_loop(
                 qna_strs = tokenizer.batch_decode(qna_tokens)
                 inference_ids = logits.argmax(dim=-1)
                 inference_strs = tokenizer.batch_decode(inference_ids)
-                logger.debug(
-                    "----------------------------------------\n"
-                    "For this batch ({batch_idx}) of validtion. We end up with the metrics\n"
-                        f"\033[1;33m(Truth)\033[0m qna_tokens: \n\t{qna_strs}\n"
-                        f"\033[1;32m(Inference)\033[0m answer_: \n\t{inference_strs}\n"
-                    "----------------------------------------\n\n"
-                )
+                logger.debug(f"For this batch ({batch_idx}) of validtion. We end up with the metrics\n")
+                for q,i in zip(qna_strs, inference_strs):
+                    logger.debug(f"\n\t- Q: {q}\n\t- I: {i}")
+                logger.debug("----------------------------------------\n\n")
+    model.train()
     return validation_metrics
     
 
@@ -307,11 +333,16 @@ def train_loop(
     ########################################
     # Data Loading
     ########################################
+    pad_token_id = word_tokenizer.pad_token_id
+    assert isinstance(pad_token_id, int), "Expected the pad token to be an integer. Instead we get {pad_token_id}"
     train_dataset = GraphEmbeddingDataset(dataset_partitions.train, entity_embeddings, relation_embeddings, word_tokenizer, device)
-    train_dataloader = DataLoader(train_dataset, batch_size, collate_fn=collate_wrapper(0))
+    train_dataloader = DataLoader(train_dataset, batch_size, collate_fn=collate_wrapper(pad_token_id))
     # Validation
     val_dataset = GraphEmbeddingDataset(dataset_partitions.validation, entity_embeddings, relation_embeddings, word_tokenizer, device)
-    val_dataloader = DataLoader(val_dataset, batch_size, collate_fn=collate_wrapper(0))
+    val_dataloader = DataLoader(val_dataset, batch_size, collate_fn=collate_wrapper(pad_token_id))
+
+    # DEBUG:: to check if the embeddings are being changed.
+    ent_emb_backup = entity_embeddings.weight.clone()
 
     train_ds_size = len(train_dataset)
     logger.info(f"We are training with a dataset of size: {train_ds_size}")
@@ -321,13 +352,22 @@ def train_loop(
 
     # Optimization parameters
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
-    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
+
+    # DEBUG: Will hard code this stuff for now and replace them later
+    gamma = 0.1
+    # max_lr = 1e-3
+    # base_lr = 1e-6
+    step_size = 30
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=step_size, gamma=gamma
+    )
 
     loss_reports = []
     validation_reports: List[Tuple[int, Any]] = []
     num_batches = 0
 
+    # TODO: uncomment
     with CustomProgress(column_names=["Train Loss", "Val  Loss"],table_max_rows=10) as progress:
         task_epoch = progress.add_task("Epochs", total=epochs)
         for e in range(epochs):
@@ -344,23 +384,43 @@ def train_loop(
                 num_batches += 1
 
                 # Actual Training
-                qna_tokens, graph_embeddings = batch
+                qna_tokens, ans_masks, graph_embeddings = batch
+                truth_answers = qna_tokens.clone()
+                truth_answers[ans_masks == 0] = word_tokenizer.pad_token_id  # For the loss function.
+                truth_answers = truth_answers[:, 1:].contiguous()
                 # Compute the loss
                 optimizer.zero_grad()
-                answers_inf_softmax = model(graph_embeddings, qna_tokens)
+                # TODO: Watch out for offset*till
+                padding_mask = qna_tokens != word_tokenizer.pad_token_id
+                answers_inf_softmax = model(
+                    graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
+                )
                 _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
-                loss = loss_fn(logits.view(-1, logits.shape[-1]), qna_tokens.view(-1)).mean()
+
+                # loss = loss_fn(relevant_logits.view(-1, relevant_logits.shape[-1]), relevant_truth.view(-1)).mean()
+                
+                loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
                 loss.backward()
                 optimizer.step()
+                scheduler.step()
+                logger.debug(f"Current learning rate is {scheduler.get_lr()}")
                 loss_reports.append(loss.item())
+
+                # Check for changes
+                change_in_embeddings = torch.dist(ent_emb_backup, train_dataset.id2ent.weight).sum()
+                logger.debug(f"Difference in embedding sizes: {change_in_embeddings}")
+                grad = train_dataset.id2ent.weight.grad
+                logger.debug(f"Repoerting on gradient of embedding: {grad}")
 
                 # logger.info(f"Batch loss-reports {loss_reports[-1]} val_reporst {validation_reports[-1][-1][-1]}")
                 # logger.info("e, idx_batch", e, idx_batch)
                 # train_live.update_batch([loss_reports[-1], validation_reports[-1][-1][-1]], e, idx_batch)
                 table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1][-1]}")
+                # TODO: uncomment
                 progress.update_table(table_reports)
                 progress.update(task_batch, advance=1)
                 time.sleep(0.1)
+            # TODO: uncomment
             progress.update(task_epoch, advance=1)
 
 
@@ -460,13 +520,13 @@ def main():
         word_tokenizer,
         hunch_llm,
         entity_embeddings,
-
         relation_embeddings,
-        args.epochs,
-        args.batch_size,
-        args.lr,
-        args.val_every_n_batches,
 
+        args.batch_size,
+        args.epochs,
+        args.lr,
+
+        args.val_every_n_batches,
         args.verbose,
     )
 

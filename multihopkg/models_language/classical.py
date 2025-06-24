@@ -35,6 +35,8 @@ class HunchBart(nn.Module):
         graph_embeddings: torch.Tensor,
         decoder_input_ids: Optional[torch.Tensor] = None,
         labels=None,
+        *args,
+        **kwargs
     ):
         # Pass graph embeddings through custom encoder
         # Pass the outputs to BART decoder
@@ -44,6 +46,8 @@ class HunchBart(nn.Module):
         outputs = self.bart(
             inputs_embeds=translated_embeddings,
             decoder_input_ids=decoder_input_ids, #For teacher forcing. 
+            *args,
+            **kwargs
         )
         return outputs
 
