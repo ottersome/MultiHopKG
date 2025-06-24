@@ -22,8 +22,8 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--verbose", "-v",action="store_true", help="Whether to run more verbosely")
 
     # -------------------- Training Parameters --------------------
-    ap.add_argument("--epochs", type=int, default=5, help="How many epochs to use")
-    ap.add_argument("--batch_size", type=int, default=64, help="Batch size")
+    ap.add_argument("--epochs", type=int, default=20, help="How many epochs to use")
+    ap.add_argument("--batch_size", "-b", type=int, default=64, help="Batch size")
     ap.add_argument("--val_every_n_batches", type=int, default=50, help="How many batches to run validation on")
 
     # -------------------- General Data Parameters --------------------
@@ -43,7 +43,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--question_tokenizer_name", type=str, default="facebook/bart-base")
     ap.add_argument("--answer_tokenizer_name", type=str, default="facebook/bart-base")
     ap.add_argument("--hunch_answer_model", type=str, default="facebook/bart-base")
-    ap.add_argument("--lr", type=float, default=1e-5)
+    ap.add_argument("--lr", type=float, default=1e-3)
 
     args = ap.parse_args()
     # Some sanity checks/helps
