@@ -27,6 +27,7 @@ from multihopkg.run_configs.pretraining import get_args
 from multihopkg.utils.data_structures import DataPartitions
 from multihopkg.utils.setup import set_seeds
 from multihopkg.utils.vis import CustomProgress
+from multihopkg.utils.schedulers import WarmupCosineScheduler
 
 # import nice traceback from rich
 traceback.install()
@@ -359,9 +360,10 @@ def train_loop(
     # max_lr = 1e-3
     # base_lr = 1e-6
     step_size = 30
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=step_size, gamma=gamma
-    )
+    # scheduler = torch.optim.lr_scheduler.StepLR(
+    #     optimizer, step_size=step_size, gamma=gamma
+    # )
+    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=1000, total_steps=10000, min_lr=1e-6)
 
     loss_reports = []
     validation_reports: List[Tuple[int, Any]] = []
