@@ -23,7 +23,3 @@ class WarmupCosineScheduler(torch.optim.lr_scheduler._LRScheduler):
                 for base_lr in self.base_lrs
             ]
 
-# Usage
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-scheduler = WarmupCosineScheduler(optimizer, warmup_steps=1000, total_steps=10000, min_lr=1e-5)
-
