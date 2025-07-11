@@ -246,33 +246,45 @@ def validation_loop(
     val_dataloader: DataLoader,
     tokenizer: BartTokenizer,
     verbose: bool,
-) -> List[float]:
+) -> Dict[str, float]:
     # TODO: Implement some other more sophisticated validation metrics
     pad_token_id = tokenizer.pad_token_id
     assert isinstance(pad_token_id, int), "Expected the pad token to be an integer. Instead we get {pad_token_id}"
     loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
-    validation_metrics = [] 
+    validation_metrics: Dict[str, List[float]] = {
+        "loss" : [],
+        "cf-loss" : []
+    }
     model.eval()
     with torch.no_grad():
         for batch_idx, batch in enumerate(val_dataloader):
             # Turn of all backprop
             qna_tokens, ans_masks, graph_embeddings = batch
+            # Now we will round-robin graph_embeddings to get a negative sample. 
+            negative_graph_embeddings = torch.roll(graph_embeddings, shifts=1, dims=0)
 
             padding_mask = qna_tokens == tokenizer.pad_token_id
+
             truth_answers = qna_tokens.clone()
             truth_answers[ans_masks == 0] = tokenizer.pad_token_id  # For the loss function.
             truth_answers = truth_answers[:, 1:].contiguous()
 
             # Compute the loss
-            answers_inf_softmax = model(
+            answers_inf_softmax_w_emb = model(
                 graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
             )
-            _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
+            answers_inf_softmax_wo_emb = model(
+                negative_graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
+            )
+            _, logits = answers_inf_softmax_w_emb.loss, answers_inf_softmax_w_emb.logits
+            _, n_logits = answers_inf_softmax_wo_emb.loss, answers_inf_softmax_wo_emb.logits
 
             # Loss Calculation
             loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
+            n_loss = loss_fn(n_logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
 
-            validation_metrics.append(loss.item())
+            validation_metrics["loss"].append(loss.item())
+            validation_metrics["cf-loss"].append(loss.item()/n_loss.item())
             if verbose and batch_idx == 0:
                 # Take logits and covert them into idxs:
                 qna_strs = tokenizer.batch_decode(qna_tokens)
@@ -281,9 +293,13 @@ def validation_loop(
                 logger.debug(f"For this batch ({batch_idx}) of validtion. We end up with the metrics\n")
                 for q,i in zip(qna_strs, inference_strs):
                     logger.debug(f"\n\t- Q: {q}\n\t- I: {i}")
+                logger.debug(f"CounterFactual ration {loss/n_loss}")
                 logger.debug("----------------------------------------\n\n")
     model.train()
-    return validation_metrics
+    _validation_metrics = {}
+    for k,v in  validation_metrics.items():
+        _validation_metrics[k] = torch.mean(torch.tensor(v)).item() # eww
+    return _validation_metrics
     
 
 def train_loop(
@@ -375,7 +391,7 @@ def train_loop(
                 grad = train_dataset.id2ent.weight.grad
                 logger.debug(f"Repoerting on gradient of embedding: {grad}")
 
-                table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1][-1]}", f"{scheduler.get_lr()}")
+                table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1]}", f"{scheduler.get_lr()}")
                 progress.update_table(table_reports)
                 progress.update(task_batch, advance=1)
                 time.sleep(0.1)
