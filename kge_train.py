@@ -461,7 +461,7 @@ def main(args):
     if args.evaluate_train:
         logging.info('Evaluating on Training Dataset...')
         metrics = kge_model.test_step(kge_model, train_triples, all_true_triples, args)
-        log_metrics('Test', step, metrics)
+        log_metrics('Train', step, metrics)
         
 if __name__ == '__main__':
     main(parse_args())
