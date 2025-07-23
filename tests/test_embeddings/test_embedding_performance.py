@@ -35,7 +35,7 @@ def test_performance(
     all_true_triples: TripleIds,
     knowledge_graph: KGEModel,
     model_config: dict,
-    validation_thresholds: ValidatorDict[int | float],
+    validation_thresholds: ValidatorDict[Union[int, float]],
 ):
     # Unload model_config for clarity. Though this could be left for user to play with
     with open('dict.json', 'w') as file:
