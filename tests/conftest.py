@@ -5,6 +5,7 @@ import os
 import numpy as np
 import json
 import torch
+import yaml
 
 from multihopkg.exogenous.sun_models import KGEModel
 from multihopkg.utils.data_splitting import TripleIds, read_triple
@@ -34,29 +35,34 @@ def pytest_addoption(parser):
         default=0.01,
         help="Percentage of the test set to use for performance testing. Test sets tend to be large so this useful for a quick test.",
     )
-    parser.addoption("--model_name", action="store", default="pRotatE")
 
     # ------------ Adding Threshold to allow the performance to be tested-------------
 
     parser.addoption(
-        "--thresholds",
-        type=ValidatorDict[Union[int, float]],
-        # Current approach: change the thresholds manually here.
-        # TODO: Use a path to a json or yaml file with the expected thresholds
-        default={
-            "MRR": lambda x: x >= 0.37,
-            "MR": lambda x: x < 600, #TODO: This one we have to figure out, it should be decently lower
-            "HITS@1": lambda x: x >= 0.25,
-            "HITS@3": lambda x: x >= 0.44,
-            "HITS@10": lambda x: x >= 0.55,
-        },
-        help="Minimum performance threshold lambdas for embeddings to be considered valid",
+        "--benchmarking_thresholds_path",
+        type=str,
+        default="tests/metrics_benchmarks/transe_mquake.yaml",
     )
  
 @pytest.fixture
 def validation_thresholds(request) -> ValidatorDict[Union[int, float]]:
     """Fixture to get the minimum performance threshold."""
-    return request.config.getoption("--thresholds")
+    # Load them from a yaml file
+    benchmarking_thresholds_path = request.config.getoption("--benchmarking_thresholds_path")
+    with open(benchmarking_thresholds_path, "r") as file:
+        benchmark_dict = yaml.safe_load(file)
+        # Pretty print this yaml benchmark_dict
+        print(f"Benchmark dict is {benchmark_dict}")
+        for k,v in benchmark_dict.items():
+            print(f"Tell me the type of {k} : {type(v)}")
+        ret_benchmark_dict = {
+            "MRR": lambda x: x >= benchmark_dict["MRR"],
+            "MR": lambda x: x < benchmark_dict["MR"], #TODO: This one we have to figure out, it should be decently lower
+            "HITS@1": lambda x: x >= benchmark_dict["HITS_1"],
+            "HITS@3": lambda x: x >= benchmark_dict["HITS_3"],
+            "HITS@10": lambda x: x >= benchmark_dict["HITS_10"],
+        }
+    return ret_benchmark_dict
 
 @pytest.fixture
 def embeddings_path(request) -> str:
@@ -174,12 +180,6 @@ def all_true_triples(
 
 
 @pytest.fixture
-def model_name(request) -> str:
-    """Fixture to get the model name for testing."""
-    return request.config.getoption("--model_name")
-
-
-@pytest.fixture
 def num_of_entities(entity_embeddings) -> int:
     """Get number of entities."""
     return entity_embeddings.shape[0]
@@ -207,7 +207,6 @@ def model_config(embeddings_path) -> dict[str, Any]:
 @pytest.fixture
 def knowledge_graph(
     dataset_path: str,
-    model_name: str,
     entity_embeddings: np.ndarray,
     relation_embeddings: np.ndarray,
     model_config: dict,
@@ -228,14 +227,22 @@ def knowledge_graph(
 
         checkpoint = torch.load(os.path.join(embeddings_path , "checkpoint"))
 
+        # Dump what checkpoint contains inside so I can see it 
+        print(f"Type of checkpoint is {type(checkpoint)}")
+        print(f"Checkpoint is a dictionary with keys {list(checkpoint.keys())}")
+
         # Create knowledge graph
         kg = KGEModel.from_pretrained(
-            model_name=model_name,
+            model_name=model_config["model"],
             entity_embedding=entity_embeddings,
             relation_embedding=relation_embeddings,
             gamma=model_config["gamma"],
             state_dict=checkpoint["model_state_dict"]
         )
+        # Check if cuda gpu is available if so change it to cuda
+        if torch.cuda.is_available():
+            kg = kg.cuda()
+
         return kg
     except Exception as e:
         pytest.skip(f"Failed to load knowledge graph: {str(e)}")
