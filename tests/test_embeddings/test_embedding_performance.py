@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Union
 import numpy as np
 import os
 import sys
@@ -31,103 +31,29 @@ def test_embedding_dimensions_match_kg(
 
 def test_performance(
     test_triples: TripleIds,
-    test_percent: float,
     all_true_triples: TripleIds,
     knowledge_graph: KGEModel,
     model_config: dict,
     validation_thresholds: ValidatorDict[Union[int, float]],
 ):
-    # Unload model_config for clarity. Though this could be left for user to play with
-    with open('dict.json', 'w') as file:
-        import json
-        json.dump(model_config, file, indent=4)
-    test_batch_size: int = model_config["test_batch_size"]
-    num_cpus: int = model_config["cpu_num"]
-    cuda: bool = model_config["cuda"]
-    device = torch.device("cuda" if cuda else "cpu")
+    # Simulate namespace/class args
+    class TempArgs:
+        def __init__(self, nentity, nrelation, model_config, validation_thresholds):
+            self.nentity = nentity
+            self.nrelation = nrelation
+            self.model_model = model_config
+            self.validation_thresholds = validation_thresholds
+            self.countries = False
+            self.test_batch_size = model_config["test_batch_size"]
+            self.test_log_steps = 100
 
-    knowledge_graph.to(device)
+            # Hardcoding these for no
+            self.cpu_num = 10
+            self.cuda = True
 
-    # For better perforamnce, we will allow taking a percentage of the test set
-    test_triples = test_triples[:int(len(test_triples)*test_percent)]
-    print(f"Test set size after taking a percentage of {test_percent} is {len(test_triples)}")
+    args = TempArgs(knowledge_graph.nentity, knowledge_graph.nrelation, model_config, validation_thresholds)
 
-    #Prepare dataloader for evaluation
-    test_dataloader_head = DataLoader(
-        TestDataset(
-            test_triples, 
-            all_true_triples, 
-            knowledge_graph.nentity, 
-            knowledge_graph.nrelation, 
-            'head-batch'
-        ), 
-        batch_size=test_batch_size,
-        num_workers=max(1, num_cpus//2), 
-        collate_fn=TestDataset.collate_fn
-    )
-
-    test_dataloader_tail = DataLoader(
-        TestDataset(
-            test_triples, 
-            all_true_triples, 
-            knowledge_graph.nentity, 
-            knowledge_graph.nrelation, 
-            'tail-batch'
-        ), 
-        batch_size=test_batch_size,
-        num_workers=max(1, num_cpus//2), 
-        collate_fn=TestDataset.collate_fn
-    )
-    
-    test_dataset_list = [test_dataloader_head, test_dataloader_tail]
-    
-    logs = []
-
-    with torch.no_grad():
-        for test_dataset in test_dataset_list:
-            for positive_sample, negative_sample, filter_bias, mode in test_dataset:
-                if cuda:
-                    positive_sample = positive_sample.cuda()
-                    negative_sample = negative_sample.cuda()
-                    filter_bias = filter_bias.cuda()
-
-                batch_size = positive_sample.size(0)
-
-                score, _ = knowledge_graph((positive_sample, negative_sample), mode)
-                score += filter_bias
-
-                #Explicitly sort all the entities to ensure that there is no test exposure bias
-                argsort = torch.argsort(score, dim = 1, descending=True)
-
-                if mode == 'head-batch':
-                    positive_arg = positive_sample[:, 0]
-                elif mode == 'tail-batch':
-                    positive_arg = positive_sample[:, 2]
-                else:
-                    raise ValueError('mode %s not supported' % mode)
-
-                for i in range(batch_size):
-                    #Notice that argsort is not ranking
-                    ranking = (argsort[i, :] == positive_arg[i]).nonzero()
-                    assert ranking.size(0) == 1
-
-                    #ranking + 1 is the true ranking used in evaluation metrics
-                    ranking = 1 + ranking.item()
-                    logs.append({
-                        'MRR': 1.0/ranking,
-                        'MR': float(ranking),
-                        'HITS@1': 1.0 if ranking <= 1 else 0.0,
-                        'HITS@3': 1.0 if ranking <= 3 else 0.0,
-                        'HITS@10': 1.0 if ranking <= 10 else 0.0,
-                    })
-
-    metrics = {}
-    for metric in logs[0].keys():
-        metrics[metric] = sum([log[metric] for log in logs])/len(logs)
-
-    for m_key, m_val in metrics.items():
-        validation_lambda = validation_thresholds[m_key]
-        assert validation_lambda(m_val), f"Metric {m_key} has value {m_val} which is not within the threshold."
+    knowledge_graph.test_step(knowledge_graph, test_triples, all_true_triples, args)
     
 
 # def test_link_prediction_hits_at_10(knowledge_graph: KGEModel, performance_threshold, test_triples: TripleIds):
