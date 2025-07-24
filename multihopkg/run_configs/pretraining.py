@@ -25,6 +25,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--epochs", "-e", type=int, default=10, help="How many epochs to use")
     ap.add_argument("--batch_size", "-b", type=int, default=64, help="Batch size")
     ap.add_argument("--val_every_n_batches", type=int, default=50, help="How many batches to run validation on")
+    ap.add_argument("--num_warmup_steps", "-w", type=int, default=300, help="Amont of gradient steps to warmup before engaging in the next step of scheduler.")
 
     # -------------------- General Data Parameters --------------------
     ap.add_argument("--path_dataraw", type=str, default="./data/mquake/MQuAKE-CF.json")
