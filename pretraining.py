@@ -342,6 +342,7 @@ def train_loop(
     batch_size: int,
     epochs: int,
     learning_rate: float,
+    num_warmup_steps: int,
     # --- Validation Parameters -- #
     val_every_n_batches: int,
     verbose: bool,
@@ -379,7 +380,7 @@ def train_loop(
     # scheduler = torch.optim.lr_scheduler.StepLR(
     #     optimizer, step_size=step_size, gamma=gamma
     # )
-    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=1000, total_steps=10000, min_lr=1e-6)
+    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=num_warmup_steps, total_steps=10000, min_lr=1e-6)
 
     loss_reports = []
     validation_reports: List[Tuple[int, Any]] = []
@@ -543,6 +544,7 @@ def main():
         args.batch_size,
         args.epochs,
         args.lr,
+        args.num_warmup_steps,
 
         args.val_every_n_batches,
         args.verbose,
