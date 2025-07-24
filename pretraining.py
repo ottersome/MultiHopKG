@@ -219,7 +219,9 @@ def train_loop(
     # --- Training Parameters --- #
     batch_size: int,
     epochs: int,
-    learning_rate: float,
+    baseline_lr: float,
+    minimum_lr: float,
+    num_warmup_steps: int,
     # --- Validation Parameters -- #
     val_every_n_batches: int,
     verbose: bool,
@@ -245,10 +247,12 @@ def train_loop(
     logger.info(f"With a batch size of {batch_size} this will yield {len(train_dataloader)} batches")
 
     # Optimization parameters
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=baseline_lr)
     loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
 
-    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=1000, total_steps=10000, min_lr=1e-6)
+    total_steps = epochs * len(train_dataloader)
+    logger.debug(f"Total steps: {total_steps}")
+    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=num_warmup_steps, total_steps=total_steps, min_lr=minimum_lr)
 
     loss_reports = []
     validation_reports: List[Tuple[int, Any]] = []
@@ -395,7 +399,9 @@ def main():
         relation_embeddings,
         args.batch_size,
         args.epochs,
-        args.lr,
+        args.baseline_lr,
+        args.minimum_lr,
+        args.num_warmup_steps,
         args.val_every_n_batches,
         args.verbose,
     )
