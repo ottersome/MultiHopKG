@@ -25,6 +25,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--epochs", "-e", type=int, default=10, help="How many epochs to use")
     ap.add_argument("--batch_size", "-b", type=int, default=64, help="Batch size")
     ap.add_argument("--val_every_n_batches", type=int, default=50, help="How many batches to run validation on")
+    ap.add_argument("--num_warmup_steps", "-w", type=int, default=300, help="Amont of gradient steps to warmup before engaging in the next step of scheduler.")
 
     # -------------------- Logging Parameters --------------------
     ap.add_argument("-W", "--wandb_on", action="store_true", help="Enable Weights & Biases experiment tracking")
@@ -43,7 +44,8 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--question_tokenizer_name", type=str, default="facebook/bart-base")
     ap.add_argument("--answer_tokenizer_name", type=str, default="facebook/bart-base")
     ap.add_argument("--hunch_answer_model", type=str, default="facebook/bart-base")
-    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--baseline_lr", type=float, default=1e-3)
+    ap.add_argument("--minimum_lr", type=float, default=1e-6)
 
     args = ap.parse_args()
     # Some sanity checks/helps
