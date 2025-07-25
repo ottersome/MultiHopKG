@@ -1,7 +1,8 @@
 import json
+from operator import truth
 import os
 import random
-from math import ceil, inf
+from math import ceil, e, inf
 from typing import Any, Callable, Dict, List, Tuple
 import time
 
@@ -14,12 +15,14 @@ import torch
 from rich import traceback
 from torch import nn
 from torch._dynamo.utils import is_int_specialization_case
+from torch._higher_order_ops.auto_functionalize import try_use_slice
 from torch.types import Device
 from torch.utils.data import DataLoader, Dataset
 from transformers import (
     AutoTokenizer,  # type: ignore
 )
 from transformers.models.bart import BartTokenizer
+import wandb
 
 from multihopkg.logging import setup_logger
 from multihopkg.models_language.classical import HunchBart
@@ -35,6 +38,8 @@ traceback.install()
 Triplet_Str = Tuple[str, str, str]
 Triplet_Int = Tuple[int, int, int]
 CACHED_DATA_COLUMNS = ["enc_questions", "enc_answer", "triples_ints"]
+
+wandb_on = False
 
 def translate_and_unroll_path(path: List[Triplet_Str], ent2id: Dict[str, int], rel2id: Dict[str,int]) -> List[int]:
 
@@ -88,7 +93,7 @@ def process_qa_dataset(
 
         # TODO: Encode the Questions
         encoded_question = question_tokenizer.encode(a_question)
-        encoded_answer = answer_tokenizer.encode(answer)
+        encoded_answer = answer_tokenizer.encode(answer, add_special_tokens=False)
 
         rows.append(
             [
@@ -201,6 +206,7 @@ class GraphEmbeddingDataset(Dataset):
         device: Device,
     ):
         self.dataset: pd.DataFrame = dataset
+        self.tokenizer = word_tokenizer # TOREM: using for debugging
         sep_token = word_tokenizer.sep_token
         assert isinstance(sep_token, str), "Expected the separator token to be a string. e.g. </s>"
         self.separator_token_id = word_tokenizer.convert_tokens_to_ids([sep_token])[0]
@@ -230,14 +236,11 @@ class GraphEmbeddingDataset(Dataset):
         answer_masks = []
 
         for question, answer in zip(questions, answers):
-            qna = question + [sep_token] + answer
-            mask = [0] * (len(question) + 1) + [1] * len(answer)
+            qna = question + answer + [sep_token] # sep_token is both separator and eos
+            # <s> question_nonspecial_tokens </s> ans_nonspecial_tokens </s>
+            mask = [0] * (len(question)) + [1] * len(answer) + [0]
             merged_questions_answers.append(qna)
             answer_masks.append(mask)
-
-            # Create the attention mask 1 on the answer and 0 on question and paddin:
-            torch_zeros = torch.zeros(len(qna), dtype=torch.long)
-
 
         return merged_questions_answers, answer_masks
 
@@ -309,22 +312,36 @@ def validation_loop(
             _, logits = answers_inf_softmax_w_emb.loss, answers_inf_softmax_w_emb.logits
             _, n_logits = answers_inf_softmax_wo_emb.loss, answers_inf_softmax_wo_emb.logits
 
+            # Get inferences idxs and then decode them 
+            inference_ids = logits.argmax(dim=-1)
+
             # Loss Calculation
             loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
-            n_loss = loss_fn(n_logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
+            n_loss = loss_fn(n_logits.view(-1, n_logits.shape[-1]), truth_answers.view(-1)).mean()
 
             validation_metrics["loss"].append(loss.item())
-            validation_metrics["cf-loss"].append(loss.item()/n_loss.item())
+            validation_metrics["cf-loss"].append(n_loss.item())
             if verbose and batch_idx == 0:
                 # Take logits and covert them into idxs:
                 qna_strs = tokenizer.batch_decode(qna_tokens)
                 inference_ids = logits.argmax(dim=-1)
-                inference_strs = tokenizer.batch_decode(inference_ids)
-                logger.debug(f"For this batch ({batch_idx}) of validtion. We end up with the metrics\n")
-                for q,i in zip(qna_strs, inference_strs):
-                    logger.debug(f"\n\t- Q: {q}\n\t- I: {i}")
+                inference_strs = [
+                    tokenizer.decode(elem[ans_masks[idx, 1:] == 1])
+                    for idx,elem in enumerate(inference_ids)
+                ]
+                true_strs = [
+                    tokenizer.decode(elem[ans_masks[idx, 1:] == 1])
+                    for idx,elem in enumerate(truth_answers)
+                ]
+                # inference_strs = tokenizer.batch_decode(inference_ids)
+                logger.debug(f"For this batch ({batch_idx}) of validation. We end up with the metrics\n")
+                for q,i,a in zip(qna_strs, inference_strs, true_strs):
+                    # logger.debug(f"\n\t- Q: {q}\n\t- I: {i}")
+                    logger.debug(f"\n\t- Q: {q}\n\t - A:{a}\n\t - I: {i}\n")
                 logger.debug(f"CounterFactual ration {loss/n_loss}")
                 logger.debug("----------------------------------------\n\n")
+                if wandb_on:
+                    wandb.log({"loss": loss.item(), "cf-loss": n_loss.item()})
     model.train()
     _validation_metrics = {}
     for k,v in  validation_metrics.items():
@@ -365,8 +382,7 @@ def train_loop(
     train_ds_size = len(train_dataset)
     logger.info(f"We are training with a dataset of size: {train_ds_size}")
     assert train_dataset is not None, "train_data empty in DataPartitions"
-    num_batches = ceil(train_ds_size / batch_size)
-    logger.info(f"With a batch size of {batch_size} this will yield {num_batches} batches")
+    logger.info(f"With a batch size of {batch_size} this will yield {len(train_dataloader)} batches")
 
     # Optimization parameters
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -380,11 +396,14 @@ def train_loop(
     # scheduler = torch.optim.lr_scheduler.StepLR(
     #     optimizer, step_size=step_size, gamma=gamma
     # )
-    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=num_warmup_steps, total_steps=10000, min_lr=1e-6)
+    total_steps = epochs * len(train_dataloader)
+    logger.debug(f"Total steps: {total_steps}")
+    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=num_warmup_steps, total_steps=total_steps, min_lr=1e-6)
 
     loss_reports = []
     validation_reports: List[Tuple[int, Any]] = []
-    num_batches = 0
+    cur_num_batches = 0
+
 
     # TODO: uncomment
     with CustomProgress(column_names=["Train Loss", "Val  Loss"],table_max_rows=10) as progress:
@@ -394,19 +413,21 @@ def train_loop(
             for idx_batch,batch in enumerate(train_dataloader):
 
                 # Validation
-                if num_batches % val_every_n_batches == 0:
+                if cur_num_batches % val_every_n_batches == 0:
                     validation_reports.append((
-                        num_batches,
+                        cur_num_batches,
                         validation_loop(model, val_dataloader, word_tokenizer, verbose),
                     ))
 
-                num_batches += 1
+                cur_num_batches += 1
 
                 # Actual Training
                 qna_tokens, ans_masks, graph_embeddings = batch
                 truth_answers = qna_tokens.clone()
                 truth_answers[ans_masks == 0] = word_tokenizer.pad_token_id  # For the loss function.
                 truth_answers = truth_answers[:, 1:].contiguous()
+                # Get the first element and decode it for debugging
+                first_elem = word_tokenizer.decode(truth_answers[0])
                 # Compute the loss
                 optimizer.zero_grad()
                 # TODO: Watch out for offset*till
@@ -444,15 +465,15 @@ def train_loop(
 
 
     # Loss reporting
-    fig, ax = plt.subplots()
-    ax.plot(loss_reports, label="Training")
-    ax.set_xlabel("Batches")
-    ax.set_ylabel("Loss")
-    # Report validations
-    validation_x_axis = [r[0] for r in validation_reports]
-    validation_y_axis = [r[1] for r in validation_reports]
-    ax.plot(validation_x_axis, validation_y_axis, label="Validation")
-    plt.show()
+    # fig, ax = plt.subplots()
+    # ax.plot(loss_reports, label="Training")
+    # ax.set_xlabel("Batches")
+    # ax.set_ylabel("Loss")
+    # # Report validations
+    # validation_x_axis = [r[0] for r in validation_reports]
+    # validation_y_axis = [r[1] for r in validation_reports]
+    # ax.plot(validation_x_axis, validation_y_axis, label="Validation")
+    # plt.show()
 
 
 
@@ -464,6 +485,15 @@ def main():
         debugpy.listen(("0.0.0.0", 42023))
         debugpy.wait_for_client()
 
+    if args.wandb_on:
+        timestamp = time.strftime("%m%d%Y_%H%M%S", time.localtime())
+        wandb.init(
+            project=f"{args.wandb_project}",
+            config=vars(args),
+            name=f"{args.wr_name}-{timestamp}",
+            notes=args.wr_notes
+        )
+        wandb_on = True
 
     ########################################
     # Process the NLP components
