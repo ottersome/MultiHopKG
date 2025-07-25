@@ -486,6 +486,9 @@ def main():
     assert entity_embeddings.weight.shape[-1] == relation_embeddings.weight.shape[-1], "Relation and Embedding Dimensions are different. Assumption broken. Exiting"
     embeddings_size = entity_embeddings.weight.shape[-1]
 
+    # Load the Embedding Training Metaparameters
+    embedding_training_metaparameters = json.load(open(args.path_embedding_training_config))
+
     # Import the HunchBart Parameter
     hunch_llm = HunchBart(
         pretrained_bart_model=args.hunch_answer_model,
@@ -512,6 +515,26 @@ def main():
     )
 
     logger.info("Training Finsihed")
+    # Save the model under ./models/gtllm/date/
+    timestamp = time.strftime("%m%d%Y_%H%M%S", time.localtime())
+    run_name = "gtllm_"+args.wr_name if args.wr_name is not None else "gtllm"
+    model_path = os.path.join(args.outPath_save_model, f"{run_name}_{timestamp}.pt")
+    print(f"The model_path directory is {os.path.dirname(model_path)}")
+    os.makedirs(os.path.dirname(model_path), exist_ok = True)
+
+    save_info = {
+        "gtllm_state_dict" :  trained_model.state_dict(),
+        "hunchbart_base_llm_tokenizer" : args.hunchbart_base_llm_tokenizer,
+        "hunchbart_base_llm_model" : args.hunchbart_base_llm_model,
+        "hunchbart_hidden_dim": embeddings_size,  # Which is also the graph dim 
+        # Data saves 
+        "path_mquake_data": args.path_mquake_data,
+        "path_graph_emb_data": args.path_graph_emb_data,
+        "path_pretraining_cache": args.path_cache_dir,
+    }
+    torch.save(save_info, model_path)
+
+    logger.info(f"Training Finsihed. Saved training info to {model_path}")
 
 if __name__ == "__main__":
     logger = setup_logger("__PRETRAINING_MAIN__")
