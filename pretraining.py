@@ -342,7 +342,8 @@ def validation_loop(
                     logger.debug(f"\n\t- Q: {q}\n\t - A:{a}\n\t - I: {i}\n\t - F: {n}\n")
                 logger.debug(f"CounterFactual ration {loss/n_loss}")
                 logger.debug("----------------------------------------\n\n")
-                wandb.log({"loss": loss.item(), "cf-loss": n_loss.item()})
+                if wandb_on:
+                    wandb.log({"loss": loss.item(), "cf-loss": n_loss.item()})
     model.train()
     _validation_metrics = {}
     for k,v in  validation_metrics.items():
@@ -364,7 +365,7 @@ def train_loop(
     # --- Validation Parameters -- #
     val_every_n_batches: int,
     verbose: bool,
-):
+) -> nn.Module:
     device = next(model.parameters()).device
     ########################################
     # Data Loading
@@ -407,7 +408,7 @@ def train_loop(
 
 
     # TODO: uncomment
-    with CustomProgress(column_names=["Train Loss", "Val  Loss"],table_max_rows=10) as progress:
+    with CustomProgress(column_names=["Train Loss", "Val  Loss", "lr_rate"],table_max_rows=10) as progress:
         task_epoch = progress.add_task("Epochs", total=epochs)
         for e in range(epochs):
             task_batch = progress.add_task("Batch", total=len(train_dataloader))
@@ -453,30 +454,14 @@ def train_loop(
                 grad = train_dataset.id2ent.weight.grad
                 logger.debug(f"Repoerting on gradient of embedding: {grad}")
 
-                # logger.info(f"Batch loss-reports {loss_reports[-1]} val_reporst {validation_reports[-1][-1][-1]}")
-                # logger.info("e, idx_batch", e, idx_batch)
-                # train_live.update_batch([loss_reports[-1], validation_reports[-1][-1][-1]], e, idx_batch)
-                table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1]}")
+                table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1]}", f"{scheduler.get_lr()}")
                 # TODO: uncomment
                 progress.update_table(table_reports)
                 progress.update(task_batch, advance=1)
                 time.sleep(0.1)
             # TODO: uncomment
             progress.update(task_epoch, advance=1)
-
-
-    # Loss reporting
-    # fig, ax = plt.subplots()
-    # ax.plot(loss_reports, label="Training")
-    # ax.set_xlabel("Batches")
-    # ax.set_ylabel("Loss")
-    # # Report validations
-    # validation_x_axis = [r[0] for r in validation_reports]
-    # validation_y_axis = [r[1] for r in validation_reports]
-    # ax.plot(validation_x_axis, validation_y_axis, label="Validation")
-    # plt.show()
-
-
+    return model
 
 def main():
     args = get_args()
@@ -555,7 +540,7 @@ def main():
     relation_weights = torch.from_numpy(np.load(args.path_relations_embeddings))
     entity_embeddings = nn.Embedding.from_pretrained(entity_weights)
     relation_embeddings = nn.Embedding.from_pretrained(relation_weights)
-    embedding_training_metaparameters = json.load(open(args.path_embedding_training_config))
+    # embedding_training_metaparameters = json.load(open(args.path_embedding_training_config))
 
     # Import the HunchBart Parameter
     hunch_llm = HunchBart(
@@ -566,7 +551,7 @@ def main():
     hunch_llm.freeze_bart()
 
     logger.info("Entering training loop")
-    train_loop(
+    trained_model = train_loop(
         dataset_partitions,
         word_tokenizer,
         hunch_llm,
@@ -581,6 +566,15 @@ def main():
         args.val_every_n_batches,
         args.verbose,
     )
+
+    # Save the model under ./models/gtllm/date/
+    timestamp = time.strftime("%m%d%Y_%H%M%S", time.localtime())
+    run_name = "gtllm_"+args.wr_name if args.wr_name is not None else "gtllm"
+    model_path = os.path.join(args.outPath_save_model, f"{run_name}_{timestamp}")
+    print(f"THe model_path directory is {os.path.dirname(model_path)}")
+    os.makedirs(os.path.dirname(model_path), exist_ok = True)
+    logger.info(f"Saving the model under {model_path}")
+    torch.save(trained_model, model_path)
 
     logger.info("Training Finsihed")
     # exit()
