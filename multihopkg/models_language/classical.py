@@ -55,6 +55,8 @@ class HunchBart(nn.Module):
         """
         Will freeze the language model, will train the graph embedding translator
         """
+        for param in self.bart.parameters():
+            param.requires_grad = False
 
 class ExpensiveHunchLLM(torch.nn.Module):
     """
