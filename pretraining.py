@@ -403,6 +403,9 @@ def main():
         answer_tokenizer=args.answer_tokenizer_name,
         graph_embedding_dim=embeddings_size,
     ).to(args.device)
+    
+    # Freeze the BART model, keep embedding_translator trainable
+    hunch_llm.freeze_bart()
 
     logger.info("Entering training loop")
     trained_model = train_loop(
