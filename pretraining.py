@@ -471,6 +471,7 @@ def main():
         debugpy.listen(("0.0.0.0", 42023))
         debugpy.wait_for_client()
 
+    global wandb_on
     if args.wandb_on:
         timestamp = time.strftime("%m%d%Y_%H%M%S", time.localtime())
         wandb.init(
@@ -479,7 +480,7 @@ def main():
             name=f"{args.wr_name}-{timestamp}",
             notes=args.wr_notes
         )
-        wandb_on = True
+    wandb_on = args.wandb_on
 
     ########################################
     # Process the NLP components
