@@ -51,10 +51,13 @@ class HunchBart(nn.Module):
         )
         return outputs
 
-    def freeeze_decoder(self):
+    def freeze_bart(self):
         """
-        Will freeze the language model, will train the graph embedding translator
+        Will freeze the BART model parameters, keeping only the embedding_translator trainable
         """
+        for param in self.bart.parameters():
+            param.requires_grad = False
+
 
 class ExpensiveHunchLLM(torch.nn.Module):
     """
