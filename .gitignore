@@ -131,3 +131,4 @@ runs/
 figures/grads
 figures/tokeep
 models
+.aider*

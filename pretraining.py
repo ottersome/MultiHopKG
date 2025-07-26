@@ -343,7 +343,7 @@ def validation_loop(
                 logger.debug(f"CounterFactual ration {loss/n_loss}")
                 logger.debug("----------------------------------------\n\n")
                 if wandb_on:
-                    wandb.log({"loss": loss.item(), "cf-loss": n_loss.item()})
+                    wandb.log({"loss_valid": loss.item(), "cf-loss_valid": n_loss.item()})
     model.train()
     _validation_metrics = {}
     for k,v in  validation_metrics.items():
@@ -447,6 +447,10 @@ def train_loop(
                 scheduler.step()
                 logger.debug(f"Current learning rate is {scheduler.get_lr()}")
                 loss_reports.append(loss.item())
+
+                # Reoprt to wandb
+                if wandb_on:
+                    wandb.log({"loss_train": loss.item()})
 
                 # Check for changes
                 change_in_embeddings = torch.dist(ent_emb_backup, train_dataset.id2ent.weight).sum()
