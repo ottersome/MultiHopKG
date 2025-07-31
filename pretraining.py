@@ -1,12 +1,10 @@
 import json
 import os
-import random
 from typing import Any, Callable, Dict, List, Tuple
 import time
 
 import debugpy
 import numpy as np
-import pandas as pd
 import torch
 from rich import traceback
 from torch import nn
@@ -18,15 +16,15 @@ from transformers.models.bart import BartTokenizer
 import wandb
 
 from multihopkg.datasets import GraphEmbeddingDataset
+from multihopkg import data_utils
 from multihopkg.logging import setup_logger
 from multihopkg.models_language.classical import HunchBart
 from multihopkg.run_configs.pretraining import get_args
-from multihopkg.data_utils import load_native_index, translate_and_unroll_path
+from multihopkg.data_utils import load_native_index
 from multihopkg.utils.data_structures import DataPartitions
 from multihopkg.utils.setup import set_seeds
 from multihopkg.utils.vis import CustomProgress
 from multihopkg.utils.schedulers import WarmupCosineScheduler
-from multihopkg.utils.data_structures import Triplet_Str
 
 # import nice traceback from rich
 traceback.install()
@@ -34,95 +32,6 @@ traceback.install()
 CACHED_DATA_COLUMNS = ["enc_questions", "enc_answer", "triples_ints"]
 
 wandb_on = False
-
-
-def process_qa_dataset(
-    raw_location: str,
-    cache_location: str,
-    tvt_split: list[float],
-    tokenizer: Any,
-    existing_entities: Dict[str, int],
-    existing_relations: Dict[str, int]
-) -> DataPartitions:
-
-    print(f"Raw location of raw data is {raw_location}")
-    # This will load the dataset with questions and answers
-    with open(raw_location, "r") as f:
-        json_file = json.load(f)
-
-    rows = []
-    _d_num_invalid_samples = 0
-    for sample in json_file:
-        path: List[Triplet_Str] = sample["orig"]["triples"]
-        int_path = translate_and_unroll_path(path, existing_entities, existing_relations)
-        if len(int_path) ==  0: 
-            _d_num_invalid_samples += 1
-            continue
-        # For now we only sample a single question
-        a_question = random.choice(sample["questions"])
-        answer = sample["answer"]
-
-        # TODO: Encode the Questions
-        encoded_question = tokenizer.encode(a_question)
-        encoded_answer = tokenizer.encode(answer, add_special_tokens=False)
-
-        rows.append(
-            [
-                encoded_question,
-                encoded_answer,
-                int_path,
-            ]
-        )
-
-    logger.info(f"⚠️Number of invalid samples was {_d_num_invalid_samples}")
-    
-    train_len = int(len(rows)*tvt_split[0])
-    left_over_perc =  tvt_split[1] / (1 - tvt_split[0])
-    # Train, Test, Validation Partitions
-    random.shuffle(rows)
-    valid_len = int((len(rows) - train_len) * left_over_perc)
-    
-    casted_columns = pd.Index(CACHED_DATA_COLUMNS)
-    train_ds = pd.DataFrame(rows[:train_len], columns=casted_columns)
-    valid_ds = pd.DataFrame(rows[train_len: train_len + valid_len], columns=casted_columns)
-    test_ds = pd.DataFrame(rows[train_len + valid_len: ], columns=casted_columns)
-
-    # Now we save it as well
-    all_ds = {
-        "train.pkl": train_ds,
-        "valid.pkl": valid_ds,
-        "test.pkl": test_ds,
-    }
-
-    for ds_file_name, df in all_ds.items():
-        path_to_save = os.path.join(cache_location, ds_file_name)
-        logger.info(f"Saving the split {ds_file_name}")
-        df.to_pickle(path_to_save)
-
-
-    return_data_partitions = DataPartitions(train_ds, valid_ds, test_ds)
-
-    return return_data_partitions
-
-def load_from_cache(cache_location: str) -> DataPartitions:
-    files = ["train.csv", "valid.csv", "test.csv"]
-    files_path = [os.path.join(cache_location, f) for f in files]
-
-    data_partitions = []
-    for f in files_path:
-        df_partitions_list= pd.read_csv(f).values
-        data_partitions.append(df_partitions_list)
-
-    return DataPartitions(*data_partitions)
-
-def check_cache_exists(cache_location: str):
-    file_names = ["train.csv", "valid.csv", "test.csv"]
-    for f in file_names:
-        if not os.path.exists(os.path.join(cache_location, f)):
-            return False
-
-    return True
-
 
 def collate_fn(batch, padding_value: int):
     batch_deconstructed = zip(*batch)
@@ -363,22 +272,28 @@ def main():
     ########################################
     # Process the Dataset
     ########################################
-    cache_exists = check_cache_exists(args.path_cache_dir)
-    if cache_exists and not args.force_recompute_cache:
-        logger.info(f"Loading data from cache {args.path_cache_dir}")
-        dataset_partitions = load_from_cache(args.path_cache_dir)
-    else:
-        logger.info("Either cache does not exist or is being force to be recomuted... ")
-        mquake_raw_path = os.path.join(args.path_mquake_data, "MQuAKE-CF.json")
-        dataset_partitions = process_qa_dataset(
-            mquake_raw_path,
-            args.path_cache_dir,
-            args.tvt_split,
-            word_tokenizer,
-            ent2id,
-            rel2id,
-        )
-    assert isinstance(dataset_partitions, DataPartitions)
+    raw_mquake_csv_data_path = os.path.join(args.path_mquake_data, "mquake_qna_ds.csv")
+    meta_data_path = os.path.join(args.path_cache_dir, "mquake.json")
+    logger.info(
+        f"Loading the data from {meta_data_path}." + \
+        str("\n\t Will be forcing recompute" if args.force_recompute_cache else "")
+    )
+    train_df, dev_df, test_df, _ = data_utils.load_qa_data(
+        cached_metadata_path=meta_data_path,
+        raw_QAData_path=raw_mquake_csv_data_path,
+        question_tokenizer_name=args.hunchbart_base_llm_tokenizer,
+        answer_tokenizer_name=args.hunchbart_base_llm_tokenizer,
+        entity2id=ent2id,
+        relation2id=rel2id,
+        logger=logger,
+        force_recompute=args.force_recompute_cache,
+        supervised=False
+    )
+    dataset_partitions = DataPartitions(
+        train_df,
+        dev_df,
+        test_df
+    )
 
     ########################################
     # Load Pretrained Embeddings
