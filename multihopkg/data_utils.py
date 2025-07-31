@@ -14,6 +14,7 @@ import os
 import pdb
 import pickle
 from datetime import datetime
+import time
 from typing import Any, Dict, Optional, Sequence, List, Tuple, Union
 import re
 import ast
@@ -26,7 +27,7 @@ from torch.nn import Embedding as nn_Embedding
 from transformers import PreTrainedTokenizer, AutoTokenizer
 from sklearn.model_selection import train_test_split
 
-from multihopkg.utils.data_structures import Triplet_Str
+from multihopkg.utils.data_structures import Triplet_Str, DataPartitions
 from multihopkg.utils.setup import get_git_root
 from multihopkg.itl_typing import Triple
 from multihopkg.itl_typing import DFSplit
@@ -647,7 +648,144 @@ def translate_and_unroll_path(path: List[Triplet_Str], ent2id: Dict[str, int], r
 
     return new_path
 
-def process_and_cache_triviaqa_data(
+def process_and_cache_unsuprvised_triviaqa_data(
+    raw_QAData_path: str,
+    cached_toked_qatriples_metadata_path: str,
+    question_tokenizer: PreTrainedTokenizer,
+    answer_tokenizer: PreTrainedTokenizer,
+    entity2id: Dict[str, int],
+    relation2id: Dict[str, int],
+    override_split: bool = True,
+) -> Tuple[DFSplit, Dict] :
+    """
+    A function that specialized in taking a specific format of unsupervised (generally RL) datasets
+    and creates a cache out of them.
+
+    Args:
+        raw_QAData_path (str) : Place where the unprocessed triples are found.
+            Expects a file with three columns in the following order
+        cached_toked_qatriples_metadata_path (str) : path to a json file that will contain metadata describing the chache
+        question_tokenizer (AutoTokenizer) : The tokenizer for the question
+        answer_tokenizer (AutoTokenizer) : The tokenizer for the answer. Generally the same as the question tokenizer.
+        entity2id (Dict[str, int]) : A dictionary mapping entity QID to indicies in its embedding matrix.
+        relation2id (Dict[str, int]) : A dictionary mapping relation PID to indicies in its embedding matrix
+        override_split (bool) : If set, will use the splits specified by the file itself. Otherwise, will create splits itself.
+    Returns:
+
+    Data Assumptions:
+        - csv file consists of 1..N columns.
+          N-1 is Question, N is Answer
+        - 1..N-2 represent the path
+          These columns are organized as Entity, Relation, Entity,...
+    LG: We might change this assumption to a whole graph later on:
+    """
+
+    ## Processing
+    csv_df = pd.read_csv(raw_QAData_path)
+    assert (
+        len(csv_df.columns) > 2
+    ), "The CSV file should have at least 2 columns. One triplet and one QA pair"
+    
+    questions = csv_df["question"]
+    answers = csv_df["answer"]
+    # We still dont know what to do with this in the unsupervised setting
+    triples_column = csv_df["triples"]
+    paths_str_idxs = triples_column.apply(lambda x: ast.literal_eval(x))
+    path_lengths_are_odd = [(len(path) % 2 != 0) for path in paths_str_idxs.values]
+    assert not all(path_lengths_are_odd), "This data processing assumes that we are dealing with paths with odd length. "
+    # Now that we know that they are odd, we can split them into head-rel-tail
+    _paths_int_idxs = []
+    for i, path in enumerate(paths_str_idxs.values):
+        int_path = []
+        int_path = translate_and_unroll_path(path, entity2id, relation2id)
+        _paths_int_idxs.append(int_path)
+    paths_int_idxs = pd.Series(_paths_int_idxs, index=paths_str_idxs.index)
+    del _paths_int_idxs
+
+    # Ensure directory exists
+    print(f"Kamikaze: {cached_toked_qatriples_metadata_path}")
+    dir_name = os.path.dirname(cached_toked_qatriples_metadata_path)
+    os.makedirs(dir_name, exist_ok=True)
+
+    ## Prepare the language data (do encoding)
+    questions = questions.map(lambda x: question_tokenizer.encode(x, add_special_tokens=True)) # type: ignore
+    answers = answers.map(lambda x: answer_tokenizer.encode(x, add_special_tokens=False))
+
+    # timestamp without nanoseconds
+    timestamp = str(int(datetime.now().timestamp()))
+    cached_split_locations: Dict[str, str] = {
+        name: cached_toked_qatriples_metadata_path.replace(".json", "") + f"_Split-{name}" + ".parquet"
+        for name in ["train", "dev", "test"]
+    }
+
+    repo_root = get_git_root()
+    if repo_root is None:
+        raise ValueError("Cannot get the git root path. Please make sure you are running a clone of the repo")
+
+    cached_split_locations = {key : val.replace(repo_root + "/", "") for key,val in cached_split_locations.items()}
+
+    # Start amalgamating the data into its final form
+    # TODO: test set
+    new_df = pd.concat([questions, answers, paths_int_idxs], axis=1)
+    new_df = new_df.sample(frac=1).reset_index(drop=True) # Shuffle before splitting by label
+    new_df.columns = DataPartitions.ASSUMED_COLUMNS
+
+    # Check if splitLabel column has meaningful values to guide the split
+    prespecified_splits_avail = all([ # Kinda hacky but less messy.
+        'SplitLabel' in new_df.columns and new_df['SplitLabel'].notna().any(),
+        'SplitLabel' in new_df.columns and not new_df['SplitLabel'].eq('').all()   # type: ignore
+    ])
+    if override_split and prespecified_splits_avail:
+        train_df = new_df[new_df['SplitLabel'] == 'train'].reset_index(drop=True)
+        test_df = new_df[new_df['SplitLabel'] != 'train'].reset_index(drop=True)
+    else:
+        new_df = new_df.sample(frac=1).reset_index(drop=True)
+        train_df, test_df = train_test_split(new_df, test_size=0.2, random_state=42)
+
+     # If the test set is too small, use it as dev
+    if len(test_df) < 100:
+        dev_df = test_df
+    else:
+        dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=42)
+
+    if not isinstance(train_df, pd.DataFrame) or not isinstance(dev_df, pd.DataFrame) or not isinstance(test_df, pd.DataFrame):
+        raise RuntimeError("The data was not loaded properly. Please check the data loading code.")
+
+    for name,df in {"train": train_df, "dev": dev_df, "test": test_df}.items():
+        df.to_parquet(cached_split_locations[name], index=False)
+
+    ## Prepare metadata for export
+    # Tokenize the text by applying a pandas map function
+    # Store the metadata
+    metadata = {
+        "question_tokenizer": question_tokenizer.name_or_path,
+        "answer_tokenizer": answer_tokenizer.name_or_path,
+        "columns": ["questions", "answers", "path"],
+        "0-index_column": True, # TODO: Don't know what that means. 
+        "date_processed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "saved_paths": cached_split_locations,
+        "timestamp": timestamp,
+    }
+
+    with open(cached_toked_qatriples_metadata_path, "w") as f:
+        json.dump(metadata, f)
+
+    # NOTE: Maybe this was simply for debugging?
+    # id2entity = {v: k for k, v in entity2id.items()}
+    # id2relation = {v: k for k, v in relation2id.items()}
+    #
+    # Save the triplets to a file for later use with other algorithms
+    # Ill just remove it 
+    # for name,df in {"train": train_df, "dev": dev_df, "test": test_df}.items():
+    #     triplets = []
+    #     for i, row in df.iterrows():
+    #         triplets.append((id2entity[row['Query-Entity']], id2relation[row['Query-Relation']], id2entity[row['Answer-Entity']]))
+    #     save_triplets = pd.DataFrame(triplets, columns=["head", "relation", "tail"])
+    #     save_triplets.to_csv(cached_split_locations[name].replace(".parquet", f"_{name}_triplets.txt"), sep='\t', index=False, header=False)
+
+    return DFSplit(train=train_df, dev=dev_df, test=test_df), metadata
+
+def process_and_cache_suprvised_triviaqa_data(
     raw_QAData_path: str,
     cached_toked_qatriples_metadata_path: str,
     question_tokenizer: PreTrainedTokenizer,
@@ -661,7 +799,7 @@ def process_and_cache_triviaqa_data(
     Args:
         raw_triples_loc (str) : Place where the unprocessed triples are
         cached_toked_qatriples_path (str) : Place where processed triples are meante to go. You must format them.
-        idx_2_graphEnc (Dict[str, np.array]) : The encoding of the tripleshttps://www.youtube.com/watch?v=f-sRcVkZ9yg
+        idx_2_graphEnc (Dict[str, np.array]) : The encoding of the triples
         text_tokenizer (AutoTokenizer) : The tokenizer for the text
     Returns:
 
@@ -788,6 +926,20 @@ def process_and_cache_triviaqa_data(
 
     return DFSplit(train=train_df, dev=dev_df, test=test_df), metadata
 
+def shift_through_cache_data(lookup_path: str, filename_regex: re.Pattern[str]) -> Optional[str]:
+    """
+    Will look into `lookup_path` and find all the files that match the `finename_regex`.
+    Then it will take the file with the most recent creation time and load it.
+    """
+    if not os.path.exists(lookup_path):
+        return None # Return early since no .cache has been computed so far. 
+    files = os.listdir(lookup_path)
+    files = [f for f in files if re.match(filename_regex, f)]
+    if len(files) == 0:
+        return None
+
+    files.sort(key=lambda x: os.path.getctime(os.path.join(lookup_path, x)))
+    return os.path.join(lookup_path, files[-1])
 
 def load_qa_data(
     cached_metadata_path: str,
@@ -799,20 +951,43 @@ def load_qa_data(
     logger: logging.Logger,
     force_recompute: bool = False,
     override_split: bool = True,
-):
+    supervised: bool = True, 
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
 
-    if os.path.exists(cached_metadata_path) and not force_recompute:
+    # Set the name of our specific config suffix  for the cache
+    time_stamp = time.strftime("%m%d%Y_%H%M%S", time.localtime())
+    metadata_config_suffix = "_quesToken-{}_ansToken-{}_date-{}"
+    metadata_config_suffix_w_json = metadata_config_suffix + ".json"
+
+    final_config_name_pttrn = os.path.basename(cached_metadata_path).replace(".json", metadata_config_suffix_w_json)
+    final_config_name_regex = final_config_name_pttrn.format(".+", ".+", "\\d+_\\d+")
+    final_config_name = final_config_name_pttrn.format(question_tokenizer_name, answer_tokenizer_name, time_stamp)
+
+    print(f"path looks like {os.path.dirname(cached_metadata_path)}")
+    print(f"final_config_name_regex: {final_config_name_regex}")
+    compiled_regex = re.compile(final_config_name_regex)
+    found_cache = shift_through_cache_data(lookup_path=os.path.dirname(cached_metadata_path), filename_regex=compiled_regex)
+    print(f"found_cache: {found_cache}")
+    if (found_cache is not None) and (not force_recompute):
+        computed_time = os.path.getctime(found_cache)
         logger.info(
-            f"\033[93m Found cache for the QA data {cached_metadata_path} will load it instead of working on {raw_QAData_path}. \033[0m"
+            f"\033[93m Found latest cache for the QA data {found_cache}, computed on {computed_time}, will load it instead of working on {raw_QAData_path}. \033[0m"
         )
         # Read the first line of the raw csv to count the number of columns
-        train_metadata = json.load(open(cached_metadata_path.format(question_tokenizer_name, answer_tokenizer_name)))
+        train_metadata = json.load(open(found_cache))
         saved_paths: Dict[str, str] = train_metadata["saved_paths"]
 
         train_df = pd.read_parquet(saved_paths["train"])
         # TODO: Eventually use this to avoid data leakage
         dev_df = pd.read_parquet(saved_paths["dev"])
         test_df = pd.read_parquet(saved_paths["test"])
+
+        # At this opint the parquet will import numpy arrays but the rest of our algorithm does not expect that 
+        # so we need to convert them to lists
+        train_df = train_df.map(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
+        dev_df = dev_df.map(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
+        test_df = test_df.map(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
+
 
         # Ensure that we are not reading them integers as strings, but also not as floats
         logger.info(
@@ -825,20 +1000,34 @@ def load_qa_data(
         logger.info(
             f"\033[93m Did not find cache for the QA data {cached_metadata_path}. Will now process it from {raw_QAData_path} \033[0m"
         )
+        # These are very often the same
         question_tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
         answer_tokenzier   = AutoTokenizer.from_pretrained(answer_tokenizer_name)
-        df_split, train_metadata = ( # Includes shuffling
-            process_and_cache_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
-                raw_QAData_path,
-                cached_metadata_path,
-                question_tokenizer,
-                answer_tokenzier,
-                entity2id,
-                relation2id,
-                override_split=override_split,
-                logger=logger,
+        if supervised:
+            df_split, train_metadata = ( # Includes shuffling
+                process_and_cache_suprvised_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
+                    raw_QAData_path,
+                    cached_metadata_path,
+                    question_tokenizer,
+                    answer_tokenzier,
+                    entity2id,
+                    relation2id,
+                    override_split=override_split,
+                    logger=logger,
+                )
             )
-        )
+        else: 
+            df_split, train_metadata = ( # Includes shuffling
+                process_and_cache_unsuprvised_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
+                    raw_QAData_path,
+                    final_config_name,
+                    question_tokenizer,
+                    answer_tokenzier,
+                    entity2id,
+                    relation2id,
+                    override_split=override_split,
+                )
+            )
         train_df, dev_df, test_df = df_split.train, df_split.dev, df_split.test
         logger.info(
             f"Done. Result dumped at : \n\033[93m\033[4m{train_metadata['saved_paths']}\033[0m"
@@ -861,8 +1050,9 @@ def data_loading_router(
             question_tokenizer,
         )
     elif "triviaqa" in raw_QAPathData_path:
-        return process_and_cache_triviaqa_data(
-            raw_QAPathData_path,
+        # TOREM: This entire function is already too old
+        return process_and_cache_suprvised_triviaqa_data(
+            raw_QAPathData_path, # type: ignore
             cached_toked_qatriples_path,
             question_tokenizer,
             answer_tokenizer,
