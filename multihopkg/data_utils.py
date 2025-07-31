@@ -647,7 +647,7 @@ def translate_and_unroll_path(path: List[Triplet_Str], ent2id: Dict[str, int], r
 
     return new_path
 
-def process_and_cache_triviaqa_data(
+def process_and_cache_suprvised_triviaqa_data(
     raw_QAData_path: str,
     cached_toked_qatriples_metadata_path: str,
     question_tokenizer: PreTrainedTokenizer,
@@ -799,7 +799,7 @@ def load_qa_data(
     logger: logging.Logger,
     force_recompute: bool = False,
     override_split: bool = True,
-):
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
 
     if os.path.exists(cached_metadata_path) and not force_recompute:
         logger.info(
@@ -828,7 +828,7 @@ def load_qa_data(
         question_tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
         answer_tokenzier   = AutoTokenizer.from_pretrained(answer_tokenizer_name)
         df_split, train_metadata = ( # Includes shuffling
-            process_and_cache_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
+            process_and_cache_suprvised_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
                 raw_QAData_path,
                 cached_metadata_path,
                 question_tokenizer,
@@ -861,8 +861,9 @@ def data_loading_router(
             question_tokenizer,
         )
     elif "triviaqa" in raw_QAPathData_path:
-        return process_and_cache_triviaqa_data(
-            raw_QAPathData_path,
+        # TOREM: This entire function is already too old
+        return process_and_cache_suprvised_triviaqa_data(
+            raw_QAPathData_path, # type: ignore
             cached_toked_qatriples_path,
             question_tokenizer,
             answer_tokenizer,
