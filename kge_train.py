@@ -28,6 +28,8 @@ from multihopkg.datasets import BidirectionalOneShotIterator, MultiTaskIterator,
 from multihopkg.datasets import build_type_constraints, build_neighbor_constraints, build_neighbor_rel_constraints
 # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
+from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
+
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
         description='Training and Testing Knowledge Graph Embedding Models',
@@ -104,6 +106,8 @@ def parse_args(args=None):
 
     parser.add_argument("--random_seed", type=int, default=None, help="Random seed for the environment. If None, not used.")
     parser.add_argument("--timestamp", type=str, default=None, help="Timestamp for the run. If None, current time is used.")
+
+    parser.add_argument("--saved_config_path",  default=None, type=str, help="Path pointing to a yaml configuration to run a specific training")
 
     return parser.parse_args(args)
 
@@ -225,11 +229,14 @@ def main(args):
         )
         args = argparse.Namespace(**wandb.config)  # <-- Make sure args is overwritten
 
-    if (not args.do_train) and (not args.do_valid) and (not args.do_test):
-        raise ValueError('one of train/val/test mode must be choosed.')
-    
     if args.init_checkpoint:
         override_config(args)
+    elif args.saved_config_path: 
+        overload_parse_defaults_with_yaml(args.saved_config_path, args)
+
+    if (not args.do_train) and (not args.do_valid) and (not args.do_test):
+        raise ValueError('one of train/val/test mode must be choosed.')
+
     elif args.data_path is None:
         raise ValueError('one of init_checkpoint/data_path must be choosed.')
 
@@ -465,9 +472,18 @@ def main(args):
         
         #Training Loop
         for step in range(init_step, args.max_steps):
-            
-            log = kge_model.train_step(kge_model, optimizer, train_iterator, args)
-            
+
+            log = kge_model.train_step(
+                kge_model,
+                optimizer,
+                train_iterator,
+                args.cuda,
+                args.negative_adversarial_sampling,
+                args.adversarial_temperature,
+                args.uni_weight,
+                args.regularization,
+            )
+
             training_logs.append(log)
             
             if step >= warm_up_steps:
