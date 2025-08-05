@@ -245,7 +245,6 @@ def load_index(input_path):
     """
     Loads dictionaries to map int-index to str-index and vice-versa
     This specific implementation takes row number as int-index
-    Use `load_index_column_wise` for one with int-index as the second column
     """
     index, rev_index = {}, {}
     with open(input_path) as f:
@@ -253,6 +252,20 @@ def load_index(input_path):
             v, _ = line.strip().split()
             index[v] = i
             rev_index[i] = v
+    return index, rev_index
+
+def load_native_index(input_path: str) -> Tuple[Dict[int, str], Dict[str, int]]:
+    """
+    Loads dictionaries to map int-index to str-index and vice-versa
+    This specific implementation takes the first column as embedding matrix int
+         and the second column as the RDF to a specific dataset
+    """
+    index, rev_index = {}, {}
+    with open(input_path) as f:
+        for line in f.readlines():
+            i, v = line.strip().split()
+            index[int(i)] = v
+            rev_index[v] = int(i)
     return index, rev_index
 
 def prepare_triple_dicts(
