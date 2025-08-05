@@ -1,4 +1,4 @@
-from typing import Any, Callable, TypeVar, ValuesView
+from typing import Any, Callable, TypeVar, Union, ValuesView
 from pandas._libs.tslibs.offsets import CBMonthBegin
 import pytest
 import os
@@ -40,7 +40,7 @@ def pytest_addoption(parser):
 
     parser.addoption(
         "--thresholds",
-        type=ValidatorDict[int | float],
+        type=ValidatorDict[Union[int, float]],
         # Current approach: change the thresholds manually here.
         # TODO: Use a path to a json or yaml file with the expected thresholds
         default={
@@ -54,7 +54,7 @@ def pytest_addoption(parser):
     )
  
 @pytest.fixture
-def validation_thresholds(request) -> ValidatorDict[int | float]:
+def validation_thresholds(request) -> ValidatorDict[Union[int, float]]:
     """Fixture to get the minimum performance threshold."""
     return request.config.getoption("--thresholds")
 
