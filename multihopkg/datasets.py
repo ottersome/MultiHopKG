@@ -215,7 +215,7 @@ class GraphEmbeddingDataset(Dataset):
             dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[1]].tolist(),
             self.separator_token_id,
         )
-        self.path = dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[2]]
+        self.path = dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[2]].tolist()
         # Embeddings
         self.id2ent = id2ent
         self.id2rel = id2rel
