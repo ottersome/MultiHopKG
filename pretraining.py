@@ -18,6 +18,7 @@ from transformers import (
 )
 from transformers.models.bart import BartTokenizer
 
+from multihopkg import data_utils
 from multihopkg.logging import setup_logger
 from multihopkg.models_language.classical import HunchBart
 from multihopkg.run_configs.pretraining import get_args
@@ -186,7 +187,7 @@ class GraphEmbeddingDataset(Dataset):
             dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[1]].tolist(),
             self.separator_token_id,
         )
-        self.path = dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[2]]
+        self.path = dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[2]].tolist()
         # Embeddings
         self.id2ent = id2ent
         self.id2rel = id2rel
@@ -453,22 +454,28 @@ def main():
     ########################################
     # Process the Dataset
     ########################################
-    cache_exists = check_cache_exists(args.path_cache_dir)
-    if cache_exists and not args.recompute_cache:
-        logger.info(f"Loading data from cache {args.path_cache_dir}")
-        dataset_partitions = load_from_cache(args.path_cache_dir)
-    else:
-        logger.info("Either cache does not exist or is being force to be recomuted... ")
-        mquake_raw_path = os.path.join(args.path_mquake_data, "MQuAKE-CF.json")
-        dataset_partitions = process_qa_dataset(
-            mquake_raw_path,
-            args.path_cache_dir,
-            args.tvt_split,
-            word_tokenizer,
-            ent2id,
-            rel2id,
-        )
-    assert isinstance(dataset_partitions, DataPartitions)
+    raw_mquake_csv_data_path = os.path.join(args.path_mquake_data, "mquake_qna_ds.csv")
+    meta_data_path = os.path.join(args.path_cache_dir, "mquake.json")
+    logger.info(
+        f"Loading the data from {meta_data_path}." + \
+        str("\n\t Will be forcing recompute" if args.force_recompute_cache else "")
+    )
+    train_df, dev_df, test_df, _ = data_utils.load_qa_data(
+        cached_metadata_path=meta_data_path,
+        raw_QAData_path=raw_mquake_csv_data_path,
+        question_tokenizer_name=args.hunchbart_base_llm_tokenizer,
+        answer_tokenizer_name=args.hunchbart_base_llm_tokenizer,
+        entity2id=ent2id,
+        relation2id=rel2id,
+        logger=logger,
+        force_recompute=args.force_recompute_cache,
+        supervised=False
+    )
+    dataset_partitions = DataPartitions(
+        train_df,
+        dev_df,
+        test_df
+    )
 
     ########################################
     # Load Pretrained Embeddings
