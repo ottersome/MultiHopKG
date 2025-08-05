@@ -1,0 +1,6 @@
+pretrained_gtllm_path: "./models/gtllm/flagship.pt"
+rl_gamma: 0.9
+nav_start_emb_type: "relevant"
+num_rollout_steps: 3
+batch_size: 32
+batch_size_dev: 12
