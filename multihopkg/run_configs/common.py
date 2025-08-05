@@ -1,8 +1,9 @@
 import argparse
 import yaml
 import os
+import argparse
 
-def overload_parse_defaults_with_yaml(yaml_location:str, args: argparse.Namespace):
+def overload_parse_defaults_with_yaml(yaml_location:str, args: argparse.Namespace) -> argparse.Namespace:
     # check if the yaml file exists
     if not os.path.exists(yaml_location):
         print(f"Yaml file {yaml_location} does not exist, skipping yaml overload")
@@ -19,7 +20,7 @@ def overload_parse_defaults_with_yaml(yaml_location:str, args: argparse.Namespac
                 # Change the property not they key
                 setattr(args, k, v)
             else:
-                raise ValueError(f"Key {k} not found in args")
+                raise ValueError(f"Yaml config file {yaml_location} imposes parameter '{k}', however this parameter is not found in args")
     return args
 
 def recurse_til_leaf(d: dict, parent_key: str = "") -> dict:

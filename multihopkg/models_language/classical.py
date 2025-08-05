@@ -1,7 +1,7 @@
 import torch
 import pdb
 import math
-from typing import List, Optional
+from typing import Any, List, Optional
 import os
 
 import numpy as np
@@ -9,8 +9,7 @@ from torch import exp, nn
 from torch.nn import Embedding
 
 from multihopkg.logging import setup_logger
-from transformers import BartForConditionalGeneration, BartTokenizer, PreTrainedTokenizer
-
+from transformers import BartForConditionalGeneration, PreTrainedTokenizer
 
 class HunchBart(nn.Module):
     def __init__(
@@ -30,8 +29,15 @@ class HunchBart(nn.Module):
             nn.ReLU(),
             nn.Linear(self.bart_hidden_dim, self.bart_hidden_dim)
         )
-    
-    def forward(self, graph_embeddings: torch.Tensor, decoder_input_ids: Optional[torch.Tensor] = None, labels=None):
+
+    def forward(
+        self,
+        graph_embeddings: torch.Tensor,
+        decoder_input_ids: Optional[torch.Tensor] = None,
+        labels=None,
+        *args,
+        **kwargs
+    ):
         # Pass graph embeddings through custom encoder
         # Pass the outputs to BART decoder
         translated_embeddings = self.embedding_translator(graph_embeddings)
@@ -40,6 +46,8 @@ class HunchBart(nn.Module):
         outputs = self.bart(
             inputs_embeds=translated_embeddings,
             decoder_input_ids=decoder_input_ids, #For teacher forcing. 
+            *args,
+            **kwargs
         )
         return outputs
 
