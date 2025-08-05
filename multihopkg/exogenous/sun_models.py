@@ -6,7 +6,7 @@ from __future__ import print_function
 
 import logging
 from collections.abc import Mapping
-from typing import Any, Union
+from typing import Any, Iterator, Union
 
 import numpy as np
 
@@ -430,7 +430,16 @@ class KGEModel(nn.Module):
     'Training and Evaluation'
 
     @staticmethod
-    def train_step(model, optimizer, train_iterator, args):
+    def train_step(
+        model: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        train_iterator: Iterator,
+        cuda: bool,
+        negative_adversarial_sampling: bool,
+        adversarial_temperature: float,
+        uni_weight: bool,
+        regularization_coeff: float,
+    ):
         '''
         A single train step. Apply back-propation and return the loss
         '''
@@ -441,16 +450,16 @@ class KGEModel(nn.Module):
 
         positive_sample, negative_sample, subsampling_weight, mode = next(train_iterator)
 
-        if args.cuda:
+        if cuda:
             positive_sample = positive_sample.cuda()
             negative_sample = negative_sample.cuda()
             subsampling_weight = subsampling_weight.cuda()
 
         negative_score, negative_mse = model((positive_sample, negative_sample), mode=mode)
 
-        if args.negative_adversarial_sampling:
+        if negative_adversarial_sampling:
             #In self-adversarial sampling, we do not apply back-propagation on the sampling weight
-            negative_score = (F.softmax(negative_score * args.adversarial_temperature, dim = 1).detach() 
+            negative_score = (F.softmax(negative_score * adversarial_temperature, dim = 1).detach() 
                               * F.logsigmoid(-negative_score)).sum(dim = 1)
         else:
             negative_score = F.logsigmoid(-negative_score).mean(dim = 1)
@@ -459,7 +468,7 @@ class KGEModel(nn.Module):
 
         positive_score = F.logsigmoid(positive_score).squeeze(dim = 1)
 
-        if args.uni_weight:
+        if uni_weight:
             positive_sample_loss = - positive_score.mean()
             negative_sample_loss = - negative_score.mean()
         else:
@@ -474,9 +483,9 @@ class KGEModel(nn.Module):
             score_loss = positive_sample_loss + negative_sample_loss
             loss = score_loss
         
-        if args.regularization != 0.0:
+        if regularization_coeff != 0.0:
             #Use L3 regularization for ComplEx and DistMult
-            regularization = args.regularization * (
+            regularization = regularization_coeff * (
                 model.entity_embedding.norm(p = 3)**3 + 
                 model.relation_embedding.norm(p = 3).norm(p = 3)**3
             )
