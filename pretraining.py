@@ -5,7 +5,6 @@ from typing import Any, Callable, Dict, List, Tuple
 import time
 
 import debugpy
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -16,6 +15,7 @@ from transformers import (
     AutoTokenizer,  # type: ignore
 )
 from transformers.models.bart import BartTokenizer
+import wandb
 
 from multihopkg.datasets import GraphEmbeddingDataset
 from multihopkg.logging import setup_logger
@@ -31,6 +31,8 @@ from multihopkg.utils.data_structures import Triplet_Str
 traceback.install()
 
 CACHED_DATA_COLUMNS = ["enc_questions", "enc_answer", "triples_ints"]
+
+wandb_on = False
 
 
 def process_qa_dataset(
@@ -232,6 +234,8 @@ def train_loop(
                         cur_num_batches,
                         val_report,
                     ))
+                    if wandb_on:
+                        wandb.log(val_report)
 
                 cur_num_batches += 1
 
@@ -246,24 +250,14 @@ def train_loop(
                 optimizer.step()
                 loss_reports.append(loss.item())
 
+                if wandb_on:
+                    wandb.log({"loss_train": loss.item()})
+
                 table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1][-1]}")
                 progress.update_table(table_reports)
                 progress.update(task_batch, advance=1)
                 time.sleep(0.1)
             progress.update(task_epoch, advance=1)
-
-
-    # Loss reporting
-    _, ax = plt.subplots()
-    ax.plot(loss_reports, label="Training")
-    ax.set_xlabel("Batches")
-    ax.set_ylabel("Loss")
-    # Report validations
-    validation_x_axis = [r[0] for r in validation_reports]
-    validation_y_axis = [r[1] for r in validation_reports]
-    ax.plot(validation_x_axis, validation_y_axis, label="Validation")
-    plt.show()
-
 
     return model
 
@@ -275,6 +269,16 @@ def main():
         debugpy.listen(("0.0.0.0", 42023))
         debugpy.wait_for_client()
 
+    global wandb_on
+    if args.wandb_on:
+        timestamp = time.strftime("%m%d%Y_%H%M%S", time.localtime())
+        wandb.init(
+            project=f"{args.wandb_project}",
+            config=vars(args),
+            name=f"{args.wr_name}-{timestamp}",
+            notes=args.wr_notes
+        )
+    wandb_on = args.wandb_on
 
     ########################################
     # Process the NLP components

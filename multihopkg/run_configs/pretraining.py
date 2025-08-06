@@ -26,6 +26,12 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--batch_size", "-b", type=int, default=64, help="Batch size")
     ap.add_argument("--val_every_n_batches", type=int, default=50, help="How many batches to run validation on")
 
+    # -------------------- Logging Parameters --------------------
+    ap.add_argument("-W", "--wandb_on", action="store_true", help="Enable Weights & Biases experiment tracking")
+    ap.add_argument("--wandb_project", type=str, default="gtllm_pretraining",help="wandb: Project name to group runs")
+    ap.add_argument("--wr_name", type=str, help="wandb: Unique name for this run")
+    ap.add_argument("--wr_notes", type=str, help="wandb: Additional notes for this run")
+
     # -------------------- General Data Parameters --------------------
     ap.add_argument("--path_dataraw", type=str, default="./data/mquake/MQuAKE-CF.json")
     ap.add_argument("--path_cache_dir", type=str, default="./.cache/mquake/")
