@@ -25,6 +25,7 @@ from multihopkg.data_utils import load_native_index, translate_and_unroll_path
 from multihopkg.utils.data_structures import DataPartitions
 from multihopkg.utils.setup import set_seeds
 from multihopkg.utils.vis import CustomProgress
+from multihopkg.utils.schedulers import WarmupCosineScheduler
 from multihopkg.utils.data_structures import Triplet_Str
 
 # import nice traceback from rich
@@ -237,18 +238,13 @@ def train_loop(
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
 
-    # DEBUG: Will hard code this stuff for now and replace them later
-    gamma = 0.1
-    step_size = 30
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=step_size, gamma=gamma
-    )
+    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=1000, total_steps=10000, min_lr=1e-6)
 
     loss_reports = []
     validation_reports: List[Tuple[int, Any]] = []
     cur_num_batches = 0
 
-    with CustomProgress(column_names=["Train Loss", "Val  Loss"],table_max_rows=10) as progress:
+    with CustomProgress(column_names=["Train Loss", "Val  Loss", "lr_rate"],table_max_rows=10) as progress:
         task_epoch = progress.add_task("Epochs", total=epochs)
         for e in range(epochs):
             task_batch = progress.add_task("Batch", total=len(train_dataloader))
@@ -295,7 +291,7 @@ def train_loop(
                 grad = train_dataset.id2ent.weight.grad
                 logger.debug(f"Repoerting on gradient of embedding: {grad}")
 
-                table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1][-1]}")
+                table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1][-1]}", f"{scheduler.get_lr()}")
                 progress.update_table(table_reports)
                 progress.update(task_batch, advance=1)
                 time.sleep(0.1)
