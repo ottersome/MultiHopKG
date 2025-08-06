@@ -64,7 +64,7 @@ def process_qa_dataset(
         answer = sample["answer"]
 
         encoded_question = question_tokenizer.encode(a_question)
-        encoded_answer = answer_tokenizer.encode(answer)
+        encoded_answer = answer_tokenizer.encode(answer, add_special_tokens=False)
 
         rows.append(
             [
