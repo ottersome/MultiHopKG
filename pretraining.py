@@ -236,7 +236,13 @@ def train_loop(
     # Optimization parameters
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
-    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+
+    # DEBUG: Will hard code this stuff for now and replace them later
+    gamma = 0.1
+    step_size = 30
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=step_size, gamma=gamma
+    )
 
     loss_reports = []
     validation_reports: List[Tuple[int, Any]] = []
@@ -277,6 +283,7 @@ def train_loop(
                 loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
                 loss.backward()
                 optimizer.step()
+                scheduler.step()
                 loss_reports.append(loss.item())
 
                 if wandb_on:
