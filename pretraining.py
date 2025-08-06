@@ -145,16 +145,20 @@ def load_dictionaries(path_entities_dict: str, path_relations_dict):
 def collate_fn(batch, padding_value: int):
     batch_deconstructed = zip(*batch)
     qna: List[torch.Tensor] = list(next(batch_deconstructed))
+    ans_masks: List[torch.Tensor] = list(next(batch_deconstructed))
     paths: List[torch.Tensor] = list(next(batch_deconstructed))
 
     qna_padded = torch.nn.utils.rnn.pad_sequence(
         qna, batch_first=True, padding_value=padding_value
     )
+    ans_masks_padded = torch.nn.utils.rnn.pad_sequence(
+        ans_masks, batch_first=True, padding_value=0
+    )
     paths_padded = torch.nn.utils.rnn.pad_sequence(
         paths, batch_first=True, padding_value=padding_value
     )
 
-    new_batch = (qna_padded, paths_padded)
+    new_batch = (qna_padded, ans_masks_padded, paths_padded)
 
     return new_batch
 
@@ -177,7 +181,7 @@ class GraphEmbeddingDataset(Dataset):
         self.device = device
 
         # Get questions and answers a single string but separated by some token.
-        self.ques_n_ans = self._merge_questions_and_answers(
+        self.ques_n_ans, self.answer_masks = self._merge_questions_and_answers(
             dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[0]].tolist(),
             dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[1]].tolist(),
             self.separator_token_id,
@@ -188,25 +192,31 @@ class GraphEmbeddingDataset(Dataset):
         self.id2rel = id2rel
         self.embeddings_dim = id2ent.embedding_dim
 
-    def _merge_questions_and_answers(self, questions: List[List[int]], answers: List[List[int]], sep_token: int) -> List[List[int]]:
+    def _merge_questions_and_answers(
+        self, questions: List[List[int]], answers: List[List[int]], sep_token: int
+    ) -> Tuple[List[List[int]], List[List[int]]]:
         """
         Merges questions and answers into a single string, separated by a token.
         """
         assert len(questions) == len(answers), "Expected questions and answers to have the same length"
         merged_questions_answers = []
+        answer_masks = []
 
         for question, answer in zip(questions, answers):
             qna = question + [sep_token] + answer
+            mask = [0] * (len(question) + 1) + [1] * len(answer)
             merged_questions_answers.append(qna)
+            answer_masks.append(mask)
 
-        return merged_questions_answers
+        return merged_questions_answers, answer_masks
 
     def __len__(self):
         return len(self.dataset)
 
-    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # All of these are ids
         qna_tokens = torch.tensor(self.ques_n_ans[idx], dtype=torch.long)
+        ans_masks = torch.tensor(self.answer_masks[idx], dtype=torch.long)
         path = self.path[idx]
 
         entities_ids = torch.tensor(path[::2], dtype=torch.long)
@@ -223,7 +233,7 @@ class GraphEmbeddingDataset(Dataset):
 
         # Dump the question and answer througth the normal embedding
 
-        return qna_tokens.to(self.device), path_embedding.to(self.device)
+        return qna_tokens.to(self.device), ans_masks.to(self.device), path_embedding.to(self.device)
 
 def collate_wrapper(pad_value:int) -> Callable:
     def _collate_fn(batch):
@@ -237,17 +247,29 @@ def validation_loop(
     verbose: bool,
 ) -> List[float]:
     # TODO: Implement some other more sophisticated validation metrics
-    loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
+    pad_token_id = tokenizer.pad_token_id
+    assert isinstance(pad_token_id, int), "Expected the pad token to be an integer. Instead we get {pad_token_id}"
+    loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
     validation_metrics = [] 
     model.eval()
     with torch.no_grad():
         for batch_idx, batch in enumerate(val_dataloader):
             # Turn of all backprop
-            qna_tokens, graph_embeddings = batch
+            qna_tokens, ans_masks, graph_embeddings = batch
+
+            padding_mask = qna_tokens == tokenizer.pad_token_id
+            truth_answers = qna_tokens.clone()
+            truth_answers[ans_masks == 0] = tokenizer.pad_token_id  # For the loss function.
+            truth_answers = truth_answers[:, 1:].contiguous()
+
             # Compute the loss
-            answers_inf_softmax = model(graph_embeddings, qna_tokens)
+            answers_inf_softmax = model(
+                graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
+            )
             _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
-            loss = loss_fn(logits.view(-1, logits.shape[-1]), qna_tokens.view(-1)).mean()
+
+            # Loss Calculation
+            loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
 
             validation_metrics.append(loss.item())
             if verbose and batch_idx == 0:
@@ -281,11 +303,14 @@ def train_loop(
     ########################################
     # Data Loading
     ########################################
+    pad_token_id = word_tokenizer.pad_token_id
+    assert isinstance(pad_token_id, int), "Expected the pad token to be an integer. Instead we get {pad_token_id}"
     train_dataset = GraphEmbeddingDataset(dataset_partitions.train, entity_embeddings, relation_embeddings, word_tokenizer, device)
-    train_dataloader = DataLoader(train_dataset, batch_size, collate_fn=collate_wrapper(0))
+    train_dataloader = DataLoader(train_dataset, batch_size, collate_fn=collate_wrapper(pad_token_id))
     # Validation
     val_dataset = GraphEmbeddingDataset(dataset_partitions.validation, entity_embeddings, relation_embeddings, word_tokenizer, device)
-    val_dataloader = DataLoader(val_dataset, batch_size, collate_fn=collate_wrapper(0))
+    val_dataloader = DataLoader(val_dataset, batch_size, collate_fn=collate_wrapper(pad_token_id))
+
     # DEBUG:: to check if the embeddings are being changed.
     ent_emb_backup = entity_embeddings.weight.clone()
 
@@ -297,7 +322,7 @@ def train_loop(
 
     # Optimization parameters
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
+    loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
     # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     loss_reports = []
@@ -320,12 +345,20 @@ def train_loop(
                 num_batches += 1
 
                 # Actual Training
-                qna_tokens, graph_embeddings = batch
+                qna_tokens, ans_masks, graph_embeddings = batch
+                truth_answers = qna_tokens.clone()
+                truth_answers[ans_masks == 0] = word_tokenizer.pad_token_id  # For the loss function.
+                truth_answers = truth_answers[:, 1:].contiguous()
                 # Compute the loss
                 optimizer.zero_grad()
-                answers_inf_softmax = model(graph_embeddings, qna_tokens)
+                # TODO: Watch out for offset*till
+                padding_mask = qna_tokens != word_tokenizer.pad_token_id
+                answers_inf_softmax = model(
+                    graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
+                )
                 _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
-                loss = loss_fn(logits.view(-1, logits.shape[-1]), qna_tokens.view(-1)).mean()
+
+                loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
                 loss.backward()
                 optimizer.step()
                 loss_reports.append(loss.item())
