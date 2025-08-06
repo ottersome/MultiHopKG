@@ -467,7 +467,7 @@ class GraphEmbeddingDataset(Dataset):
         self.device = device
 
         # Get questions and answers a single string but separated by some token.
-        self.ques_n_ans = self._merge_questions_and_answers(
+        self.ques_n_ans, self.answer_masks = self._merge_questions_and_answers(
             dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[0]].tolist(),
             dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[1]].tolist(),
             self.separator_token_id,
@@ -478,25 +478,31 @@ class GraphEmbeddingDataset(Dataset):
         self.id2rel = id2rel
         self.embeddings_dim = id2ent.embedding_dim
 
-    def _merge_questions_and_answers(self, questions: List[List[int]], answers: List[List[int]], sep_token: int) -> List[List[int]]:
+    def _merge_questions_and_answers(
+        self, questions: List[List[int]], answers: List[List[int]], sep_token: int
+    ) -> Tuple[List[List[int]], List[List[int]]]:
         """
         Merges questions and answers into a single string, separated by a token.
         """
         assert len(questions) == len(answers), "Expected questions and answers to have the same length"
         merged_questions_answers = []
+        answer_masks = []
 
         for question, answer in zip(questions, answers):
             qna = question + [sep_token] + answer
+            mask = [0] * (len(question) + 1) + [1] * len(answer)
             merged_questions_answers.append(qna)
+            answer_masks.append(mask)
 
-        return merged_questions_answers
+        return merged_questions_answers, answer_masks
 
     def __len__(self):
         return len(self.dataset)
 
-    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # All of these are ids
         qna_tokens = torch.tensor(self.ques_n_ans[idx], dtype=torch.long)
+        ans_masks = torch.tensor(self.answer_masks[idx], dtype=torch.long)
         path = self.path[idx]
 
         entities_ids = torch.tensor(path[::2], dtype=torch.long)
@@ -513,4 +519,4 @@ class GraphEmbeddingDataset(Dataset):
 
         # Dump the question and answer througth the normal embedding
 
-        return qna_tokens.to(self.device), path_embedding.to(self.device)
+        return qna_tokens.to(self.device), ans_masks.to(self.device), path_embedding.to(self.device)

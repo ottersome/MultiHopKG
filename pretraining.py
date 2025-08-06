@@ -126,16 +126,20 @@ def check_cache_exists(cache_location: str):
 def collate_fn(batch, padding_value: int):
     batch_deconstructed = zip(*batch)
     qna: List[torch.Tensor] = list(next(batch_deconstructed))
+    ans_masks: List[torch.Tensor] = list(next(batch_deconstructed))
     paths: List[torch.Tensor] = list(next(batch_deconstructed))
 
     qna_padded = torch.nn.utils.rnn.pad_sequence(
         qna, batch_first=True, padding_value=padding_value
     )
+    ans_masks_padded = torch.nn.utils.rnn.pad_sequence(
+        ans_masks, batch_first=True, padding_value=0
+    )
     paths_padded = torch.nn.utils.rnn.pad_sequence(
         paths, batch_first=True, padding_value=padding_value
     )
 
-    new_batch = (qna_padded, paths_padded)
+    new_batch = (qna_padded, ans_masks_padded, paths_padded)
 
     return new_batch
 
@@ -151,7 +155,9 @@ def validation_loop(
     verbose: bool,
 ) -> Dict[str, float]:
     # TODO: Implement some other more sophisticated validation metrics
-    loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
+    pad_token_id = tokenizer.pad_token_id
+    assert isinstance(pad_token_id, int), "Expected the pad token to be an integer. Instead we get {pad_token_id}"
+    loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
     validation_metrics: Dict[str, List[float]] = {
         "loss" : [],
         "cf-loss" : []
@@ -160,11 +166,21 @@ def validation_loop(
     with torch.no_grad():
         for batch_idx, batch in enumerate(val_dataloader):
             # Turn of all backprop
-            qna_tokens, graph_embeddings = batch
+            qna_tokens, ans_masks, graph_embeddings = batch
+
+            padding_mask = qna_tokens == tokenizer.pad_token_id
+            truth_answers = qna_tokens.clone()
+            truth_answers[ans_masks == 0] = tokenizer.pad_token_id  # For the loss function.
+            truth_answers = truth_answers[:, 1:].contiguous()
+
             # Compute the loss
-            answers_inf_softmax = model(graph_embeddings, qna_tokens)
+            answers_inf_softmax = model(
+                graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
+            )
             _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
-            loss = loss_fn(logits.view(-1, logits.shape[-1]), qna_tokens.view(-1)).mean()
+
+            # Loss Calculation
+            loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
 
             validation_metrics["loss"].append(loss.item())
             if verbose and batch_idx == 0:
@@ -201,11 +217,14 @@ def train_loop(
     ########################################
     # Data Loading
     ########################################
+    pad_token_id = word_tokenizer.pad_token_id
+    assert isinstance(pad_token_id, int), "Expected the pad token to be an integer. Instead we get {pad_token_id}"
     train_dataset = GraphEmbeddingDataset(dataset_partitions.train, entity_embeddings, relation_embeddings, word_tokenizer, device)
-    train_dataloader = DataLoader(train_dataset, batch_size, collate_fn=collate_wrapper(0))
+    train_dataloader = DataLoader(train_dataset, batch_size, collate_fn=collate_wrapper(pad_token_id))
     # Validation
     val_dataset = GraphEmbeddingDataset(dataset_partitions.validation, entity_embeddings, relation_embeddings, word_tokenizer, device)
-    val_dataloader = DataLoader(val_dataset, batch_size, collate_fn=collate_wrapper(0))
+    val_dataloader = DataLoader(val_dataset, batch_size, collate_fn=collate_wrapper(pad_token_id))
+
     # DEBUG:: to check if the embeddings are being changed.
     ent_emb_backup = entity_embeddings.weight.clone()
 
@@ -216,7 +235,7 @@ def train_loop(
 
     # Optimization parameters
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
+    loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
     # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     loss_reports = []
@@ -242,12 +261,20 @@ def train_loop(
                 cur_num_batches += 1
 
                 # Actual Training
-                qna_tokens, graph_embeddings = batch
+                qna_tokens, ans_masks, graph_embeddings = batch
+                truth_answers = qna_tokens.clone()
+                truth_answers[ans_masks == 0] = word_tokenizer.pad_token_id  # For the loss function.
+                truth_answers = truth_answers[:, 1:].contiguous()
                 # Compute the loss
                 optimizer.zero_grad()
-                answers_inf_softmax = model(graph_embeddings, qna_tokens)
+                # TODO: Watch out for offset*till
+                padding_mask = qna_tokens != word_tokenizer.pad_token_id
+                answers_inf_softmax = model(
+                    graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
+                )
                 _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
-                loss = loss_fn(logits.view(-1, logits.shape[-1]), qna_tokens.view(-1)).mean()
+
+                loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
                 loss.backward()
                 optimizer.step()
                 loss_reports.append(loss.item())
