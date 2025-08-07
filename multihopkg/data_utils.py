@@ -26,6 +26,7 @@ from torch.nn import Embedding as nn_Embedding
 from transformers import PreTrainedTokenizer, AutoTokenizer
 from sklearn.model_selection import train_test_split
 
+from multihopkg.utils.data_structures import Triplet_Str
 from multihopkg.utils.setup import get_git_root
 from multihopkg.itl_typing import Triple
 from multihopkg.itl_typing import DFSplit
@@ -622,6 +623,29 @@ def extract_literals(column: Union[str, pd.Series], flatten: bool = False) -> Un
     # Flatten the lists if the flatten argument is True
     if flatten: column = [item for sublist in column for item in sublist]
     return column
+
+def translate_and_unroll_path(path: List[Triplet_Str], ent2id: Dict[str, int], rel2id: Dict[str,int]) -> List[int]:
+
+    new_path: List[int] = []
+    for head,rel,tail in path:
+        try:
+            if len(new_path) == 0:
+                new_path.extend([
+                    ent2id[head],
+                    rel2id[rel],
+                    ent2id[tail]
+                ])
+            else: 
+                assert ent2id[head] == new_path[-1], \
+                    "We assumed that steps in paths will share head and tail in intermediate paths. Assumption broken"
+                new_path.extend([
+                    rel2id[rel],
+                    ent2id[tail],
+                ])
+        except KeyError:
+            return []
+
+    return new_path
 
 def process_and_cache_triviaqa_data(
     raw_QAData_path: str,
