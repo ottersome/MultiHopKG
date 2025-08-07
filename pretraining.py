@@ -206,6 +206,8 @@ def train_loop(
     # Validation
     val_dataset = GraphEmbeddingDataset(dataset_partitions.validation, entity_embeddings, relation_embeddings, word_tokenizer, device)
     val_dataloader = DataLoader(val_dataset, batch_size, collate_fn=collate_wrapper(0))
+    # DEBUG:: to check if the embeddings are being changed.
+    ent_emb_backup = entity_embeddings.weight.clone()
 
     train_ds_size = len(train_dataset)
     logger.info(f"We are training with a dataset of size: {train_ds_size}")
@@ -252,6 +254,12 @@ def train_loop(
 
                 if wandb_on:
                     wandb.log({"loss_train": loss.item()})
+
+                # Check for changes
+                change_in_embeddings = torch.dist(ent_emb_backup, train_dataset.id2ent.weight).sum()
+                logger.debug(f"Difference in embedding sizes: {change_in_embeddings}")
+                grad = train_dataset.id2ent.weight.grad
+                logger.debug(f"Repoerting on gradient of embedding: {grad}")
 
                 table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1][-1]}")
                 progress.update_table(table_reports)
