@@ -1,7 +1,6 @@
 import json
 import os
 import random
-from math import ceil
 from typing import Any, Callable, Dict, List, Tuple
 import time
 
@@ -282,18 +281,32 @@ def validation_loop(
 
             # Loss Calculation
             loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
-            n_loss = loss_fn(n_logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
+            n_loss = loss_fn(n_logits.view(-1, n_logits.shape[-1]), truth_answers.view(-1)).mean()
 
             validation_metrics["loss"].append(loss.item())
-            validation_metrics["cf-loss"].append(loss.item()/n_loss.item())
+            validation_metrics["cf-loss"].append(n_loss.item())
             if verbose and batch_idx == 0:
                 # Take logits and covert them into idxs:
                 qna_strs = tokenizer.batch_decode(qna_tokens)
                 inference_ids = logits.argmax(dim=-1)
-                inference_strs = tokenizer.batch_decode(inference_ids)
-                logger.debug(f"For this batch ({batch_idx}) of validtion. We end up with the metrics\n")
-                for q,i in zip(qna_strs, inference_strs):
-                    logger.debug(f"\n\t- Q: {q}\n\t- I: {i}")
+                ninference_ids = n_logits.argmax(dim=-1)
+                inference_strs = [
+                    tokenizer.decode(elem[ans_masks[idx, 1:] == 1])
+                    for idx,elem in enumerate(inference_ids)
+                ]
+                ninference_strs = [
+                    tokenizer.decode(elem[ans_masks[idx, 1:] == 1])
+                    for idx,elem in enumerate(ninference_ids)
+                ]
+                true_strs = [
+                    tokenizer.decode(elem[ans_masks[idx, 1:] == 1])
+                    for idx,elem in enumerate(truth_answers)
+                ]
+                # inference_strs = tokenizer.batch_decode(inference_ids)
+                logger.debug(f"For this batch ({batch_idx}) of validation. We end up with the metrics\n")
+                for q, n, i,a in zip(qna_strs, ninference_strs, inference_strs, true_strs):
+                    # logger.debug(f"\n\t- Q: {q}\n\t- I: {i}")
+                    logger.debug(f"\n\t- Q: {q}\n\t - A:{a}\n\t - I: {i}\n\t - F: {n}\n")
                 logger.debug(f"CounterFactual ration {loss/n_loss}")
                 logger.debug("----------------------------------------\n\n")
     model.train()
@@ -336,8 +349,7 @@ def train_loop(
     train_ds_size = len(train_dataset)
     logger.info(f"We are training with a dataset of size: {train_ds_size}")
     assert train_dataset is not None, "train_data empty in DataPartitions"
-    num_batches = ceil(train_ds_size / batch_size)
-    logger.info(f"With a batch size of {batch_size} this will yield {num_batches} batches")
+    logger.info(f"With a batch size of {batch_size} this will yield {len(train_dataloader)} batches")
 
     # Optimization parameters
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -349,7 +361,7 @@ def train_loop(
 
     loss_reports = []
     validation_reports: List[Tuple[int, Any]] = []
-    num_batches = 0
+    cur_num_batches = 0
 
     with CustomProgress(column_names=["Train Loss", "Val  Loss", "lr_rate"],table_max_rows=10) as progress:
         task_epoch = progress.add_task("Epochs", total=epochs)
@@ -358,13 +370,13 @@ def train_loop(
             for idx_batch,batch in enumerate(train_dataloader):
 
                 # Validation
-                if num_batches % val_every_n_batches == 0:
+                if cur_num_batches % val_every_n_batches == 0:
                     validation_reports.append((
-                        num_batches,
+                        cur_num_batches,
                         validation_loop(model, val_dataloader, word_tokenizer, verbose),
                     ))
 
-                num_batches += 1
+                cur_num_batches += 1
 
                 # Actual Training
                 qna_tokens, ans_masks, graph_embeddings = batch
