@@ -189,18 +189,32 @@ def validation_loop(
 
             # Loss Calculation
             loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
-            n_loss = loss_fn(n_logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
+            n_loss = loss_fn(n_logits.view(-1, n_logits.shape[-1]), truth_answers.view(-1)).mean()
 
             validation_metrics["loss"].append(loss.item())
-            validation_metrics["cf-loss"].append(loss.item()/n_loss.item())
+            validation_metrics["cf-loss"].append(n_loss.item())
             if verbose and batch_idx == 0:
                 # Take logits and covert them into idxs:
                 qna_strs = tokenizer.batch_decode(qna_tokens)
                 inference_ids = logits.argmax(dim=-1)
-                inference_strs = tokenizer.batch_decode(inference_ids)
-                logger.debug(f"For this batch ({batch_idx}) of validtion. We end up with the metrics\n")
-                for q,i in zip(qna_strs, inference_strs):
-                    logger.debug(f"\n\t- Q: {q}\n\t- I: {i}")
+                ninference_ids = n_logits.argmax(dim=-1)
+                inference_strs = [
+                    tokenizer.decode(elem[ans_masks[idx, 1:] == 1])
+                    for idx,elem in enumerate(inference_ids)
+                ]
+                ninference_strs = [
+                    tokenizer.decode(elem[ans_masks[idx, 1:] == 1])
+                    for idx,elem in enumerate(ninference_ids)
+                ]
+                true_strs = [
+                    tokenizer.decode(elem[ans_masks[idx, 1:] == 1])
+                    for idx,elem in enumerate(truth_answers)
+                ]
+                # inference_strs = tokenizer.batch_decode(inference_ids)
+                logger.debug(f"For this batch ({batch_idx}) of validation. We end up with the metrics\n")
+                for q, n, i,a in zip(qna_strs, ninference_strs, inference_strs, true_strs):
+                    # logger.debug(f"\n\t- Q: {q}\n\t- I: {i}")
+                    logger.debug(f"\n\t- Q: {q}\n\t - A:{a}\n\t - I: {i}\n\t - F: {n}\n")
                 logger.debug(f"CounterFactual ration {loss/n_loss}")
                 logger.debug("----------------------------------------\n\n")
     model.train()
