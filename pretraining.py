@@ -1,19 +1,15 @@
-from collections import deque
 import json
 import os
 import random
-from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Tuple
 import time
 
 import debugpy
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from rich.progress import Progress
 import torch
 from rich import traceback
-from rich.console import ConsoleRenderable, Group, RichCast
-from rich.table import Table
 from torch import nn
 from torch.utils.data import DataLoader
 from transformers import (
@@ -28,6 +24,7 @@ from multihopkg.run_configs.pretraining import get_args
 from multihopkg.data_utils import load_native_index, translate_and_unroll_path
 from multihopkg.utils.data_structures import DataPartitions
 from multihopkg.utils.setup import set_seeds
+from multihopkg.utils.vis import CustomProgress
 from multihopkg.utils.data_structures import Triplet_Str
 
 # import nice traceback from rich
@@ -145,7 +142,6 @@ def collate_wrapper(pad_value:int) -> Callable:
         return collate_fn(batch, pad_value)
     return _collate_fn
 
-
 def validation_loop(
     model: nn.Module,
     val_dataloader: DataLoader,
@@ -174,44 +170,16 @@ def validation_loop(
                 qna_strs = tokenizer.batch_decode(qna_tokens)
                 inference_ids = logits.argmax(dim=-1)
                 inference_strs = tokenizer.batch_decode(inference_ids)
-                logger.debug(
-                    "----------------------------------------\n"
-                    "For this batch ({batch_idx}) of validtion. We end up with the metrics\n"
-                        f"\033[1;33m(Truth)\033[0m qna_tokens: \n\t{qna_strs}\n"
-                        f"\033[1;32m(Inference)\033[0m answer_: \n\t{inference_strs}\n"
-                    "----------------------------------------\n\n"
-                )
+                logger.debug(f"For this batch ({batch_idx}) of validtion. We end up with the metrics\n")
+                for q,i in zip(qna_strs, inference_strs):
+                    logger.debug(f"\n\t- Q: {q}\n\t- I: {i}")
+                logger.debug("----------------------------------------\n\n")
     model.train()
     _validation_metrics = {}
     for k,v in  validation_metrics.items():
         _validation_metrics[k] = torch.mean(torch.tensor(v)).item() # eww
     return _validation_metrics
     
-
-class CustomProgress(Progress):
-    def __init__(self, column_names: Sequence[str], table_max_rows: int, *args, **kwargs) -> None:
-        self.results: Deque[Sequence[str]] = deque(maxlen=table_max_rows)
-        self.column_names = column_names
-        self.update_table()
-        super().__init__(*args, **kwargs)
-
-    def update_table(self, result: Optional[Tuple[str,...]] = None):
-        if result is not None:
-            self.results.append(result)
-
-        table = Table()
-        for cn in self.column_names:
-            table.add_column(cn)
-
-        for row_cells in self.results:
-            table.add_row(*row_cells)
-
-        self.table = table
-
-    def get_renderable(self) -> Union[ConsoleRenderable, RichCast, str]:
-        renderable = Group(self.table, *self.get_renderables())
-        return renderable
-
 
 def train_loop(
     dataset_partitions: DataPartitions,
@@ -377,7 +345,7 @@ def main():
         args.epochs,
         args.lr,
         args.val_every_n_batches,
-        args.verbose
+        args.verbose,
     )
 
     logger.info("Training Finsihed")
