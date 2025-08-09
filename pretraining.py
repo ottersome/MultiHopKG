@@ -372,10 +372,13 @@ def train_loop(
 
                 # Validation
                 if cur_num_batches % val_every_n_batches == 0:
+                    val_report = validation_loop(model, val_dataloader, word_tokenizer, verbose)
                     validation_reports.append((
                         cur_num_batches,
-                        validation_loop(model, val_dataloader, word_tokenizer, verbose),
+                        val_report,
                     ))
+                    if wandb_on:
+                        wandb.log(val_report)
 
                 cur_num_batches += 1
 
@@ -480,12 +483,15 @@ def main():
     ########################################
     # Load Pretrained Embeddings
     ########################################
+    embedds_dir = args.path_graph_emb_data
     entity_embeddings = nn.Embedding.from_pretrained(
-        torch.from_numpy(np.load(args.path_entities_embeddings))
+        torch.from_numpy(np.load(os.path.join(embedds_dir, "entity_embedding.npy")))
     )
     relation_embeddings = nn.Embedding.from_pretrained(
-        torch.from_numpy(np.load(args.path_relations_embeddings))
+        torch.from_numpy(np.load(os.path.join(embedds_dir, "relation_embedding.npy")))
     )
+    with open(os.path.join(embedds_dir, "config.json"), 'r') as f:
+        graph_embed_training_metadata = json.load(f)
 
     # Model Hyperparameters
     assert entity_embeddings.weight.shape[-1] == relation_embeddings.weight.shape[-1], "Relation and Embedding Dimensions are different. Assumption broken. Exiting"
@@ -535,6 +541,8 @@ def main():
         "path_mquake_data": args.path_mquake_data,
         "path_graph_emb_data": args.path_graph_emb_data,
         "path_pretraining_cache": args.path_cache_dir,
+        # Embedding Training Metaparam
+        "embedding_training_metaparam": graph_embed_training_metadata,
     }
     torch.save(save_info, model_path)
 
