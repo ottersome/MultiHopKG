@@ -354,8 +354,10 @@ def main():
     ########################################
     # Load Embedding Data
     ########################################
-    id2ent, ent2id = load_native_index(args.path_entities_dict)
-    id2rel, rel2id = load_native_index(args.path_relations_dict)
+    path_entities_dict = os.path.join(args.path_mquake_data, "entities.dict")
+    path_relations_dict = os.path.join(args.path_mquake_data, "relations.dict")
+    id2ent, ent2id = load_native_index(path_entities_dict)
+    id2rel, rel2id = load_native_index(path_relations_dict)
     logger.info(f"Loaded a total of :\n\t-{len(id2ent)} entities\n\t-{len(id2rel)} relations")
 
     ########################################
@@ -367,8 +369,9 @@ def main():
         dataset_partitions = load_from_cache(args.path_cache_dir)
     else:
         logger.info("Either cache does not exist or is being force to be recomuted... ")
+        mquake_raw_path = os.path.join(args.path_mquake_data, "MQuAKE-CF.json")
         dataset_partitions = process_qa_dataset(
-            args.path_dataraw,
+            mquake_raw_path,
             args.path_cache_dir,
             args.tvt_split,
             word_tokenizer,
