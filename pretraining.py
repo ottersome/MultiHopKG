@@ -315,8 +315,7 @@ def main():
 
     # Import the HunchBart Parameter
     hunch_llm = HunchBart(
-        pretrained_bart_model=args.hunchbart_base_llm_model,
-        answer_tokenizer=args.hunchbart_base_llm_tokenizer,
+        pretrained_bart_model_name=args.hunchbart_base_llm_model,
         graph_embedding_dim=embeddings_size,
     ).to(args.device)
     
