@@ -40,8 +40,7 @@ def process_qa_dataset(
     raw_location: str,
     cache_location: str,
     tvt_split: list[float],
-    question_tokenizer: Any,
-    answer_tokenizer: Any,
+    tokenizer: Any,
     existing_entities: Dict[str, int],
     existing_relations: Dict[str, int]
 ) -> DataPartitions:
@@ -63,8 +62,9 @@ def process_qa_dataset(
         a_question = random.choice(sample["questions"])
         answer = sample["answer"]
 
-        encoded_question = question_tokenizer.encode(a_question)
-        encoded_answer = answer_tokenizer.encode(answer, add_special_tokens=False)
+        # TODO: Encode the Questions
+        encoded_question = tokenizer.encode(a_question)
+        encoded_answer = tokenizer.encode(answer, add_special_tokens=False)
 
         rows.append(
             [
@@ -349,8 +349,7 @@ def main():
     ########################################
     # Process the NLP components
     ########################################
-    question_tokenizer = AutoTokenizer.from_pretrained(args.question_tokenizer_name)
-    answer_tokenizer = AutoTokenizer.from_pretrained(args.answer_tokenizer_name)
+    word_tokenizer = AutoTokenizer.from_pretrained(args.hunchbart_base_llm_tokenizer)
 
     ########################################
     # Load Embedding Data
@@ -372,8 +371,7 @@ def main():
             args.path_dataraw,
             args.path_cache_dir,
             args.tvt_split,
-            question_tokenizer,
-            answer_tokenizer,
+            word_tokenizer,
             ent2id,
             rel2id,
         )
@@ -410,7 +408,7 @@ def main():
     logger.info("Entering training loop")
     trained_model = train_loop(
         dataset_partitions,
-        answer_tokenizer,
+        word_tokenizer,
         hunch_llm,
         entity_embeddings,
         relation_embeddings,
