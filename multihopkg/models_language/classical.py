@@ -1,7 +1,7 @@
 import torch
 import pdb
 import math
-from typing import Any, List, Optional
+from typing import Any, List, Mapping, Optional
 import os
 
 import numpy as np
@@ -56,6 +56,23 @@ class HunchBart(nn.Module):
         for param in self.bart.parameters():
             param.requires_grad = False
 
+    @classmethod
+    def from_pretrained(
+        cls,
+        hunchbart_base_llm_model_name: str,
+        state_dict: Mapping[str, Any],
+        graph_embedding_dim: int, # Graph Embedding Dimension
+    ) -> 'HunchBart':
+        """
+        Create a HunchBart from pretrained embeddings.
+        """
+        model = cls(
+            pretrained_bart_model_name=hunchbart_base_llm_model_name,
+            graph_embedding_dim=graph_embedding_dim,
+        )
+        model.load_state_dict(state_dict)
+
+        return model
 
 class ExpensiveHunchLLM(torch.nn.Module):
     """
