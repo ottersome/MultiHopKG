@@ -14,14 +14,12 @@ from transformers import BartForConditionalGeneration, PreTrainedTokenizer
 class HunchBart(nn.Module):
     def __init__(
         self,
-        pretrained_bart_model: str,
-        answer_tokenizer: PreTrainedTokenizer,
+        pretrained_bart_model_name: str,
         graph_embedding_dim: int,
     ):
         super(HunchBart, self).__init__()
-        self.bart = BartForConditionalGeneration.from_pretrained(pretrained_bart_model)
+        self.bart = BartForConditionalGeneration.from_pretrained(pretrained_bart_model_name)
         self.bart_hidden_dim = self.bart.config.d_model
-        self.pretrained_bart_tokenizer = answer_tokenizer
 
         self.embedding_translator = nn.Sequential(
             nn.Linear(graph_embedding_dim, self.bart_hidden_dim),

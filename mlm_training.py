@@ -1286,8 +1286,7 @@ def main():
 
     # We prepare our custom encoder for Bart Here
     hunch_llm = HunchBart(
-        pretrained_bart_model=args.pretrained_llm_for_hunch,
-        answer_tokenizer=answer_tokenizer,
+        pretrained_bart_model_name=args.pretrained_llm_for_hunch,
         # We convert the graph embeddings to state embeddings obeying current state dimensions
         # graph_embedding_dim=args.llm_model_dim, 
         graph_embedding_dim=2*dim_entity + dim_entity, # ! NOTE: Changed to match the current state which is the concatenation of the current position + projection of the textual embedding

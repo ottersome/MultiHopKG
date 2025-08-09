@@ -496,8 +496,7 @@ def main():
 
     # Import the HunchBart Parameter
     hunch_llm = HunchBart(
-        pretrained_bart_model=args.hunch_answer_model,
-        answer_tokenizer=args.answer_tokenizer_name,
+        pretrained_bart_model_name=args.hunch_answer_model,
         graph_embedding_dim=embeddings_size,
     ).to(args.device)
     
