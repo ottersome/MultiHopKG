@@ -62,6 +62,7 @@ def get_args() -> argparse.Namespace:
 
     # GTLLm Parameters
     ap.add_argument('--pretrained_gtllm_path', default="models/gtllm/flagship.pt", type=str)
+    ap.add_argument('--frozen_llm_weights', action="store_true", default="If true, it will freeze HunchBart llm weights")
     
     # Navigation Agent Settings
     ap.add_argument('--nav_start_emb_type', type=str, default="centroid", help="Initial navigation point: 'centroid', 'random', or 'relevant'")

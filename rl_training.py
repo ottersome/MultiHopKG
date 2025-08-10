@@ -308,23 +308,27 @@ def batch_loop(
     nav_agent.zero_grad()
     device = next(nav_agent.parameters()).device
 
+    print(f"Columns here are {mini_batch.columns}")
     # Deconstruct the batch
-    questions = mini_batch["Question"].tolist()
-    answers = mini_batch["Answer"].tolist()
-    query_ent = mini_batch["Query-Entity"].tolist()
-    query_rel = mini_batch["Query-Relation"].tolist()
-    answer_id = mini_batch["Answer-Entity"].tolist()
-    # question_embeddings = env.get_llm_embeddings(questions, device)
-    if env.use_kge_question_embedding:
-        question_embeddings = env.get_kge_question_embedding(
-            query_ent, query_rel, device
-        )  # Shape: (batch, 2*embedding_dim)
-    else:
-        question_embeddings = env.get_llm_embeddings(questions, device)
+    enc_questions = mini_batch["enc_questions"].tolist()
+    enc_answers = mini_batch["enc_answers"].tolist()
+    path = mini_batch["triples_ints"].tolist()
+    enc_questions = mini_batch["enc_questions"].tolist()
 
-    answer_ids_padded_tensor = (
-        collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
-    )
+    # Lets not use question embeddings
+    # if env.use_kge_question_embedding:
+    #     question_embeddings = env.get_kge_question_embedding(
+    #         query_ent, query_rel, device
+    #     )  # Shape: (batch, 2*embedding_dim)
+    # else:
+    #     question_embeddings = env.get_llm_embeddings(questions, device)
+
+    # NOTE: Question will have to be formatted into the decoder for now
+    # That how we pretrained gtllm anyways 
+
+    # answer_ids_padded_tensor = (
+    #     collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
+    # )
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
     log_probs, entropies, llm_rewards, kg_rewards, eval_extras = rollout(
@@ -1216,7 +1220,7 @@ def main():
     ########################################
     pretrained_gtllm_metadata = torch.load(args.pretrained_gtllm_path, weights_only=False)
     logger.info(f"The keys inside of pretrained_model_metadata are {pretrained_gtllm_metadata.keys()}")
-    logger.info(f"The subkeyus for emebdding_training_metaparam are {pretrained_gtllm_metadata['embedding_training_metaparam'].keys()}")
+    # logger.info(f"The subkeyus for emebdding_training_metaparam are {pretrained_gtllm_metadata['embedding_training_metaparam'].keys()}")
 
     gtllm_hunch_base_model = pretrained_gtllm_metadata["hunchbart_base_llm_model"]
     gtllm_graph_embedding_dim = pretrained_gtllm_metadata["hunchbart_hidden_dim"]
@@ -1290,16 +1294,16 @@ def main():
     logger.info(":: Setting up the data")
 
     # Load the KGE Dictionaries
-    id2ent, ent2id, id2rel, rel2id = data_utils.load_dictionaries(args.data_dir)
+    id2ent, ent2id, id2rel, rel2id = data_utils.load_dictionaries(qna_data_path)
 
     # Load the QA Dataset
     # TODO: We can load QA dataset from cache here
-    raw_qadata_path = os.path.join(args.path_mquake_data, "mquake_dna_ds.csv")
+    raw_qadata_path = os.path.join(qna_data_path, "mquake_qna_ds.csv")
     train_df, dev_df, test_df, _ = data_utils.load_qa_data(
         cached_metadata_path=args.cached_QAMetaData_path,
         raw_QAData_path=raw_qadata_path,
         question_tokenizer_name=gtllm_tokenizer_name,
-        answer_tokenizer_name=args.answer_tokenizer_name,
+        answer_tokenizer_name=gtllm_tokenizer_name,
         entity2id=ent2id,
         relation2id=rel2id,
         logger=logger,
@@ -1358,7 +1362,7 @@ def main():
 
     # Setup the entity embedding module
     question_embedding_module = AutoModel.from_pretrained(
-        args.question_embedding_model
+        gtllm_hunch_base_model
     ).to(args.device)
 
     # # Freeze the Question Embedding Module
@@ -1369,17 +1373,17 @@ def main():
     logger.info(":: Setting up the environment")
     env = ITLGraphEnvironment(
         question_embedding_module=question_embedding_module,
-        question_embedding_module_trainable=args.question_embedding_module_trainable,
+        question_embedding_module_trainable=(not args.frozen_llm_weights),
         entity_dim=dim_entity,
         ff_dropout_rate=args.ff_dropout_rate,
         history_dim=args.history_dim,
         history_num_layers=args.history_num_layers,
         knowledge_graph=kge_model,
         relation_dim=dim_relation,
-        node_data=args.node_data_path,
-        node_data_key=args.node_data_key,
-        rel_data=args.relationship_data_path,
-        rel_data_key=args.relationship_data_key,
+        node_data=None,
+        node_data_key=None,
+        rel_data=None,
+        rel_data_key=None,
         id2entity=id2ent,
         entity2id=ent2id,
         id2relation=id2rel,
@@ -1447,8 +1451,8 @@ def main():
         mbatches_b4_eval=args.batches_b4_eval,
         verbose=args.verbose,
         visualize=args.visualize,
-        question_tokenizer=question_tokenizer,
-        answer_tokenizer=answer_tokenizer,
+        question_tokenizer=gtllm_tokenizer,
+        answer_tokenizer=gtllm_tokenizer,
         track_gradients=args.track_gradients,
         num_batches_till_eval=args.num_batches_till_eval,
         wandb_on=args.wandb,
