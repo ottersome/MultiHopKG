@@ -2,12 +2,18 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from typing import List, Tuple
+
+import pandas as pd
 import torch
+from torch import nn
+from torch.types import Device
 import numpy as np
 from collections import defaultdict
 from torch.utils.data import Dataset
+from transformers.models.bart import BartTokenizer
 
-from typing import List, Tuple
+from multihopkg.utils.data_structures import DataPartitions
 
 class TestDataset(Dataset):
     __test__ = False # To avoid pytest confusion
@@ -441,3 +447,70 @@ def build_neighbor_rel_constraints(triples):
 
     # Convert to normal dict for serialization safety
     return dict(head_neighbor_rel_constraints), dict(tail_neighbor_rel_constraints)
+
+class GraphEmbeddingDataset(Dataset):
+    def __init__(
+        self,
+        dataset: pd.DataFrame,
+        id2ent: nn.Embedding,
+        id2rel: nn.Embedding,
+        word_tokenizer: BartTokenizer,
+        device: Device,
+    ):
+        self.dataset: pd.DataFrame = dataset
+        sep_token = word_tokenizer.sep_token
+        assert isinstance(sep_token, str), "Expected the separator token to be a string. e.g. </s>"
+        self.separator_token_id = word_tokenizer.convert_tokens_to_ids([sep_token])
+        if isinstance(self.separator_token_id, list):
+            self.separator_token_id = self.separator_token_id[0] # Appeases LSP
+        assert isinstance(self.separator_token_id, int), f"Expected the separator token to be an integer. Instead we get {self.separator_token_id}"
+        self.device = device
+
+        # Get questions and answers a single string but separated by some token.
+        self.ques_n_ans = self._merge_questions_and_answers(
+            dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[0]].tolist(),
+            dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[1]].tolist(),
+            self.separator_token_id,
+        )
+        self.path = dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[2]]
+        # Embeddings
+        self.id2ent = id2ent
+        self.id2rel = id2rel
+        self.embeddings_dim = id2ent.embedding_dim
+
+    def _merge_questions_and_answers(self, questions: List[List[int]], answers: List[List[int]], sep_token: int) -> List[List[int]]:
+        """
+        Merges questions and answers into a single string, separated by a token.
+        """
+        assert len(questions) == len(answers), "Expected questions and answers to have the same length"
+        merged_questions_answers = []
+
+        for question, answer in zip(questions, answers):
+            qna = question + [sep_token] + answer
+            merged_questions_answers.append(qna)
+
+        return merged_questions_answers
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
+        # All of these are ids
+        qna_tokens = torch.tensor(self.ques_n_ans[idx], dtype=torch.long)
+        path = self.path[idx]
+
+        entities_ids = torch.tensor(path[::2], dtype=torch.long)
+        relations_ids = torch.tensor(path[1::2], dtype=torch.long)
+
+        # Obtain the embeddings
+        entities_emb = self.id2ent(entities_ids)
+        relations_emb = self.id2rel(relations_ids)
+
+        # Recreate the paths
+        path_embedding = torch.zeros((len(entities_ids) + len(relations_ids), self.embeddings_dim))
+        path_embedding[0::2] = entities_emb
+        path_embedding[1::2] = relations_emb
+
+        # Dump the question and answer througth the normal embedding
+
+        return qna_tokens.to(self.device), path_embedding.to(self.device)
