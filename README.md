@@ -3,7 +3,7 @@
 Based off the work by [salesforce](https://github.com/salesforce/MultiHopKG) but heavily edited.
 
 
-# Run
+ Prep
 
 ## Poetry (Optional)
 
@@ -33,11 +33,33 @@ Make sure you've got your hands on `data-release.tgz` and, while in the repo roo
 tar -xvf data-release.tgz
 ```
 
-## Actually Running it
+# Running it
+
+## (Old) Masked Language Modeling Training
 
 ```sh
 python mlm_training.py
 ```
+
+## Knowledge Graph Embedding Training
+
+This serves as a pseudo-preparation step. Further modules in our training require for there to be pretrained graph embeddings. 
+We use the script `./kge_train.py` for that.
+A sample of how that looks like with the mquake.yaml dataset:
+
+```sh
+python kge_train.py  --saved_config_path=configs/embedding_training/mquake.yaml --cuda
+```
+
+## Pretraining Round
+
+Our Graph-LLM Transformer requires a pretraining round before being plugged into the final algorithm.
+This can be run via 
+
+```sh
+python pretraining.py --preferred_config=./configs/pretraining/transE_mquake_dim500.yaml
+```
+
 
 ## Train and Evaluate KGE Model
 If you want to **train** you can find a best config in `configs/sun_best_config.sh`, just copy the one you need from there and use it in the command line.
