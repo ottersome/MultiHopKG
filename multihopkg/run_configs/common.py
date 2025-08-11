@@ -12,9 +12,10 @@ def overload_parse_defaults_with_yaml(yaml_location:str, args: argparse.Namespac
     with open(yaml_location, "r") as f:
         print(f"Trying to import the yaml file {yaml_location}")
         yaml_args = yaml.load(f, Loader=yaml.FullLoader)
-        print(f"Imported yam with keys {yaml_args.keys()}")
+        print(f"\033[33mImported YALM with keys\033[0m:")
         overloaded_args = recurse_til_leaf(yaml_args)
         for k, v in overloaded_args.items():
+            print(f"\t-{k}:{v}")
             if k in args.__dict__:
                 # args.__dict__[k] = v
                 # Change the property not they key
