@@ -1,0 +1,40 @@
+cached_QAMetaData_path: "./.cache/mquake/mquake_clean.json"
+raw_QAData_path: "./data/mquake/mquake_qna_ds.csv"
+question_tokenizer_name: "facebook/bart-base"
+question_embedding_model: "facebook/bart-base" 
+answer_tokenizer_name: "facebook/bart-base"
+seed: 42
+trained_model_path: "./models/graph_embeddings/transE_mquake_dim500/"
+model: "TransE"
+gamma: 12
+data_dir: "./data/mquake"
+question_embedding_module_trainable: False
+ff_dropout_rate: 0.1
+history_dim: 768 
+history_num_layers: 3
+num_rollout_steps: 3
+nav_start_emb_type: "centroid"
+nav_epsilon_error: 50
+# Unsure about one bellow
+use_kge_question_embedding: False 
+add_transition_state: False
+beta: 0.0
+rl_gamma: 0.9
+# TODO: Need to verify the one below
+rnn_hidden: 400
+history_dim: 200
+batch_size: 64
+batch_size_dev: 64
+epochs: 200
+learning_rate: 0.0001
+batches_b4_eval: 100
+num_batches_till_eval: 15
+supervised_adapter_scalar: 0.5
+supervised_sigma_scalar: 0.1
+supervised_expected_sigma: 0.1
+
+# These are generally set to None
+# node_data_path,
+# node_data_key,
+# relationship_data_path,
+# relationship_data_key,
