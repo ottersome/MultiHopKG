@@ -1,12 +1,13 @@
 # Import Abstract Classes
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import numpy as np
 import torch
 
 
+# TOREM: We are adding more flexibility to this. 
 @dataclass
 class Observation:
     state: torch.Tensor # Part of computation Graph
@@ -17,7 +18,7 @@ class Observation:
 class Environment(ABC):
 
     @abstractmethod
-    def reset(self, initial_states_info: torch.Tensor) -> Observation:
+    def reset(self, initial_state_info: Any) -> Any:
         """
         Args:
             - initial_state_info: any info that you wan to pass to initiazation.
@@ -29,7 +30,7 @@ class Environment(ABC):
         pass
 
     @abstractmethod
-    def step(self, actions: torch.Tensor) -> Observation:
+    def step(self, action: Any) -> Any:
         """
         Args:
             - action (torch.Tensor): The action to take
