@@ -3,7 +3,7 @@ model: "TransE"
 trained_model_path: "models/TransE_KinshipHinton_dim12"
 nav_epsilon_error: 1.32
 nav_epsilon_metric: "l2"
-freebaseqa_path: "data/KinshipHinton/kinship_hinton_qa_1hop"
+#freebaseqa_path: "data/KinshipHinton/kinship_hinton_qa_1hop"
 raw_QAData_path: "data/KinshipHinton/kinship_hinton_qa_1hop.csv"
 cached_QAMetaData_path: "./.cache/itl/kinship_hinton_qa_1hop.json"
 rl_gamma: 0.9
