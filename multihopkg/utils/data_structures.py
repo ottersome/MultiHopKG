@@ -1,4 +1,5 @@
-from typing import Tuple
+from dataclasses import dataclass
+from typing import Tuple, Dict
 import pandas as pd
 
 class DataPartitions:

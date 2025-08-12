@@ -7,6 +7,7 @@
  Graph Search Policy Network.
 """
 
+from dataclasses import dataclass
 import numpy as np
 import pandas
 
@@ -15,11 +16,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
+from multihopkg.utils.convenience import sample_random_entity
+from multihopkg.utils.data_structures import UniversalIdxDictionary
 import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import var_cuda, zeros_var_cuda
 from multihopkg.vector_search import ANN_IndexMan
 from multihopkg.environments import Environment, Observation
-from typing import Tuple, List, Dict, Optional
+from typing import Any, Tuple, List, Dict, Optional
 import pdb
 
 import sys
@@ -222,7 +225,10 @@ class ITLGraphEnvironment(Environment, nn.Module):
             self.current_step_no = 0
 
             # get the embeddings of the answer entities
-            self.answer_embeddings = self.knowledge_graph.get_starting_embedding('relevant', answer_ent).detach()               # (batch_size, entity_dim)
+            # TODO: (@HernandezEduin) fix this use of answer_ent as List[int] but passing it as Tensor
+            self.answer_embeddings = get_embeddings_from_indices(
+                self.knowledge_graph.entity_embedding, answer_ent
+            ).detach() 
             self.answer_found = torch.zeros((len(answer_ent),1), dtype=torch.bool).to(self.answer_embeddings.device).detach()   # (batch_size, 1)
 
             init_emb = self.start_emb_func[self.nav_start_emb_type](len(initial_states_info), query_ent).to(device)             # (batch_size, entity_dim)
@@ -308,6 +314,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             self.current_position, actions, 
         ) # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
 
+        # TODO: We need to create a softer answer reward here
         # No gradients are calculated here
         with torch.no_grad():
             diff = self.knowledge_graph.absolute_difference(self.answer_embeddings, self.current_position) # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
@@ -425,6 +432,125 @@ class ITLGraphEnvironment(Environment, nn.Module):
         action_mask = kg.action_space[1][e]
         action_space = ((r_space, e_space), action_mask)
         return action_space
+
+# Back to basics, to proper unsupervised
+class ReinforcedUnsupervisedEnv(Environment):
+
+    @dataclass
+    class RUE_Action:
+        pass
+    @dataclass
+    class RUE_Observation:
+        arbitrary_tensor:  torch.Tensor
+
+    def __init__(
+        self,
+        entity_dim: int,
+        relation_dim: int,
+        knowledge_graph: KGEModel,
+        nav_start_emb_type: str,
+        uniIdxDict: UniversalIdxDictionary,
+        ann_index_manager_ent: ANN_IndexMan,
+        ann_index_manager_rel: ANN_IndexMan,
+        steps_in_episode: int,
+        num_rollouts: int = 0, # Number of trajectories to be used in the environment per question, 0 means 1 trajectory
+        epsilon: float = 0.1, # For error margin in the distance, TODO: Must find a better value
+    ):
+        super(ReinforcedUnsupervisedEnv, self).__init__() # Should be injected via information extracted from Knowledge Grap self.action_dim = relation_dim  # TODO: Ensure this is a solid default self.question_embedding_module_trainable = question_embedding_module_trainable
+        self.entity_dim = entity_dim
+        self.knowledge_graph = knowledge_graph
+        self.path = None
+        self.relation_dim = relation_dim
+        self.ann_index_manager_ent = ann_index_manager_ent
+        self.ann_index_manager_rel = ann_index_manager_rel
+        self._num_rollouts = num_rollouts  # Number of trajectories to be used in the environment per question
+        self.steps_in_episode = steps_in_episode
+
+        self.uniIdxDict = uniIdxDict
+
+        # Core States (3/5)
+        self.current_position: Optional[torch.Tensor] = None
+        self.current_step_no: Optional[int] = (
+            self.steps_in_episode
+        )  # This value denotes being at "reset" state. As in, when episode is done
+
+        assert nav_start_emb_type in ['centroid', 'random', 'relevant'], f"Invalid start_embedding_type: {nav_start_emb_type}"
+        self.nav_start_emb_type = nav_start_emb_type
+
+        ########################################
+        # Get the actual torch modules defined
+        # Of most importance is self.path_encoder
+        ########################################
+
+        self.answer_embeddings = None  # This is the embeddings of the answer (batch_size, entity_dim)
+        self.answer_found = None       # This is a flag to denote if the answer has been already been found (batch_size, 1)
+        self.epsilon = epsilon                 # This is the error margin in the distance for finding the answer
+
+    def reset(self, initial_state_info: Any) -> RUE_Observation:
+
+        # TODO: Simply give the poistion. Ah shit 
+        # use something like nav_start_emb_type
+
+        meep = ReinforcedUnsupervisedEnv.RUE_Observation(torch.tensor([]))
+        return meep
+
+    def step(self, action: RUE_Action) -> RUE_Observation:
+        assert isinstance(
+            self.current_position, torch.Tensor
+        ), f"invalid self.current_position, type: {type(self.current_position)}. Please make sure to run ITLKnowledgeGraph::rest() before running get_observations."
+
+        self.current_step_no += 1
+
+        # Make sure action and current position are detached from computation graph
+        detached_actions = actions.detach()                 # (batch_size, action_dim) or (batch_size, num_rollouts, action_dim)
+        detached_curpos = self.current_position.detach()    # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
+
+        assert isinstance(
+            self.current_questions_emb, torch.Tensor
+        ), f"self.current_questions_emb (type: {type(self.current_questions_emb)}) must be set via `reset` before calling this."
+
+        ########################################
+        # ANN mostly for debugging for now
+        ########################################
+
+        # ! Restraining the movement to the neighborhood
+        prev_position = self.current_position.clone() # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
+
+        self.current_position = self.knowledge_graph.flexible_forward(
+            self.current_position, actions, 
+        ) # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
+
+        # TODO: We need to create a softer answer reward here
+        # No gradients are calculated here
+        with torch.no_grad():
+            diff = self.knowledge_graph.absolute_difference(self.answer_embeddings, self.current_position) # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
+            
+            found_ans = torch.norm(diff, dim=-1, keepdim=True) < self.epsilon   # (batch_size, 1) or (batch_size, num_rollouts, 1))
+            self.answer_found = torch.logical_or(self.answer_found, found_ans)  # (batch_size, 1) or (batch_size, num_rollouts, 1)
+            extrinsic_reward = found_ans.float()                                # (batch_size, 1) or (batch_size, num_rollouts, 1)
+
+
+        ########################################
+        # Projections
+        ########################################
+        # ! Inspecting projections (gradients variance is too high from the start)
+        projected_state = torch.cat(
+            [self.q_projected, self.current_position], dim=-1 # query,
+        ) # (batch_size, emb_dim + entity_dim) or (batch_size, num_rollouts, emb_dim + entity_dim)
+
+        # Corresponding indices is a list of indices of the matched embeddings (batch_size, topk=1)
+        observation = Observation(
+            state=projected_state,
+            kge_cur_pos=self.current_position, #.detach(), # TODO: Check if we need to detach this for reward calculation
+            kge_prev_pos=detached_curpos,
+            kge_action=detached_actions,
+        )
+        
+        return observation, extrinsic_reward, self.answer_found
+
+        meep = ReinforcedUnsupervisedEnv.RUE_Observation(torch.tensor([]))
+        return meep
+
 
 # Eduin's code, not sure if it works
 class AttentionFusion(nn.Module):

@@ -1465,6 +1465,7 @@ class KGEModel(nn.Module):
         ), "The relation embedding must be either a nn.Parameter or nn.Embedding"
         return self.relation_embedding
 
+    # TODO: Delete this superfluous function
     def get_starting_embedding(self, startType: str = 'centroid', ent_id: torch.Tensor = None)   -> torch.Tensor:
         """
         Returns the starting point for the navigation.
@@ -1476,12 +1477,15 @@ class KGEModel(nn.Module):
         if startType == 'centroid':
             return self.get_centroid()
         elif startType == 'random':
-            return sample_random_entity(self.entity_embedding)
+            return self.sample_rand_entity()
         elif startType == 'relevant' and not (isinstance(ent_id, type(None))):
             return get_embeddings_from_indices(self.entity_embedding, ent_id)
         else:
             raise Warning("Invalid navigation starting type/point. Using centroid instead.")
             return self.centroid
+
+    def sample_rand_entity(self):
+        return sample_random_entity(self.entity_embedding)
 
 def get_embeddings_from_indices(embeddings: Union[nn.Embedding, nn.Parameter], indices: torch.Tensor) -> torch.Tensor:
     """

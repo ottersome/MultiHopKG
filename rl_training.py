@@ -46,7 +46,7 @@ from multihopkg.logging import setup_logger
 from multihopkg.logs import torch_module_logging
 from multihopkg.models_language.classical import HunchBart, collate_token_ids_batch
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
-from multihopkg.rl.graph_search.pn import ITLGraphEnvironment
+from multihopkg.rl.graph_search.pn import ITLGraphEnvironment, ReinforcedUnsupervisedEnv
 from multihopkg.run_configs import rl_alpha
 from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
 from multihopkg.utils.convenience import tensor_normalization
@@ -311,7 +311,7 @@ def batch_loop(
     print(f"Columns here are {mini_batch.columns}")
     # Deconstruct the batch
     enc_questions = mini_batch["enc_questions"].tolist()
-    enc_answers = mini_batch["enc_answers"].tolist()
+    enc_answers = mini_batch["enc_answer"].tolist()
     path = mini_batch["triples_ints"].tolist()
     enc_questions = mini_batch["enc_questions"].tolist()
 
@@ -329,6 +329,7 @@ def batch_loop(
     # answer_ids_padded_tensor = (
     #     collate_token_ids_batch(answers, pad_token_id).to(torch.int32).to(device)
     # )
+    # TODO: Come back to this and figure if this is necessary
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
     log_probs, entropies, llm_rewards, kg_rewards, eval_extras = rollout(
@@ -1219,8 +1220,13 @@ def main():
     # Load Pretrained Model
     ########################################
     pretrained_gtllm_metadata = torch.load(args.pretrained_gtllm_path, weights_only=False)
+
+    logger.info("Loaded Pretrained Model Metadata, the data preview 如下所示: ")
+    for k,v in pretrained_gtllm_metadata.items():
+        # Check if V is an item that can be converted to a string
+        logger.info(f"The key {k} has value {v}")
+
     logger.info(f"The keys inside of pretrained_model_metadata are {pretrained_gtllm_metadata.keys()}")
-    # logger.info(f"The subkeyus for emebdding_training_metaparam are {pretrained_gtllm_metadata['embedding_training_metaparam'].keys()}")
 
     gtllm_hunch_base_model = pretrained_gtllm_metadata["hunchbart_base_llm_model"]
     gtllm_graph_embedding_dim = pretrained_gtllm_metadata["hunchbart_hidden_dim"]
@@ -1230,7 +1236,7 @@ def main():
     qna_data_path = pretrained_gtllm_metadata["path_mquake_data"]
 
     hunch_llm = HunchBart.from_pretrained(
-        hunchbart_base_llm_model=gtllm_hunch_base_model,
+        hunchbart_base_llm_model_name=gtllm_hunch_base_model,
         state_dict=pretrained_gtllm_metadata["gtllm_state_dict"],
         graph_embedding_dim=gtllm_graph_embedding_dim,
     ).to(args.device)
@@ -1371,11 +1377,10 @@ def main():
 
     # Setting up the models
     logger.info(":: Setting up the environment")
-    env = ITLGraphEnvironment(
+    env = ReinforcedUnsupervisedEnv(
         question_embedding_module=question_embedding_module,
         question_embedding_module_trainable=(not args.frozen_llm_weights),
         entity_dim=dim_entity,
-        ff_dropout_rate=args.ff_dropout_rate,
         history_dim=args.history_dim,
         history_num_layers=args.history_num_layers,
         knowledge_graph=kge_model,

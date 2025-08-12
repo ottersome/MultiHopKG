@@ -35,9 +35,7 @@ class Environment(ABC):
         Args:
             - action (torch.Tensor): The action to take
         Returns:
-            - position (torch.Tensor): Position in the graph
-            - state (torch.Tensor): State containing informatioon for decision making.
-            - retrun
+            - Observation (Any): The observation that comes from taking such action
         """
         pass
 
