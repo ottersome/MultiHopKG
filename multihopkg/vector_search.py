@@ -29,12 +29,22 @@ import numpy as np
 import torch
 import faiss
 import pdb
-from typing import Tuple
+from typing import Any, Tuple
 import sys
+from abc import ABC, abstractmethod
 
 from multihopkg.emb.operations import angular_difference
 
-class ANN_IndexMan:
+class ANN_IndexMan_AbsClass(ABC):
+    @abstractmethod
+    def search(self, target_embeddings: torch.Tensor, topk: int) -> Tuple[Any, Any]:
+        pass
+
+    @abstractmethod
+    def calculate_hits_at_n(self, ground_truth: np.ndarray, indices: np.ndarray, topk: int) -> float:
+        pass
+
+class ANN_IndexMan(ANN_IndexMan_AbsClass):
     """
     A class for managing approximate nearest neighbor (ANN) search and exact nearest neighbor search for
     embeddings from Freebase and Wikidata data. The class can initialize an index with either exact or
@@ -143,7 +153,7 @@ class ANN_IndexMan:
         return hit_at_n_score
 
 # TODO: Improve the implementation, it is currently very slow
-class ANN_IndexMan_pRotatE:
+class ANN_IndexMan_pRotatE(ANN_IndexMan_AbsClass):
     """
     """
 

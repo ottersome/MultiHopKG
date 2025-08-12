@@ -8,17 +8,17 @@ import wandb
 import logging
 import sys
 
-from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
+from multihopkg.vector_search import ANN_IndexMan_AbsClass
 
-from typing import Dict, Any, Union, Callable
+from typing import Dict, Any, Callable
 
 # TODO: Move to a different file once ready
 
 def dump_evaluation_metrics(
     path_to_log: str,
     evaluation_metrics_dictionary: Dict[str, Any],
-	vector_entity_searcher: Union[ANN_IndexMan, ANN_IndexMan_pRotatE],						  
-    vector_rel_searcher: Union[ANN_IndexMan, ANN_IndexMan_pRotatE],  
+	vector_entity_searcher: ANN_IndexMan_AbsClass,
+    vector_rel_searcher: ANN_IndexMan_AbsClass,
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
     answer_kge_tensor:torch.Tensor,
