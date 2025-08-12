@@ -45,3 +45,13 @@ class DataPartitions:
 # Mostly for convenience of moving data around and keeping the code "typed"
 Triplet_Str = Tuple[str, str, str]
 Triplet_Int = Tuple[int, int, int]
+
+@dataclass
+class UniversalIdxDictionary:
+    """
+    Meant to be a convenience to hold bidirectional dictionaries for both entities and relations
+    """
+    id2entity: Dict[int, str]
+    entity2id: Dict[str, int]
+    id2relation: Dict[int, str]
+    relation2id: Dict[str, int]
