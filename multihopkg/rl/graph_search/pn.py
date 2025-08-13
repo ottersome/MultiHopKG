@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
 import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import var_cuda, zeros_var_cuda
-from multihopkg.vector_search import ANN_IndexMan
+from multihopkg.vector_search import ANN_IndexMan_AbsClass
 from multihopkg.environments import Environment, Observation
 from typing import Tuple, List, Dict, Optional
 import pdb
@@ -137,7 +137,8 @@ class ITLGraphEnvironment(Environment, nn.Module):
 
         # (self.W1, self.W2, self.W1Dropout, self.W2Dropout, self.path_encoder, self.concat_projector) = (
         # (self.concat_projector, self.W2, self.W1Dropout, self.W2Dropout, _) = (
-        (self.W1, self.W2, self.W1Dropout, self.W2Dropout, self.path_encoder, self.concat_projector) = (
+        # LG: Changes for clarity sake
+        ( _, _, _, _, self.path_encoder, self.concat_projector) = (
             self._define_modules(
                 self.entity_dim,
                 self.ff_dropout_rate,
@@ -193,14 +194,13 @@ class ITLGraphEnvironment(Environment, nn.Module):
     def reset(self, initial_states_info: torch.Tensor, answer_ent: List[int], query_ent: List[int] = None, warmup: bool = True) -> Observation:
         """
         Will reset the episode to the initial position
-        This will happen by grabbign the initial_states_info embeddings, concatenating them with the centroid and then passing them to the environment
+        This will happen by grabbing the initial_states_info embeddings, concatenating them with the centroid and then passing them to the environment
         Args:
-            - initial_state_info (torch.Tensor): In this implemntation sit is the initial_states_info
+            - initial_state_info (torch.Tensor): In this implementation sit is the initial_states_info
             - answer_ent (List[int]): The answer entity for the current batch
             - query_ent (List[int]): The relevant entities for the current batch
-        Returnd:
-            - postion (torch.Tensor): Position in the graph
-            - state (torch.Tensor): Aggregation of states visited so far summarized in a single vector per batch element.
+        Returns:
+            - observation (Observation): Observation object containing the state and the KGE embeddings
         """
 
         # Sanity Check: Make sure we finilized previos epsiode correclty
@@ -244,7 +244,7 @@ class ITLGraphEnvironment(Environment, nn.Module):
             # (batch_size, emb_dim) -> (batch_size, num_rollouts, emb_dim)
             self.q_projected = self.q_projected.unsqueeze(1).expand(-1, self.num_rollouts, -1)                      # (batch_size, num_rollouts, entity_dim + relation_dim)
             self.current_questions_emb = self.current_questions_emb.unsqueeze(1).expand(-1, self.num_rollouts, -1)  # (batch_size, num_rollouts, text_dim)
-            self.current_position = self.current_position.unsqueeze(1).expand(-1, self.num_rollouts, -1)            # (batch_size, num_rollouts, entity_dim)
+            self.current_position = self.current_position.unsqueeze(1).expand(-1, self.num_rollouts, -1)            # (batch_size, num_rollouts, entity_dim)Z
             self.answer_embeddings = self.answer_embeddings.unsqueeze(1).expand(-1, self.num_rollouts, -1)          # (batch_size, num_rollouts, entity_dim)
             self.answer_found = self.answer_found.unsqueeze(1).expand(-1, self.num_rollouts, -1)                    # (batch_size, num_rollouts, 1)
             init_emb = init_emb.unsqueeze(1).expand(-1, self.num_rollouts, -1)                                      # (batch_size, num_rollouts, entity_dim)
