@@ -232,7 +232,7 @@ def batch_loop_dev(
     #--------------------------------------------------------------------------
     'Loss Calculation'
 
-    pg_loss = -(discounted_rewards * log_probs_t)  - nav_agent.beta * entropies_t # Have to negate it into order to do gradient ascent
+    pg_loss = -(discounted_rewards * log_probs_t)  - nav_agent.get_beta() * entropies_t # Have to negate it into order to do gradient ascent
 
     logger.warning(f"We just left dev rollout")
 
@@ -379,7 +379,7 @@ def batch_loop(
     #--------------------------------------------------------------------------
     'Loss Calculation'
 
-    pg_loss = -(discounted_rewards * log_probs_t)  - nav_agent.beta * entropies_t # Have to negate it into order to do gradient ascent
+    pg_loss = -(discounted_rewards * log_probs_t)  - nav_agent.get_beta() * entropies_t # Have to negate it into order to do gradient ascent
 
     return pg_loss, eval_extras
 

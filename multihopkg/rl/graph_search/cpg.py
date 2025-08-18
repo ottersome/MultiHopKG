@@ -46,6 +46,12 @@ class ContinuousPolicyGradient(nn.Module):
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
 
+    def get_beta(self):
+        return self.beta
+    
+    def get_gamma(self):
+        return self.gamma
+
     def forward(
         self, observations: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
