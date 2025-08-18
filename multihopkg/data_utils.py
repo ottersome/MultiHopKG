@@ -153,6 +153,7 @@ def load_triples_with_label(
     return triples, labels
 
 
+@stale_code
 def load_triples(
     data_path: str,
     entity2id: Dict[str, int],
@@ -182,6 +183,31 @@ def load_triples(
         triple_dict = {}
     return triples
 
+def load_triples_hrt(
+    data_path: str,
+    entity2id: Dict[str, int],
+    relation2id: Dict[str, int],
+) -> List[Triple]:
+    """
+    HRT version of load_triples. Loads triples in the (head, relation, tail) format.
+    Args:
+        data_path (str): Path to the triples file (e.g. [**/train.triples, **/dev.triples])
+        entity2id (Dict[str, int]): A dictionary mapping entity QID to indicies in its embedding matrix
+        relation2id (Dict[str, int]): A dictionary mapping relation PID to indicies in its embedding matrix
+    Returns:
+        List[Triple]: A list of triples
+    """
+    triples = []
+    with open(data_path) as f:
+        for line in f:
+            h, r, t = line.strip().split()
+
+            triples.append((
+                entity2id[h],
+                relation2id[r],
+                entity2id[t],
+            ))
+    return triples
 
 def triple2ids(
     e1, e2, r, entity2id: Dict[str, int], relation2id: Dict[str, int]
