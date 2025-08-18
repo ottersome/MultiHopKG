@@ -10,6 +10,7 @@
 import collections
 from functools import cmp_to_key
 import json
+import math
 import os
 import pdb
 import pickle
@@ -23,14 +24,22 @@ import logging
 import numpy as np
 import pandas as pd
 from rich import traceback
+from sympy.ntheory.factor_ import find_carmichael_numbers_in_range
+import torch
 from torch.nn import Embedding as nn_Embedding
+from tqdm import tqdm
 from transformers import PreTrainedTokenizer, AutoTokenizer
 from sklearn.model_selection import train_test_split
 
-from multihopkg.utils.data_structures import Triplet_Str, DataPartitions
-from multihopkg.utils.setup import get_git_root
-from multihopkg.itl_typing import Triple
-from multihopkg.itl_typing import DFSplit
+from multihopkg.graph.classical import (
+    MASK_PADDING_VALUE,
+    find_heads_with_connections,
+    generate_csr_representation,
+    sample_paths_given_csr
+)
+from multihopkg.itl_typing import DFSplit, Triple
+from multihopkg.utils.data_structures import (DataPartitions, Triplet_Int,
+                                              Triplet_Str)
 from multihopkg.utils.metacode import stale_code
 
 traceback.install()
@@ -103,6 +112,55 @@ def get_train_path(data_dir: str, test: bool, model: str):
         train_path = os.path.join(data_dir, "train.triples")
 
     return train_path
+
+def generate_paths_for_nav_training(
+    triplets_ints: List[Triplet_Int],
+    amount_of_paths: int,
+    generation_batch_size: int,
+    num_hops: int,
+    num_beams: int,
+) -> List[List[int]]:
+    # Calculate amount of notes:
+    entity_set = set()
+    for (head, _, tail) in triplets_ints:
+        entity_set.add(head)
+        entity_set.add(tail)
+    num_entities = len(entity_set)
+
+    indptr, tail_indices, rel_ids = generate_csr_representation(triplets_ints, num_entities)
+
+    # Get list of one degree heads
+    degree_heads = torch.Tensor(list(find_heads_with_connections(triplets_ints, tail_indices))).to(dtype=torch.long)
+
+    num_batches = math.ceil(amount_of_paths / generation_batch_size)
+
+    generated_paths: List[List[int]] = []
+
+    bar = tqdm(range(amount_of_paths))
+    for b in range(num_batches):
+        random_idx = torch.randint(0, degree_heads.numel(), (generation_batch_size,))
+        random_starting_heads = degree_heads[random_idx]
+
+        paths_entities, paths_relations = sample_paths_given_csr(
+            torch.tensor(indptr),
+            torch.tensor(tail_indices),
+            torch.tensor(rel_ids),
+            random_starting_heads,
+            num_hops,
+            num_beams,
+        )
+
+        # Interlace them
+        num_elems = paths_entities.shape[0]
+        for i in range(1, num_elems):
+            new_row = [MASK_PADDING_VALUE]*(num_hops*2 + 1)
+            new_row[0::2] = paths_entities[i,:].tolist()
+            new_row[1::2] = paths_relations[i,:].tolist()
+            generated_paths.append(new_row)
+
+        bar.update(generation_batch_size)
+
+    return generated_paths
 
 
 def load_seen_entities(adj_list_path, entity_index_path):
@@ -187,6 +245,7 @@ def load_triples_hrt(
     data_path: str,
     entity2id: Dict[str, int],
     relation2id: Dict[str, int],
+    has_headers: bool
 ) -> List[Triple]:
     """
     HRT version of load_triples. Loads triples in the (head, relation, tail) format.
@@ -199,6 +258,8 @@ def load_triples_hrt(
     """
     triples = []
     with open(data_path) as f:
+        if has_headers:
+            next(f)
         for line in f:
             h, r, t = line.strip().split()
 

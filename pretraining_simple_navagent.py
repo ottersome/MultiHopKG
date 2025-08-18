@@ -1,129 +1,33 @@
-import argparse
-import math
 import os
-import pickle
 import time
-from doctest import debug
-from math import log
-from typing import Any, List
+from typing import List, Tuple
 
 import debugpy
-import numpy as np
-import pandas as pd
 import torch
-from pyarrow import dictionary
-from sympy import degree, num_digits
+import numpy as np
 from torch.utils.data import DataLoader, Dataset
+from torch import nn
+import pickle
+from sklearn.model_selection import train_test_split
 
 from multihopkg import data_utils
-from multihopkg.graph.classical import (
-    are_nodes_connected,
-    find_heads_with_connections,
-    generate_csr_representation,
-    random_walk,
-    sample_paths_given_csr,
-)
 from multihopkg.logging import setup_logger
+from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.utils.data_structures import Triplet_Int, Triplet_Str
-
-
-def arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--path_mquake_data", type=str, default="./data/mquake/")
-    parser.add_argument("--amount_of_paths", type=int, default=1000)
-    parser.add_argument(
-        "--path_generation_cache", type=str, default="./cache/random_walks.pkl"
-    )
-    parser.add_argument("--path_batch_size", default=4)
-    parser.add_argument("--path_max_len", default=5)
-    parser.add_argument("--path_num_beams", default=4)
-
-
-    parser.add_argument("--debug", "-d", action="store_true")
-    return parser.parse_args()
-
+from multihopkg.run_configs.pretraining_simple_navagent import arguments
 
 class RandomWalkDataset(Dataset):
     PATH_SAMPLING_BATCH_SIZE = 128
 
     def __init__(
         self,
-        triplets_str: List[Triplet_Str],
-        triplets_int: List[Triplet_Int],
-        num_nodes: int,
-        num_edges: int,
-        amount_of_paths: int,
-        path_generation_cache: str,
-        batch_size: int,
-        max_path_len: int,
-        num_beams: int,
+        entity_embeddings: nn.Embedding,
+        relation_embeddings: nn.Embedding,
+        paths: List[List[int]],
     ):
-        self.amount_of_paths = amount_of_paths
-        self.paths = []
-        self.triplets_str = triplets_str
-        self.triplets_int = triplets_int
-        self.num_nodes = num_nodes
-        self.batch_size = batch_size
-        self.max_path_len = max_path_len
-        self.num_beams = num_beams
-
-        logger.info(f"Loaded {len(self.triplets_str)} triplets_str")
-
-        # Check if we go the paths generated already
-        if os.path.exists(path_generation_cache):
-            self.paths = self._load_cached_paths(path_generation_cache)
-        else:
-            self.paths = self._generate_and_cache_paths(
-                triplets_int = triplets_int,
-                num_nodes = num_nodes,
-                path_generation_cache = path_generation_cache,
-                batch_size = self.batch_size,
-            )
-
-    # TODO: Change this return type to be more specific
-    def _load_cached_paths(self, path_generation_cache: str) -> List[Any]:
-        with open(path_generation_cache, "rb") as f:
-            return pickle.load(f)
-
-    # TODO: Change this return type to be more specific
-    def _generate_and_cache_paths(
-        self,
-        triplets_int: List[Triplet_Int],
-        num_nodes: int,
-        path_generation_cache: str,
-        batch_size: int,
-    ) -> List[Any]:
-        os.makedirs(os.path.dirname(path_generation_cache), exist_ok=True)
-
-        # Generate the CSR representation
-        indptr, tail_indices, rel_ids = generate_csr_representation(triplets_int, num_nodes)
-
-        # Get list of one degree heads
-        degree_heads = list(find_heads_with_connections(triplets_int, tail_indices))
-
-        num_batches = math.ceil(self.amount_of_paths / self.PATH_SAMPLING_BATCH_SIZE )
-
-        generated_paths = []
-
-        for b in range(num_batches):
-            random_idx = torch.randint(0, len(degree_heads), (batch_size,))
-            random_starting_heads = torch.tensor(degree_heads)[random_idx]
-
-            paths = sample_paths_given_csr(
-                torch.tensor(indptr),
-                torch.tensor(tail_indices),
-                torch.tensor(rel_ids),
-                random_starting_heads,
-                self.max_path_len,
-                self.num_beams,
-            )
-            generated_paths.extend(paths)
-
-        # Now we do caching
-        with open(path_generation_cache, "wb") as f:
-            pickle.dump(generated_paths, f)
-
-        return generated_paths
+        self.paths = paths
+        self.entity_embeddings = entity_embeddings
+        self.relation_embeddings = relation_embeddings
 
     def __len__(self):
         return len(self.paths)
@@ -131,14 +35,103 @@ class RandomWalkDataset(Dataset):
     def __getitem__(self, idx):
         return self.paths[idx]
 
+def load_path_data(
+    path_mquake_data: str,
+    path_cache_dir: str,
+    amount_of_paths: int,
+    path_generation_batch_size: int,
+    n_hops: int,
+    path_num_beams: int,
+) -> Tuple[List[List[int]], List[List[int]], List[List[int]]]:
+    """
+    Load the path data from the mquake data.
+    Args:
+        path_mquake_data (str): Path to the mquake data directory.
+        path_cache_dir (str): Path to the cache directory.
+    Returns:
+        Tuple[List[List[int]], List[List[int]], List[List[int]]]: A tuple of three lists, each containing a list of paths.
+    """
 
-def _triplet_str_to_int(triplet: pd.Series, ent2id: dict, rel2id: dict) -> Triplet_Int:
-    return (
-        ent2id[triplet.iloc[0]],
-        rel2id[triplet.iloc[1]],
-        ent2id[triplet.iloc[2]],
+    train_cache_path = os.path.join(path_cache_dir, "train_paths.pkl")
+    dev_cache_path = os.path.join(path_cache_dir, "dev_paths.pkl")
+    test_cache_path = os.path.join(path_cache_dir, "test_paths.pkl")
+
+    cache_complete = all([
+        os.path.exists(train_cache_path),
+        os.path.exists(dev_cache_path),
+        os.path.exists(test_cache_path),
+    ])
+    
+    if cache_complete:
+        with open(train_cache_path, "rb") as f:
+            train_paths = pickle.load(f)
+        with open(dev_cache_path, "rb") as f:
+            dev_paths = pickle.load(f)
+        with open(test_cache_path, "rb") as f:
+            test_paths = pickle.load(f)
+
+        return train_paths, dev_paths, test_paths
+    else:
+        # Load mquake data
+        path_triplets = os.path.join(path_mquake_data, "expNpruned_triplets.txt")
+        id2ent, ent2id, id2rel, rel2id = data_utils.load_dictionaries(path_mquake_data)
+        triplets_int = data_utils.load_triples_hrt(path_triplets, ent2id, rel2id, has_headers=True)
+
+        generated_paths = data_utils.generate_paths_for_nav_training(
+            triplets_ints = triplets_int,
+            amount_of_paths = amount_of_paths,
+            generation_batch_size = path_generation_batch_size,
+            num_hops = n_hops,
+            num_beams = path_num_beams,
+        )
+
+        # Train-Dev-Test Split
+        temp_paths, test_paths = train_test_split(generated_paths, test_size=0.1)
+        train_paths, dev_paths = train_test_split(temp_paths, test_size=0.11111)
+
+        # Ensure that the dir is created
+        os.makedirs(path_cache_dir, exist_ok=True)
+
+        # Cache the data
+        with open(train_cache_path, "wb") as f:
+            pickle.dump(train_paths, f)
+        with open(dev_cache_path, "wb") as f:
+            pickle.dump(dev_paths, f)
+        with open(test_cache_path, "wb") as f:
+            pickle.dump(test_paths, f)
+
+        return train_paths, dev_paths, test_paths
+
+def train_loop(
+    nav_agent: ContinuousPolicyGradient,
+    train_paths: List[List[int]],
+    entity_embeddings: nn.Embedding,
+    relation_embeddings: nn.Embedding,
+    # -- Training Params -- #
+    epochs: int, 
+    # steps_in_episode: int,
+    batch_size: int,
+) -> nn.Module:
+    # So that we can later ask our model to from point A to point B
+    train_dataset = RandomWalkDataset(
+        entity_embeddings = entity_embeddings,
+        relation_embeddings = relation_embeddings,
+        paths = train_paths,
     )
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
+    # Training Loop
+    nav_agent.train()
+    for epoch in range(epochs):
+        logger.debug(f"Starting epoch {epoch}")
+        for batch_idx, batch in enumerate(train_dataloader):
+            logger.debug(f"Going through batch {batch_idx}")
+
+
+            # TODO: Implement the training loop
+            pass
+
+    return nav_agent
 
 def main():
     args = arguments()
@@ -147,55 +140,48 @@ def main():
         debugpy.listen(("0.0.0.0", 42023))
         debugpy.wait_for_client()
 
+    # Load the Embeddings
+    entity_embeddings = nn.Embedding.from_pretrained(
+        torch.from_numpy(np.load(os.path.join(args.path_embeddings_dir, "entity_embedding.npy")))
+    )
+    relation_embeddings = nn.Embedding.from_pretrained(
+        torch.from_numpy(np.load(os.path.join(args.path_embeddings_dir, "relation_embedding.npy")))
+    )
+
+    dim_action_relation = relation_embeddings.embedding_dim
+
     # Load mquake data
-    path_triplets = os.path.join(args.path_mquake_data, "expNpruned_triplets.txt")
-    triplets_str = []
-    triplets_int = []
-    id2ent, ent2id, id2rel, rel2id = data_utils.load_dictionaries(args.path_mquake_data)
-    t0 = time.perf_counter()
-    with open(path_triplets, "r") as f:
-        next(f)  # Skip the header row
-        for line in f:
-            head, rel, tail = line.strip().split()
-            triplets_str.append((head, rel, tail))
-            try:
-                triplets_int.append(
-                    (
-                        ent2id[head],
-                        rel2id[rel],
-                        ent2id[tail],
-                    )
-                )
-            except KeyError:
-                breakpoint()
-    t1 = time.perf_counter()
-    logger.info(
-        f"Converted {len(triplets_int)} triplets to ints in {t1-t0:.4f} seconds"
-    )
-    num_nodes = len(id2ent)
-    num_edges = len(triplets_int)
-    logger.info(f"Read {num_nodes} nodes and {num_edges} edges")
-
-    # Now we simply create a dataset of random walks
-    # So that we can later ask our model to from point A to point B
-    dataset = RandomWalkDataset(
-        triplets_str = triplets_str,
-        triplets_int = triplets_int,
-        num_nodes = num_nodes,
-        num_edges = num_edges,
+    train_paths, dev_paths, test_paths = load_path_data(
+        path_mquake_data = args.path_mquake_data,
+        path_cache_dir = args.path_generation_cache,
         amount_of_paths = args.amount_of_paths,
-        path_generation_cache = args.path_generation_cache,
-        batch_size = args.path_batch_size,
-        max_path_len = args.path_max_len,
-        num_beams = args.path_num_beams,
+        path_generation_batch_size = args.path_batch_size,
+        n_hops = args.path_n_hops,
+        path_num_beams = args.path_num_beams,
     )
 
-    # Create DataLoader for training
-    # dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+    # Create the Navigator
+    nav_agent = ContinuousPolicyGradient(
+        beta = args.rl_beta,
+        gamma = args.rl_gamma,
+        dim_action = dim_action_relation,
+        dim_hidden = args.rl_dim_hidden,
+        dim_observation = args.env_dim_observation,
+    )
 
-    # print(f"Created dataset with {len(dataset)} random walk paths")
-    # print(f"DataLoader ready with {len(dataloader)} batches")
+    ########################################
+    # Training
+    ########################################
 
+    trained_model = train_loop(
+        nav_agent,
+        train_paths,
+        entity_embeddings,
+        relation_embeddings,
+        epochs = args.epochs,
+        # steps_in_episode = args.num_rollout_steps,
+        batch_size = args.batch_size,
+    )
 
 if __name__ == "__main__":
     logger = setup_logger("__PRETRAINING_SIMPLE_MAIN__")

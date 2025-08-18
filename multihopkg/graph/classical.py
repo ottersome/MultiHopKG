@@ -66,7 +66,8 @@ def sample_paths_given_csr(
     # Ensure that the given starting points have neighborhood. We want atleast one hop.
     assert len(h_batch.shape) == 1
     degrees = indptr[h_batch + 1] - indptr[h_batch]
-    assert (degrees > 1).all()
+    # DEBUG: We need to remove this after we figure out why we are getting such a weird errro
+    assert (degrees > 0).all(), "You have provided a batch of heads of which atleast one does not have a neighborhood. This is not allowed."
 
     device = indptr.device
     B = h_batch.numel()
