@@ -177,10 +177,6 @@ def compute_embedding_statistics(embeddings: np.ndarray) -> Dict[str, Any]:
     """Compute general statistics about the embedding space."""
     print("Computing embedding space statistics...")
     
-    # Basic statistics
-    mean_embedding = np.mean(embeddings, axis=0)
-    std_embedding = np.std(embeddings, axis=0)
-    
     # Dimension-wise statistics
     dim_means = np.mean(embeddings, axis=0)
     dim_stds = np.std(embeddings, axis=0)
@@ -353,14 +349,14 @@ def print_summary(results: Dict):
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze embedding distances and statistics')
-    parser.add_argument('embedding_path', type=str, help='Path to numpy embedding file')
-    parser.add_argument('--output-dir', type=str, default='embedding_analysis', 
+    parser.add_argument('embedding_path', type=str, help='Path to numpy embedding file', default="./models/graph_embeddings/transE_mquake_dim500/entity_embedding.npy")
+    parser.add_argument('--output_dir', type=str, default='embedding_analysis/', 
                        help='Output directory for results')
-    parser.add_argument('--max-samples', type=int, default=10000,
+    parser.add_argument('--max_samples', type=int, default=10000,
                        help='Maximum samples for pairwise distance computation')
-    parser.add_argument('--k-neighbors', type=int, default=5,
+    parser.add_argument('--k_neighbors', type=int, default=5,
                        help='Number of nearest neighbors to analyze')
-    parser.add_argument('--no-plots', action='store_true',
+    parser.add_argument('--no_plots', action='store_true',
                        help='Skip generating plots')
     
     args = parser.parse_args()
