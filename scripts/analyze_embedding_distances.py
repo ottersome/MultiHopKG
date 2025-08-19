@@ -27,9 +27,52 @@ def load_embeddings(embedding_path: str) -> np.ndarray:
     return embeddings
 
 
-def compute_norms(embeddings: np.ndarray) -> Dict[str, Any]:
-    """Compute various norms for each embedding vector."""
-    print("Computing vector norms...")
+def compute_pairwise_differences(embeddings: np.ndarray, max_samples: int = 10000) -> Dict[str, Any]:
+    """Compute pairwise differences between embeddings using various distance metrics."""
+    n_embeddings = embeddings.shape[0]
+    
+    # Sample embeddings if too many to avoid memory issues
+    if n_embeddings > max_samples:
+        print(f"Sampling {max_samples} embeddings from {n_embeddings} for pairwise difference computation")
+        indices = np.random.choice(n_embeddings, max_samples, replace=False)
+        sample_embeddings = embeddings[indices]
+    else:
+        sample_embeddings = embeddings
+        
+    print(f"Computing pairwise differences for {sample_embeddings.shape[0]} embeddings...")
+    
+    # Compute different distance metrics (these are the pairwise differences)
+    distance_metrics = ['euclidean', 'manhattan', 'cosine', 'chebyshev', 'minkowski']
+    difference_stats = {}
+    
+    for metric in distance_metrics:
+        print(f"  Computing {metric} pairwise differences...")
+        if metric == 'minkowski':
+            # Use p=3 for Minkowski distance as an example
+            differences = pdist(sample_embeddings, metric=metric, p=3)
+        else:
+            differences = pdist(sample_embeddings, metric=metric)
+        
+        difference_stats[metric] = {
+            'values': differences,
+            'mean': np.mean(differences),
+            'std': np.std(differences),
+            'min': np.min(differences),
+            'max': np.max(differences),
+            'median': np.median(differences),
+            'q25': np.percentile(differences, 25),
+            'q75': np.percentile(differences, 75),
+            'skewness': stats.skew(differences),
+            'kurtosis': stats.kurtosis(differences),
+            'n_pairs': len(differences)
+        }
+    
+    return difference_stats
+
+
+def compute_individual_norms(embeddings: np.ndarray) -> Dict[str, Any]:
+    """Compute various norms for individual embedding vectors (for reference)."""
+    print("Computing individual vector norms...")
     
     # L1 norm (Manhattan)
     l1_norms = np.linalg.norm(embeddings, ord=1, axis=1)
@@ -39,9 +82,6 @@ def compute_norms(embeddings: np.ndarray) -> Dict[str, Any]:
     
     # L-infinity norm (Maximum)
     linf_norms = np.linalg.norm(embeddings, ord=np.inf, axis=1)
-    
-    # Frobenius norm (same as L2 for vectors)
-    frob_norms = np.linalg.norm(embeddings, ord='fro', axis=1)
     
     norm_stats = {
         'l1': {
@@ -83,45 +123,6 @@ def compute_norms(embeddings: np.ndarray) -> Dict[str, Any]:
     }
     
     return norm_stats
-
-
-def compute_pairwise_distances(embeddings: np.ndarray, max_samples: int = 10000) -> Dict[str, Any]:
-    """Compute pairwise distances between embeddings."""
-    n_embeddings = embeddings.shape[0]
-    
-    # Sample embeddings if too many to avoid memory issues
-    if n_embeddings > max_samples:
-        print(f"Sampling {max_samples} embeddings from {n_embeddings} for pairwise distance computation")
-        indices = np.random.choice(n_embeddings, max_samples, replace=False)
-        sample_embeddings = embeddings[indices]
-    else:
-        sample_embeddings = embeddings
-        
-    print(f"Computing pairwise distances for {sample_embeddings.shape[0]} embeddings...")
-    
-    # Compute different distance metrics
-    distance_metrics = ['euclidean', 'manhattan', 'cosine', 'chebyshev']
-    distance_stats = {}
-    
-    for metric in distance_metrics:
-        print(f"  Computing {metric} distances...")
-        distances = pdist(sample_embeddings, metric=metric)
-        
-        distance_stats[metric] = {
-            'values': distances,
-            'mean': np.mean(distances),
-            'std': np.std(distances),
-            'min': np.min(distances),
-            'max': np.max(distances),
-            'median': np.median(distances),
-            'q25': np.percentile(distances, 25),
-            'q75': np.percentile(distances, 75),
-            'skewness': stats.skew(distances),
-            'kurtosis': stats.kurtosis(distances),
-            'n_pairs': len(distances)
-        }
-    
-    return distance_stats
 
 
 def compute_nearest_neighbor_stats(embeddings: np.ndarray, k: int = 5, max_samples: int = 5000) -> Dict[str, Any]:
@@ -215,7 +216,7 @@ def compute_embedding_statistics(embeddings: np.ndarray) -> Dict[str, Any]:
     return embedding_stats
 
 
-def create_visualizations(norm_stats: Dict, distance_stats: Dict, output_dir: str):
+def create_visualizations(norm_stats: Dict, difference_stats: Dict, output_dir: str):
     """Create visualization plots."""
     print("Creating visualizations...")
     
@@ -248,14 +249,14 @@ def create_visualizations(norm_stats: Dict, distance_stats: Dict, output_dir: st
     plt.savefig(output_path / 'norm_distributions.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # Plot distance distributions
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    fig.suptitle('Pairwise Distance Distributions', fontsize=16)
+    # Plot pairwise difference distributions
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    fig.suptitle('Pairwise Difference Distributions', fontsize=16)
     
-    distance_types = ['euclidean', 'manhattan', 'cosine', 'chebyshev']
-    for i, dist_type in enumerate(distance_types):
-        ax = axes[i//2, i%2]
-        values = distance_stats[dist_type]['values']
+    difference_types = ['euclidean', 'manhattan', 'cosine', 'chebyshev', 'minkowski']
+    for i, diff_type in enumerate(difference_types):
+        ax = axes[i//2, i%3]
+        values = difference_stats[diff_type]['values']
         # Sample for plotting if too many points
         if len(values) > 10000:
             sample_values = np.random.choice(values, 10000, replace=False)
@@ -263,15 +264,18 @@ def create_visualizations(norm_stats: Dict, distance_stats: Dict, output_dir: st
             sample_values = values
             
         ax.hist(sample_values, bins=50, alpha=0.7, density=True)
-        ax.set_title(f'{dist_type.capitalize()} Distance Distribution')
-        ax.set_xlabel(f'{dist_type.capitalize()} Distance')
+        ax.set_title(f'{diff_type.capitalize()} Pairwise Differences')
+        ax.set_xlabel(f'{diff_type.capitalize()} Distance')
         ax.set_ylabel('Density')
-        ax.axvline(distance_stats[dist_type]['mean'], color='red', linestyle='--',
-                  label=f"Mean: {distance_stats[dist_type]['mean']:.3f}")
+        ax.axvline(difference_stats[diff_type]['mean'], color='red', linestyle='--',
+                  label=f"Mean: {difference_stats[diff_type]['mean']:.3f}")
         ax.legend()
     
+    # Remove empty subplot
+    axes[1, 2].remove()
+    
     plt.tight_layout()
-    plt.savefig(output_path / 'distance_distributions.png', dpi=300, bbox_inches='tight')
+    plt.savefig(output_path / 'pairwise_difference_distributions.png', dpi=300, bbox_inches='tight')
     plt.close()
 
 
@@ -296,13 +300,13 @@ def save_results(results: Dict, output_path: str):
     
     # Remove large arrays to keep JSON file manageable
     results_copy = convert_numpy(results)
-    for norm_type in results_copy.get('norms', {}):
-        if 'values' in results_copy['norms'][norm_type]:
-            del results_copy['norms'][norm_type]['values']
+    for norm_type in results_copy.get('individual_norms', {}):
+        if 'values' in results_copy['individual_norms'][norm_type]:
+            del results_copy['individual_norms'][norm_type]['values']
     
-    for dist_type in results_copy.get('distances', {}):
-        if 'values' in results_copy['distances'][dist_type]:
-            del results_copy['distances'][dist_type]['values']
+    for diff_type in results_copy.get('pairwise_differences', {}):
+        if 'values' in results_copy['pairwise_differences'][diff_type]:
+            del results_copy['pairwise_differences'][diff_type]['values']
     
     with open(output_path, 'w') as f:
         json.dump(results_copy, f, indent=2)
@@ -327,17 +331,17 @@ def print_summary(results: Dict):
     print(f"  Max:  {overall['max']:.6f}")
     print(f"  Sparsity: {overall['sparsity']:.2%}")
     
-    # Norm statistics
-    print(f"\nNorm Statistics:")
+    # Individual norm statistics (for reference)
+    print(f"\nIndividual Vector Norm Statistics:")
     for norm_type in ['l1', 'l2', 'linf']:
-        stats = results['norms'][norm_type]
+        stats = results['individual_norms'][norm_type]
         print(f"  {norm_type.upper()} Norm - Mean: {stats['mean']:.3f}, Std: {stats['std']:.3f}")
     
-    # Distance statistics
-    print(f"\nPairwise Distance Statistics:")
-    for dist_type in ['euclidean', 'manhattan', 'cosine', 'chebyshev']:
-        stats = results['distances'][dist_type]
-        print(f"  {dist_type.capitalize()} - Mean: {stats['mean']:.3f}, Std: {stats['std']:.3f}")
+    # Pairwise difference statistics (main focus)
+    print(f"\nPairwise Difference Statistics:")
+    for diff_type in ['euclidean', 'manhattan', 'cosine', 'chebyshev', 'minkowski']:
+        stats = results['pairwise_differences'][diff_type]
+        print(f"  {diff_type.capitalize()} - Mean: {stats['mean']:.3f}, Std: {stats['std']:.3f}, Pairs: {stats['n_pairs']}")
     
     # k-NN statistics
     if 'knn_stats' in results:
@@ -374,18 +378,18 @@ def main():
     # Basic embedding statistics
     results['embedding_stats'] = compute_embedding_statistics(embeddings)
     
-    # Norm statistics
-    results['norms'] = compute_norms(embeddings)
+    # Individual norm statistics (for reference)
+    results['individual_norms'] = compute_individual_norms(embeddings)
     
-    # Pairwise distance statistics
-    results['distances'] = compute_pairwise_distances(embeddings, args.max_samples)
+    # Pairwise difference statistics (main focus)
+    results['pairwise_differences'] = compute_pairwise_differences(embeddings, args.max_samples)
     
     # k-NN statistics
     results['knn_stats'] = compute_nearest_neighbor_stats(embeddings, args.k_neighbors, args.max_samples)
     
     # Create visualizations
     if not args.no_plots:
-        create_visualizations(results['norms'], results['distances'], args.output_dir)
+        create_visualizations(results['individual_norms'], results['pairwise_differences'], args.output_dir)
     
     # Save results
     save_results(results, output_dir / 'analysis_results.json')
