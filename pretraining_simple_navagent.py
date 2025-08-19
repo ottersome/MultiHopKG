@@ -1,18 +1,20 @@
 import os
 import time
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Optional
 
 import debugpy
 import torch
 import numpy as np
 from torch.utils.data import DataLoader, Dataset
 from torch import nn
+import torch.optim as optim
 import pickle
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 
 from multihopkg import data_utils
 from multihopkg.logging import setup_logger
-from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
+from multihopkg.rl.graph_search.cpg import AttentionContinuousPolicyGradient, ContinuousPolicyGradient
 from multihopkg.utils.data_structures import Triplet_Int, Triplet_Str
 from multihopkg.run_configs.pretraining_simple_navagent import arguments
 
@@ -24,16 +26,59 @@ class RandomWalkDataset(Dataset):
         entity_embeddings: nn.Embedding,
         relation_embeddings: nn.Embedding,
         paths: List[List[int]],
+        max_path_length: int = 10,
     ):
-        self.paths = paths
+        tensor_paths = torch.tensor(paths, dtype=torch.int, device=entity_embeddings.weight.device)
+        tensor_paths[tensor_paths == -1] = entity_embeddings.weight.shape[0] - 1  # Replace -1 with the last entity
+
+        self.paths = tensor_paths
         self.entity_embeddings = entity_embeddings
         self.relation_embeddings = relation_embeddings
+        self.max_path_length = max_path_length
+        self.device = entity_embeddings.weight.device
 
     def __len__(self):
         return len(self.paths)
 
     def __getitem__(self, idx):
-        return self.paths[idx]
+        path = self.paths[idx]
+        
+        # Get start and target embeddings
+        logger.debug(f"Trying to get {path[0]} and {path[-1]} on a embedding shape of {self.entity_embeddings.weight.shape}")
+        start_embeddings = self.entity_embeddings(path[0])
+        target_embeddings = self.entity_embeddings(path[-1])
+
+
+        # start_embedding = entity_embeddings[0]
+        # target_embedding = entity_embeddings[-1]
+        
+        # TODO: think if this is necessary
+        # It all requires a bit more relations anyways
+
+        # Get intermediate nodes and relations for training
+        # intermediate_nodes = []
+        # for i in range(len(path) - 1):
+        #     # For each step in the path, we need:
+        #     # 1. Current node embedding
+        #     # 2. Target node embedding
+        #     # 3. Relation embedding (if available)
+        #     current_node = entity_embeddings[i]
+        #     next_node = entity_embeddings[i + 1]
+        #     
+        #     # In a real scenario, you would have the relation between nodes
+        #     # Here we'll use a placeholder or compute it
+        #     # TODO: Change this for the acutal one ?
+        #     # relation_vector = next_node - current_node  # Simple approximation
+        #     
+        #     intermediate_nodes.append((current_node, next_node, relation_vector))
+        
+        return {
+            'start': start_embeddings,
+            'target': target_embeddings,
+            # 'path': entity_embeddings,
+            # 'steps': intermediate_nodes,
+            # 'path_length': len(path)
+        }
 
 def load_path_data(
     path_mquake_data: str,
@@ -63,6 +108,7 @@ def load_path_data(
     ])
     
     if cache_complete:
+        logger.info(f"Found cache {path_cache_dir}, loading from it.")
         with open(train_cache_path, "rb") as f:
             train_paths = pickle.load(f)
         with open(dev_cache_path, "rb") as f:
@@ -73,6 +119,7 @@ def load_path_data(
         return train_paths, dev_paths, test_paths
     else:
         # Load mquake data
+        logger.info(f"No cache found on{path_cache_dir}. Generating...")
         path_triplets = os.path.join(path_mquake_data, "expNpruned_triplets.txt")
         id2ent, ent2id, id2rel, rel2id = data_utils.load_dictionaries(path_mquake_data)
         triplets_int = data_utils.load_triples_hrt(path_triplets, ent2id, rel2id, has_headers=True)
@@ -102,34 +149,210 @@ def load_path_data(
 
         return train_paths, dev_paths, test_paths
 
+def compute_returns(rewards: List[torch.Tensor], gamma: float, masks: Optional[List[torch.Tensor]] = None) -> List[torch.Tensor]:
+    """
+    Compute discounted returns for each timestep.
+    
+    Args:
+        rewards: List of reward tensors for each timestep
+        gamma: Discount factor
+        masks: Optional list of boolean masks (1 for not done, 0 for done)
+        
+    Returns:
+        List of return tensors for each timestep
+    """
+    returns = []
+    R = torch.zeros_like(rewards[-1])
+    
+    for i in reversed(range(len(rewards))):
+        if masks is not None:
+            R = rewards[i] + gamma * R * masks[i]
+        else:
+            R = rewards[i] + gamma * R
+        returns.insert(0, R)
+        
+    return returns
+
 def train_loop(
-    nav_agent: ContinuousPolicyGradient,
+    nav_agent: AttentionContinuousPolicyGradient,
     train_paths: List[List[int]],
     entity_embeddings: nn.Embedding,
     relation_embeddings: nn.Embedding,
     # -- Training Params -- #
     epochs: int, 
-    # steps_in_episode: int,
+    steps_in_episode: int,
     batch_size: int,
+    learning_rate: float = 1e-4,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    checkpoint_dir: str = "./checkpoints/navigator/",
+    save_interval: int = 5,
 ) -> nn.Module:
-    # So that we can later ask our model to from point A to point B
+    # Create checkpoint directory if it doesn't exist
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    # Move model to device
+    nav_agent = nav_agent.to(device)
+    entity_embeddings = entity_embeddings.to(device)
+    relation_embeddings = relation_embeddings.to(device)
+    
+    # Create optimizer
+    optimizer = optim.Adam(nav_agent.parameters(), lr=learning_rate)
+    
+    # Create dataset
     train_dataset = RandomWalkDataset(
-        entity_embeddings = entity_embeddings,
-        relation_embeddings = relation_embeddings,
-        paths = train_paths,
+        entity_embeddings=entity_embeddings,
+        relation_embeddings=relation_embeddings,
+        paths=train_paths,
+        max_path_length=steps_in_episode + 1,  # +1 to include target
     )
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_dataloader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True,
+        collate_fn=lambda batch: {
+            'start': torch.stack([item['start'] for item in batch]).to(device),
+            'target': torch.stack([item['target'] for item in batch]).to(device),
+        }
+    )
 
     # Training Loop
     nav_agent.train()
     for epoch in range(epochs):
-        logger.debug(f"Starting epoch {epoch}")
-        for batch_idx, batch in enumerate(train_dataloader):
-            logger.debug(f"Going through batch {batch_idx}")
-
-
-            # TODO: Implement the training loop
-            pass
+        epoch_loss = 0
+        epoch_reward = 0
+        epoch_steps = 0
+        
+        progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{epochs}")
+        
+        for batch_idx, batch in enumerate(progress_bar):
+            start_states = batch["start"]
+            target_states = batch["target"]
+            batch_size = start_states.size(0)
+            
+            # Initialize episode variables
+            states = []
+            actions = []
+            log_probs = []
+            rewards = []
+            masks = []
+            entropies = []
+            
+            # Current state starts at the beginning of the path
+            current_states = start_states
+            
+            # Run episode for steps_in_episode steps
+            for step in range(steps_in_episode):
+                # Store current state
+                states.append(current_states)
+                
+                actions_step, log_probs_step, entropy_step, _, _ = nav_agent(
+                    current_states, target_states
+                )
+                
+                # Store action, log_prob, and entropy
+                actions.append(actions_step)
+                log_probs.append(log_probs_step)
+                entropies.append(entropy_step)
+                
+                # Apply action to get next state (simulate movement in embedding space)
+                next_states = current_states + actions_step
+                
+                # Calculate reward based on distance to target
+                distances = torch.norm(next_states - target_states, dim=-1)
+                step_rewards = 1.0 / (1.0 + distances)  # Higher reward for closer distance
+                
+                # Add bonus reward for reaching target
+                target_reached = distances < 0.1
+                step_rewards = step_rewards + 2.0 * target_reached.float()
+                
+                # Store rewards
+                rewards.append(step_rewards)
+                
+                # Check if done (reached target or max steps)
+                dones = target_reached | (step == steps_in_episode - 1)
+                masks.append(~dones)  # Store inverted dones as masks (1 = not done, 0 = done)
+                
+                # Update current state
+                current_states = next_states
+                
+                # Break if all episodes in batch are done
+                if dones.all():
+                    break
+                
+                # For episodes that are done, reset their states to the final state
+                # to avoid meaningless gradient updates
+                if dones.any():
+                    current_states = torch.where(
+                        dones.unsqueeze(1),
+                        current_states,  # Keep the same state if done
+                        current_states   # Otherwise use the next state
+                    )
+            
+            # Convert episode data to tensors
+            actions = torch.stack(actions)
+            log_probs = torch.stack(log_probs)
+            rewards = torch.stack(rewards)
+            masks = torch.stack(masks)
+            entropies = torch.stack(entropies)
+            
+            # Calculate returns (discounted rewards)
+            returns = compute_returns(rewards, nav_agent.get_gamma(), masks)
+            returns = torch.stack(returns)
+            
+            # Normalize returns for stability
+            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+            
+            # Calculate policy loss
+            policy_loss = -(log_probs * returns).mean()
+            
+            # Add entropy regularization
+            entropy_loss = -nav_agent.get_beta() * entropies.mean()
+            
+            # Total loss
+            loss = policy_loss + entropy_loss
+            
+            # Optimize
+            optimizer.zero_grad()
+            loss.backward()
+            # Gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(nav_agent.parameters(), 0.5)
+            optimizer.step()
+            
+            # Update metrics
+            epoch_loss += loss.item()
+            epoch_reward += rewards.mean().item()
+            epoch_steps += 1
+            
+            # Update progress bar
+            progress_bar.set_postfix({
+                'loss': f"{loss.item():.4f}",
+                'reward': f"{rewards.mean().item():.4f}"
+            })
+        
+        # Log epoch results
+        avg_loss = epoch_loss / epoch_steps
+        avg_reward = epoch_reward / epoch_steps
+        logger.info(f"Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f}, Reward: {avg_reward:.4f}")
+        
+        # Save checkpoint
+        if (epoch + 1) % save_interval == 0:
+            checkpoint_path = os.path.join(checkpoint_dir, f"navigator_epoch_{epoch+1}.pt")
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': nav_agent.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': avg_loss,
+                'reward': avg_reward,
+            }, checkpoint_path)
+            logger.info(f"Saved checkpoint to {checkpoint_path}")
+    
+    # Save final model
+    final_path = os.path.join(checkpoint_dir, "navigator_final.pt")
+    torch.save({
+        'model_state_dict': nav_agent.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, final_path)
+    logger.info(f"Saved final model to {final_path}")
 
     return nav_agent
 
@@ -140,15 +363,33 @@ def main():
         debugpy.listen(("0.0.0.0", 42023))
         debugpy.wait_for_client()
 
+    # Set device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+
     # Load the Embeddings
-    entity_embeddings = nn.Embedding.from_pretrained(
+    entities_embeddings_tensor = (
         torch.from_numpy(np.load(os.path.join(args.path_embeddings_dir, "entity_embedding.npy")))
     )
-    relation_embeddings = nn.Embedding.from_pretrained(
+    relations_tensor = (
         torch.from_numpy(np.load(os.path.join(args.path_embeddings_dir, "relation_embedding.npy")))
     )
+    num_special_embeddings = 1 # Mostly for padding
+    num_entities = entities_embeddings_tensor.shape[0] 
+    entities_dim = entities_embeddings_tensor.shape[1]
+    num_relations = relations_tensor.shape[0]
+    relations_dim = relations_tensor.shape[1]
+    entity_embeddings = nn.Embedding(num_entities + num_special_embeddings, entities_dim)
+    relation_embeddings = nn.Embedding(num_relations + num_special_embeddings, relations_dim)
+
+    # Load pre-trained embeddings and zero out the special embeddings
+    entity_embeddings.weight.data[:num_entities] = entities_embeddings_tensor
+    entity_embeddings.weight.data[num_entities:] = 0
+    relation_embeddings.weight.data[:num_relations] = relations_tensor
+    relation_embeddings.weight.data[num_relations:] = 0
 
     dim_action_relation = relation_embeddings.embedding_dim
+    dim_entity = entity_embeddings.embedding_dim
 
     # Load mquake data
     train_paths, dev_paths, test_paths = load_path_data(
@@ -161,12 +402,15 @@ def main():
     )
 
     # Create the Navigator
-    nav_agent = ContinuousPolicyGradient(
+    # For the observation dimension, we concatenate the current state and target state
+    dim_observation = dim_entity * 2  # current_state + target_state
+    
+    nav_agent = AttentionContinuousPolicyGradient(
         beta = args.rl_beta,
         gamma = args.rl_gamma,
         dim_action = dim_action_relation,
         dim_hidden = args.rl_dim_hidden,
-        dim_observation = args.env_dim_observation,
+        dim_observation = dim_observation,
     )
 
     ########################################
@@ -178,9 +422,13 @@ def main():
         train_paths,
         entity_embeddings,
         relation_embeddings,
-        epochs = args.epochs,
-        # steps_in_episode = args.num_rollout_steps,
-        batch_size = args.batch_size,
+        epochs = args.epoch,
+        steps_in_episode = args.steps_in_episode,
+        batch_size = args.training_batch_size,
+        learning_rate = args.learning_rate,
+        device = device,
+        checkpoint_dir = args.checkpoint_dir,
+        save_interval = args.save_interval,
     )
 
 if __name__ == "__main__":
