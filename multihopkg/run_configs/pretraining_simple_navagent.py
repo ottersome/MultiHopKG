@@ -5,11 +5,17 @@ def arguments() -> argparse.Namespace:
 
     # -- General Training Parameters -- #
     parser.add_argument("--epoch", type=int, default=10)
-    parser.add_argument("--training_batch_size", type=int, default=32)
+    parser.add_argument("--training_batch_size", type=int, default=128)
     parser.add_argument("--steps_in_episode", type=int, default=8, help="Number of steps in each episode")
-    parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate for optimizer")
+    parser.add_argument("--learning_rate", '-lr', type=float, default=5e-4, help="Learning rate for optimizer")
     parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints/navigator/")
     parser.add_argument("--save_interval", type=int, default=5, help="Save model every N epochs")
+    parser.add_argument("--seed", type=int, default=42)
+
+    parser.add_argument("--use_attention", action="store_true")
+    parser.add_argument("--random_emebeddings", action="store_true")
+    parser.add_argument("--dont_use_tanh_squashing", action="store_true")
+    parser.add_argument("--dont_use_entropy_loss", action="store_true")
 
     # -- General Data Parameters -- #
     parser.add_argument("--path_mquake_data", type=str, default="./data/mquake/")
@@ -32,4 +38,10 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--use_navigator", action="store_true", help="Use the navigator model with state-target attention")
 
     parser.add_argument("--debug", "-d", action="store_true")
+
+    # -- Wandb Parameters -- #
+    parser.add_argument("--wandb_on", "-w", action="store_true")
+    parser.add_argument("--wr_name", type=str, default="test")
+    parser.add_argument("--wr_notes", type=str, default="Still just trying to make it learn")
+    parser.add_argument("--wr_project_name", type=str, default="simple_navagent")
     return parser.parse_args()

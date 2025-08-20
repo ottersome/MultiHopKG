@@ -17,7 +17,7 @@ def init_layer_uniform(layer: nn.Linear, init_w: float = 3e-3) -> nn.Linear:
     layer.bias.data.uniform_(-init_w, init_w)
     return layer
 
-class GraphNavigator(nn.Module):
+class AttentionGraphNavigator(nn.Module):
     """
     A neural network that learns to navigate through a TransE graph.
     Takes a current state and a target (either a node or a question embedding)
@@ -32,7 +32,7 @@ class GraphNavigator(nn.Module):
         num_layers: int = 2,
         dropout: float = 0.1,
     ):
-        super(GraphNavigator, self).__init__()
+        super(AttentionGraphNavigator, self).__init__()
         
         # Dimensions
         self.state_dim = state_dim
@@ -100,6 +100,57 @@ class GraphNavigator(nn.Module):
         
         # Predict action parameters (mu and log_sigma)
         action_params = self.action_predictor(combined)  # (batch_size, action_dim*2)
+        
+        return action_params
+
+class SimpleGraphNavigator(nn.Module):
+    """
+    A neural network that learns to navigate through a TransE graph.
+    Takes a current state and a target (either a node or a question embedding)
+    and produces actions to navigate towards the target.
+    """
+    def __init__(
+        self,
+        state_dim: int,
+        target_dim: int,
+        action_dim: int,
+        hidden_dim: int = 256,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+    ):
+        super(SimpleGraphNavigator, self).__init__()
+        
+        # Dimensions
+        self.state_dim = state_dim
+        self.target_dim = target_dim
+        self.action_dim = action_dim
+        self.hidden_dim = hidden_dim
+        
+        # State encoder
+        self.combined_parameter_estimation = nn.Sequential(
+            nn.Linear(state_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, action_dim * 2),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        
+    def forward(self, state: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the navigator.
+        
+        Args:
+            state: Current state embedding (batch_size, state_dim)
+            target: Target embedding (batch_size, target_dim)
+            
+        Returns:
+            action_params: Action parameters (batch_size, action_dim*2)
+                          First half is mu, second half is log_sigma
+        """
+        action_params = self.combined_parameter_estimation(torch.cat([state, target], dim=-1))  # (batch_size, hidden_dim*2)
+        
         
         return action_params
 
@@ -175,25 +226,34 @@ class AttentionContinuousPolicyGradient(nn.Module):
         dim_action: int,
         dim_hidden: int,
         dim_observation: int,
+        use_attention: bool = True,
         log_std_min: float = -20,
         log_std_max: float = 2,
+        use_tanh_squashing: bool= True,  # Make squashing configurable
     ):
-        super(AttentionContinuousPolicyGradient, self).__init__()
-
-        # Training hyperparameters
-        self.beta = beta  # entropy regularization parameter
-        self.gamma = gamma  # shrinking factor
-
-        ########################################
-        # Torch Modules
-        ########################################
-        # Use the navigator for state-target navigation
-        self.navigator = GraphNavigator(
-            state_dim=dim_observation // 2,  # Assuming observation is [state, target] concatenated
-            target_dim=dim_action,
-            action_dim=dim_action,
-            hidden_dim=dim_hidden
-        )
+        super().__init__()
+        
+        self.beta = beta
+        self.gamma = gamma
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+        self.use_tanh_squashing = use_tanh_squashing
+        self.use_attention = use_attention
+        
+        if self.use_attention:
+            self.navigator = AttentionGraphNavigator(
+                state_dim=dim_observation // 2,  # Assuming observation is [state, target] concatenated
+                target_dim=dim_action,
+                action_dim=dim_action,
+                hidden_dim=dim_hidden
+            )
+        else:
+            self.navigator = SimpleGraphNavigator(
+                state_dim=dim_observation // 2,  # Assuming observation is [state, target] concatenated
+                target_dim=dim_action,
+                action_dim=dim_action,
+                hidden_dim=dim_hidden
+            )
 
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
@@ -214,58 +274,36 @@ class AttentionContinuousPolicyGradient(nn.Module):
         observations: torch.Tensor,
         target: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Sample actions using the navigator which takes both state and target into account.
         
-        Args:
-            observations: Current state observations (batch_size, dim_observation)
-            target: Target state or question embedding (batch_size, dim_target)
-            
-        Returns:
-            actions: Sampled actions (batch_size, dim_action)
-            log_probs: Log probabilities of the actions (batch_size,)
-            entropy: Entropy of the action distribution (batch_size,)
-            mu: Mean of the action distribution (batch_size, dim_action)
-            sigma: Standard deviation of the action distribution (batch_size, dim_action)
-        """
-        # Get action parameters from navigator
         action_params = self.navigator(observations, target)
         
-        # Split into mu and log_sigma
+        # DEBUGGING: REMOVE This comment afteward
         action_dim = action_params.size(-1) // 2
-        # From the action half goes into mu seed and the other half goes into log_sigma
         mu = action_params[:, :action_dim]
         log_sigma_raw = action_params[:, action_dim:]
-        
-        # Apply tanh to mu for bounded actions
-        # mu = mu.tanh()
-        
-        # Process log_sigma with bounds
-        # TODO: Try this if found necessary
-        # log_sigma = log_sigma_raw.tanh()
-        # log_sigma = self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (log_sigma + 1)
-        sigma = torch.exp(log_sigma_raw)
-        
+
+        # Apply log_std bounds for numerical stability
+        log_sigma = torch.clamp(log_sigma_raw, self.log_std_min, self.log_std_max)
+        sigma = torch.exp(log_sigma)
+         
         # Create distribution
         dist = torch.distributions.Normal(mu, sigma)
         entropy = dist.entropy().sum(dim=-1)
-        
+         
         # Sample action
-        # z = dist.rsample()
-        actions = dist.rsample()
+        z = dist.rsample()
         
-        # Apply tanh squashing
-        # actions = z.tanh()
-        
-        # Compute log probabilities with squashing correction
-        # log_probs = dist.log_prob(z) - torch.log(1 - actions.pow(2) + 1e-7)
-        log_probs = dist.log_prob(actions).sum(dim=-1)
+        if self.use_tanh_squashing:
+            # Apply tanh squashing for bounded actions
+            actions = torch.tanh(z)
+            # Correct log probabilities for squashing
+            log_probs = dist.log_prob(z) - torch.log(1 - actions.pow(2) + 1e-7)
+            log_probs = log_probs.sum(dim=-1)
+        else:
+            actions = z
+            log_probs = dist.log_prob(actions).sum(dim=-1)
         
         return actions, log_probs, entropy, mu, sigma
-
-    # TODO: Figure out if we actually need this
-    def _reparemeteriztion(self, dist, action):
-        return dist.log_prob(action).sum(dim=-1)
 
 class ContinuousPolicyGradient(nn.Module):
     # TODO: remove all parameters that are irrelevant here

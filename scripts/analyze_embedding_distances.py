@@ -11,7 +11,6 @@ import numpy as np
 from scipy.spatial.distance import pdist, squareform
 from scipy import stats
 import matplotlib.pyplot as plt
-import seaborn as sns
 from pathlib import Path
 import json
 from typing import Dict, Any, Tuple
@@ -42,7 +41,7 @@ def compute_pairwise_differences(embeddings: np.ndarray, max_samples: int = 1000
     print(f"Computing pairwise differences for {sample_embeddings.shape[0]} embeddings...")
     
     # Compute different distance metrics (these are the pairwise differences)
-    distance_metrics = ['euclidean', 'manhattan', 'cosine', 'chebyshev', 'minkowski']
+    distance_metrics = ['euclidean', 'cosine', 'chebyshev', 'minkowski']
     difference_stats = {}
     
     for metric in distance_metrics:
@@ -253,7 +252,7 @@ def create_visualizations(norm_stats: Dict, difference_stats: Dict, output_dir: 
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
     fig.suptitle('Pairwise Difference Distributions', fontsize=16)
     
-    difference_types = ['euclidean', 'manhattan', 'cosine', 'chebyshev', 'minkowski']
+    difference_types = ['euclidean','cosine', 'chebyshev', 'minkowski']
     for i, diff_type in enumerate(difference_types):
         ax = axes[i//2, i%3]
         values = difference_stats[diff_type]['values']
@@ -339,7 +338,7 @@ def print_summary(results: Dict):
     
     # Pairwise difference statistics (main focus)
     print(f"\nPairwise Difference Statistics:")
-    for diff_type in ['euclidean', 'manhattan', 'cosine', 'chebyshev', 'minkowski']:
+    for diff_type in ['euclidean', 'cosine', 'chebyshev', 'minkowski']:
         stats = results['pairwise_differences'][diff_type]
         print(f"  {diff_type.capitalize()} - Mean: {stats['mean']:.3f}, Std: {stats['std']:.3f}, Pairs: {stats['n_pairs']}")
     
@@ -353,10 +352,10 @@ def print_summary(results: Dict):
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze embedding distances and statistics')
-    parser.add_argument('embedding_path', type=str, help='Path to numpy embedding file', default="./models/graph_embeddings/transE_mquake_dim500/entity_embedding.npy")
+    parser.add_argument('--embedding_path', type=str, help='Path to numpy embedding file', default="./models/graph_embeddings/transE_mquake_dim500/entity_embedding.npy")
     parser.add_argument('--output_dir', type=str, default='embedding_analysis/', 
                        help='Output directory for results')
-    parser.add_argument('--max_samples', type=int, default=10000,
+    parser.add_argument('--max_samples', type=int, default=40000,
                        help='Maximum samples for pairwise distance computation')
     parser.add_argument('--k_neighbors', type=int, default=5,
                        help='Number of nearest neighbors to analyze')

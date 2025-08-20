@@ -1,8 +1,11 @@
 import os
 import time
-from typing import List, Tuple, Dict, Optional
+from tracemalloc import start
+from typing import Any, List, Tuple, Dict, Optional
 
 import debugpy
+from sympy import use
+from sympy.printing.pycode import k
 import torch
 import numpy as np
 from torch.utils.data import DataLoader, Dataset
@@ -18,6 +21,10 @@ from multihopkg.rl.graph_search.cpg import AttentionContinuousPolicyGradient, Co
 from multihopkg.utils.data_structures import Triplet_Int, Triplet_Str
 from multihopkg.run_configs.pretraining_simple_navagent import arguments
 
+import wandb
+
+from multihopkg.utils.setup import set_seeds
+
 class RandomWalkDataset(Dataset):
     PATH_SAMPLING_BATCH_SIZE = 128
 
@@ -29,7 +36,9 @@ class RandomWalkDataset(Dataset):
         max_path_length: int = 10,
     ):
         tensor_paths = torch.tensor(paths, dtype=torch.int, device=entity_embeddings.weight.device)
-        tensor_paths[tensor_paths == -1] = entity_embeddings.weight.shape[0] - 1  # Replace -1 with the last entity
+        self.pad_id = entity_embeddings.weight.shape[0] - 1  # Replace -1 with the last entity
+        logger.debug(f"Got Padding {torch.sum(tensor_paths == -1).item()} out of {tensor_paths.numel()}")
+        tensor_paths[tensor_paths == -1] = self.pad_id
 
         self.paths = tensor_paths
         self.entity_embeddings = entity_embeddings
@@ -44,9 +53,13 @@ class RandomWalkDataset(Dataset):
         path = self.paths[idx]
         
         # Get start and target embeddings
-        logger.debug(f"Trying to get {path[0]} and {path[-1]} on a embedding shape of {self.entity_embeddings.weight.shape}")
         start_embeddings = self.entity_embeddings(path[0])
-        target_embeddings = self.entity_embeddings(path[-1])
+        # target_embeddings = self.entity_embeddings(path[-1])
+        # Target_embedding should be the last non_padding, we should retreive that
+        path_mask_entities = path != self.pad_id
+        last_non_pad_id = path_mask_entities.sum() - 1
+        target_embeddings = self.entity_embeddings(path[last_non_pad_id])
+
 
 
         # start_embedding = entity_embeddings[0]
@@ -173,6 +186,15 @@ def compute_returns(rewards: List[torch.Tensor], gamma: float, masks: Optional[L
         
     return returns
 
+def wandb_report(metrics: Dict[str, Any], epoch: int, batch_idx: int):
+    if wandb.run is None:
+        return
+
+    # Log metrics
+    for k, v in metrics.items():
+        wandb.log({f"train/{k}": v})
+
+
 def train_loop(
     nav_agent: AttentionContinuousPolicyGradient,
     train_paths: List[List[int]],
@@ -186,6 +208,7 @@ def train_loop(
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     checkpoint_dir: str = "./checkpoints/navigator/",
     save_interval: int = 5,
+    use_entropy_loss: bool = True,
 ) -> nn.Module:
     # Create checkpoint directory if it doesn't exist
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -225,6 +248,7 @@ def train_loop(
         progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{epochs}")
         
         for batch_idx, batch in enumerate(progress_bar):
+            logger.debug(f"At epoch-batch {epoch}-{batch_idx}")
             start_states = batch["start"]
             target_states = batch["target"]
             batch_size = start_states.size(0)
@@ -241,11 +265,15 @@ def train_loop(
             current_states = start_states
             
             # Run episode for steps_in_episode steps
+            step_distances = []
+            mus, sigmas = [], []
+            # step_i_distances = {f"step_{i}_distance": None for i in range(steps_in_episode) }
+            action_magnitude = []
             for step in range(steps_in_episode):
                 # Store current state
                 states.append(current_states)
                 
-                actions_step, log_probs_step, entropy_step, _, _ = nav_agent(
+                actions_step, log_probs_step, entropy_step, mu, sigma = nav_agent(
                     current_states, target_states
                 )
                 
@@ -256,14 +284,23 @@ def train_loop(
                 
                 # Apply action to get next state (simulate movement in embedding space)
                 next_states = current_states + actions_step
+                # next_states = actions_step
                 
                 # Calculate reward based on distance to target
-                distances = torch.norm(next_states - target_states, dim=-1)
+                # distances = torch.norm(next_states - target_states, dim=-1)
+                distances = torch.linalg.vector_norm(next_states - target_states, dim=-1)
+                _debug_avg_distance = distances.mean().item()
+                _action_magnitude = torch.linalg.vector_norm(actions_step, dim=-1).mean()
+                action_magnitude.append(_action_magnitude)
+                # step_i_distances[f"step_{step}_distance"] = _debug_avg_distance
+                step_distances.append(_debug_avg_distance)
                 step_rewards = 1.0 / (1.0 + distances)  # Higher reward for closer distance
                 
                 # Add bonus reward for reaching target
-                target_reached = distances < 0.1
-                step_rewards = step_rewards + 2.0 * target_reached.float()
+                target_reached = distances < 0.1 # TODO: Find something better than this. This is too arbitrary.
+                if epoch == 1:
+                    debugpy.breakpoint()
+                # step_rewards = step_rewards + 2.0 * target_reached.float()
                 
                 # Store rewards
                 rewards.append(step_rewards)
@@ -281,26 +318,38 @@ def train_loop(
                 
                 # For episodes that are done, reset their states to the final state
                 # to avoid meaningless gradient updates
+                mus.append(mu.mean().item())
+                sigmas.append(sigma.mean().item())
                 if dones.any():
-                    current_states = torch.where(
-                        dones.unsqueeze(1),
-                        current_states,  # Keep the same state if done
-                        current_states   # Otherwise use the next state
-                    )
+                    import pdb
+                    print(f"Wow. We got here")
+                    pdb.set_trace()
+                    # current_states = torch.where(
+                    #     dones.unsqueeze(1),
+                    #     current_states,  # Keep the same state if done
+                    #     current_states   # Otherwise use the next state
+                    # )
+
+            # Report on step distances
+            logger.debug(f"Step distances ({epoch}-{batch_idx}): {step_distances}")
             
             # Convert episode data to tensors
             actions = torch.stack(actions)
+            _action_magnitude = torch.mean(actions)
             log_probs = torch.stack(log_probs)
             rewards = torch.stack(rewards)
             masks = torch.stack(masks)
             entropies = torch.stack(entropies)
             
             # Calculate returns (discounted rewards)
-            returns = compute_returns(rewards, nav_agent.get_gamma(), masks)
+            # returns = compute_returns(rewards, nav_agent.get_gamma(), masks)
+            returns = compute_returns(rewards, nav_agent.get_gamma(), None) # DEBUG: Do we need masks?
             returns = torch.stack(returns)
             
             # Normalize returns for stability
+            returns = torch.sum(returns, dim=0)
             returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+
             
             # Calculate policy loss
             policy_loss = -(log_probs * returns).mean()
@@ -309,25 +358,41 @@ def train_loop(
             entropy_loss = -nav_agent.get_beta() * entropies.mean()
             
             # Total loss
-            loss = policy_loss + entropy_loss
+            if use_entropy_loss:
+                loss = policy_loss + entropy_loss
+            else:
+                loss = policy_loss
             
             # Optimize
             optimizer.zero_grad()
             loss.backward()
             # Gradient clipping to prevent exploding gradients
-            torch.nn.utils.clip_grad_norm_(nav_agent.parameters(), 0.5)
+            # torch.nn.utils.clip_grad_norm_(nav_agent.parameters(), 0.5)
             optimizer.step()
             
             # Update metrics
             epoch_loss += loss.item()
             epoch_reward += rewards.mean().item()
             epoch_steps += 1
+
+            step_wise_distances = { f"step_{i}_distance": step_distances[i] for i in range(len(step_distances)) }
+            training_metrics = {
+                'train/loss': loss.item(),
+                'train/reward': rewards.mean().item(),
+                # 'train/distance': torch.Tensor(step_distances).mean().item(),
+                'train/mu': torch.Tensor(mus).mean().item(),
+                'train/sigma': torch.Tensor(sigmas).mean().item(),
+                'train/action_magnitude': _action_magnitude.item(),
+                'train/policy_loss': policy_loss.item(),
+                'train/entropy_loss': entropy_loss.item(),
+                # **step_i_distances,
+                **step_wise_distances
+            }
+            loss_metrics_str = { k: f"{v:.4f}" for k, v in training_metrics.items() }
             
             # Update progress bar
-            progress_bar.set_postfix({
-                'loss': f"{loss.item():.4f}",
-                'reward': f"{rewards.mean().item():.4f}"
-            })
+            progress_bar.set_postfix(loss_metrics_str)
+            wandb_report(training_metrics, epoch, batch_idx)
         
         # Log epoch results
         avg_loss = epoch_loss / epoch_steps
@@ -358,10 +423,28 @@ def train_loop(
 
 def main():
     args = arguments()
+    set_seeds(args.seed)
     if args.debug:
         logger.info("\033[1;33m Waiting for debugger to attach...\033[0m")
         debugpy.listen(("0.0.0.0", 42023))
         debugpy.wait_for_client()
+
+    if args.wandb_on:
+        args.wr_name = f"{args.wr_name}_{args.seed}"
+        logger.info(
+            f"🪄 Initializing Weights and Biases. Under project name {args.wr_project_name} and run name {args.wr_name}"
+        )
+        wandb_run = wandb.init(
+            project=args.wr_project_name,
+            name=args.wr_name,
+            config=vars(args),
+            notes=args.wr_notes,
+        )
+        for k, v in wandb.config.items():
+            setattr(args, k, v)
+
+        print(f"Run URL: {wandb_run.url}")
+        print(f"Args: {args}")
 
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -411,6 +494,8 @@ def main():
         dim_action = dim_action_relation,
         dim_hidden = args.rl_dim_hidden,
         dim_observation = dim_observation,
+        use_attention = args.use_attention,
+        use_tanh_squashing=not args.dont_use_tanh_squashing,
     )
 
     ########################################
@@ -429,6 +514,7 @@ def main():
         device = device,
         checkpoint_dir = args.checkpoint_dir,
         save_interval = args.save_interval,
+        use_entropy_loss = not args.dont_use_entropy_loss,
     )
 
 if __name__ == "__main__":
