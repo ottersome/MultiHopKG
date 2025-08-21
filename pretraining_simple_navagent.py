@@ -287,6 +287,7 @@ def train_sac_loop(
                     
                     # Calculate reward based on distance to target
                     distance = torch.linalg.vector_norm(next_state - target_state, dim=-1)
+                    # TODO: Play with this reward a bit. Doesn't feel entirely right to me. 
                     reward = 1.0 / (1.0 + distance.item())  # Higher reward for closer distance
                     
                     # Create next observation
