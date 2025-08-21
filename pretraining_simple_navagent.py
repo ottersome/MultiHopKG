@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 from multihopkg import data_utils
 from multihopkg.logging import setup_logger
-from multihopkg.rl.graph_search.cpg import AttentionContinuousPolicyGradient, ContinuousPolicyGradient
+from multihopkg.rl.graph_search.cpg import AttentionContinuousPolicyGradient, ContinuousPolicyGradient, SACGraphNavigator, ReplayBuffer
 from multihopkg.utils.data_structures import Triplet_Int, Triplet_Str
 from multihopkg.run_configs.pretraining_simple_navagent import arguments
 
@@ -195,7 +195,241 @@ def wandb_report(metrics: Dict[str, Any], epoch: int, batch_idx: int):
         wandb.log({f"train/{k}": v})
 
 
-def train_loop(
+def train_sac_loop(
+    sac_agent: SACGraphNavigator,
+    train_paths: List[List[int]],
+    entity_embeddings: nn.Embedding,
+    relation_embeddings: nn.Embedding,
+    # -- Training Params -- #
+    epochs: int, 
+    steps_in_episode: int,
+    batch_size: int,
+    learning_rate: float = 1e-4,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    checkpoint_dir: str = "./checkpoints/navigator/",
+    save_interval: int = 5,
+    use_auxiliary_loss: bool = False,
+    auxiliary_loss_weight: float = 0.1,
+    replay_buffer_size: int = 100000,
+    sac_batch_size: int = 256,
+    warmup_steps: int = 1000,
+) -> nn.Module:
+    # Create checkpoint directory if it doesn't exist
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    # Move model to device
+    sac_agent = sac_agent.to(device)
+    entity_embeddings = entity_embeddings.to(device)
+    relation_embeddings = relation_embeddings.to(device)
+    
+    # Initialize replay buffer
+    obs_dim = entity_embeddings.embedding_dim * 2  # state + target
+    action_dim = entity_embeddings.embedding_dim
+    replay_buffer = ReplayBuffer(replay_buffer_size, obs_dim, action_dim)
+    
+    # Training metrics
+    total_steps = 0
+    best_avg_reward = float('-inf')
+    
+    for epoch in range(epochs):
+        epoch_rewards = []
+        epoch_actor_losses = []
+        epoch_critic_losses = []
+        epoch_auxiliary_losses = []
+        
+        # Create dataset
+        train_dataset = RandomWalkDataset(
+            entity_embeddings=entity_embeddings,
+            relation_embeddings=relation_embeddings,
+            paths=train_paths,
+            max_path_length=steps_in_episode + 1,
+        )
+        train_dataloader = DataLoader(
+            train_dataset, 
+            batch_size=batch_size, 
+            shuffle=True,
+            collate_fn=lambda batch: {
+                'start': torch.stack([item['start'] for item in batch]).to(device),
+                'target': torch.stack([item['target'] for item in batch]).to(device),
+            }
+        )
+        
+        progress_bar = tqdm(train_dataloader, desc=f"SAC Epoch {epoch+1}/{epochs}")
+        
+        for batch_idx, batch in enumerate(progress_bar):
+            start_states = batch["start"]
+            target_states = batch["target"]
+            batch_size_actual = start_states.size(0)
+            
+            # Collect experiences for each path in batch
+            batch_rewards = []
+            
+            for i in range(batch_size_actual):
+                current_state = start_states[i:i+1]
+                target_state = target_states[i:i+1]
+                episode_rewards = []
+                
+                # Run episode and collect experiences
+                for step in range(steps_in_episode):
+                    # Create observation (concatenate current state and target)
+                    obs = torch.cat([current_state, target_state], dim=-1).squeeze(0)
+                    
+                    # Get action from policy
+                    if total_steps < warmup_steps:
+                        # Random actions during warmup
+                        action = torch.randn(action_dim, device=device)
+                    else:
+                        if hasattr(sac_agent.actor, 'navigator'):
+                            action, _, _, _, _ = sac_agent.actor(current_state, target_state)
+                        else:
+                            action, _, _, _, _ = sac_agent.actor(obs.unsqueeze(0))
+                        action = action.squeeze(0)
+                    
+                    # Apply action to get next state
+                    next_state = current_state + action.unsqueeze(0)
+                    
+                    # Calculate reward based on distance to target
+                    distance = torch.linalg.vector_norm(next_state - target_state, dim=-1)
+                    reward = 1.0 / (1.0 + distance.item())  # Higher reward for closer distance
+                    
+                    # Create next observation
+                    next_obs = torch.cat([next_state, target_state], dim=-1).squeeze(0)
+                    
+                    # Check if done (reached target or last step)
+                    done = (step == steps_in_episode - 1) or (distance < 0.06)
+                    
+                    # Store experience in replay buffer
+                    replay_buffer.push(
+                        obs.cpu(),
+                        action.cpu(),
+                        torch.tensor(reward),
+                        next_obs.cpu(),
+                        target_state.squeeze(0).cpu(),
+                        torch.tensor(float(done))
+                    )
+                    
+                    episode_rewards.append(reward)
+                    current_state = next_state
+                    total_steps += 1
+                    
+                    if done:
+                        break
+                
+                batch_rewards.append(episode_rewards)
+            
+            # Train SAC if we have enough experiences
+            if len(replay_buffer) >= sac_batch_size and total_steps > warmup_steps:
+                # Sample batch from replay buffer
+                obs_batch, action_batch, reward_batch, next_obs_batch, next_target_batch, done_batch = replay_buffer.sample(sac_batch_size)
+                
+                obs_batch = obs_batch.to(device)
+                action_batch = action_batch.to(device)
+                reward_batch = reward_batch.to(device).unsqueeze(-1)
+                next_obs_batch = next_obs_batch.to(device)
+                next_target_batch = next_target_batch.to(device)
+                done_batch = done_batch.to(device).unsqueeze(-1)
+                
+                # Split observations back into state and target
+                state_batch = obs_batch[:, :action_dim]
+                target_batch = obs_batch[:, action_dim:]
+                
+                # Update critics
+                critic_q1_loss, critic_q2_loss = sac_agent.update_critics(
+                    obs_batch, action_batch, reward_batch, next_obs_batch, next_target_batch, done_batch
+                )
+                
+                # Compute optimal actions for auxiliary loss
+                optimal_actions = None
+                if use_auxiliary_loss:
+                    optimal_actions = sac_agent.compute_optimal_actions(state_batch, target_batch)
+                
+                # Update actor and alpha
+                actor_loss, alpha_loss, auxiliary_loss = sac_agent.update_actor_and_alpha(
+                    obs_batch, target_batch, optimal_actions
+                )
+                
+                # Soft update target networks
+                sac_agent.soft_update_targets()
+                
+                # Track losses
+                epoch_actor_losses.append(actor_loss.item())
+                epoch_critic_losses.append((critic_q1_loss + critic_q2_loss).item())
+                if use_auxiliary_loss:
+                    epoch_auxiliary_losses.append(auxiliary_loss.item())
+            
+            # Track rewards
+            if batch_rewards:
+                avg_reward = np.mean([np.sum(rewards) for rewards in batch_rewards])
+                epoch_rewards.append(avg_reward)
+                
+                # Update progress bar
+                progress_bar.set_postfix({
+                    'Reward': f'{avg_reward:.4f}',
+                    'Buffer': f'{len(replay_buffer)}/{replay_buffer_size}',
+                    'Steps': total_steps
+                })
+                
+                # Log to wandb
+                if epoch_actor_losses:
+                    training_metrics = {
+                        'train/sac_reward': avg_reward,
+                        'train/sac_actor_loss': epoch_actor_losses[-1] if epoch_actor_losses else 0,
+                        'train/sac_critic_loss': epoch_critic_losses[-1] if epoch_critic_losses else 0,
+                        'train/sac_auxiliary_loss': epoch_auxiliary_losses[-1] if epoch_auxiliary_losses else 0,
+                        'train/buffer_size': len(replay_buffer),
+                        'train/total_steps': total_steps,
+                    }
+                    wandb_report(training_metrics, epoch, batch_idx)
+        
+        # Epoch summary
+        avg_epoch_reward = np.mean(epoch_rewards) if epoch_rewards else 0
+        avg_actor_loss = np.mean(epoch_actor_losses) if epoch_actor_losses else 0
+        avg_critic_loss = np.mean(epoch_critic_losses) if epoch_critic_losses else 0
+        avg_auxiliary_loss = np.mean(epoch_auxiliary_losses) if epoch_auxiliary_losses else 0
+        
+        logger.info(f"SAC Epoch {epoch+1}: Avg Reward: {avg_epoch_reward:.4f}, "
+                   f"Actor Loss: {avg_actor_loss:.4f}, Critic Loss: {avg_critic_loss:.4f}")
+        if use_auxiliary_loss:
+            logger.info(f"Auxiliary Loss: {avg_auxiliary_loss:.4f}")
+        
+        # Save checkpoint
+        if (epoch + 1) % save_interval == 0:
+            checkpoint_path = os.path.join(checkpoint_dir, f"sac_navigator_epoch_{epoch+1}.pt")
+            torch.save({
+                'epoch': epoch + 1,
+                'actor_state_dict': sac_agent.actor.state_dict(),
+                'critic_q1_state_dict': sac_agent.critic_q1.state_dict(),
+                'critic_q2_state_dict': sac_agent.critic_q2.state_dict(),
+                'avg_reward': avg_epoch_reward,
+            }, checkpoint_path)
+            logger.info(f"Saved SAC checkpoint to {checkpoint_path}")
+            
+            # Save best model
+            if avg_epoch_reward > best_avg_reward:
+                best_avg_reward = avg_epoch_reward
+                best_path = os.path.join(checkpoint_dir, "best_sac_navigator.pt")
+                torch.save({
+                    'epoch': epoch + 1,
+                    'actor_state_dict': sac_agent.actor.state_dict(),
+                    'critic_q1_state_dict': sac_agent.critic_q1.state_dict(),
+                    'critic_q2_state_dict': sac_agent.critic_q2.state_dict(),
+                    'avg_reward': avg_epoch_reward,
+                }, best_path)
+                logger.info(f"New best SAC model saved: {best_path}")
+    
+    # Save final model
+    final_path = os.path.join(checkpoint_dir, "sac_navigator_final.pt")
+    torch.save({
+        'actor_state_dict': sac_agent.actor.state_dict(),
+        'critic_q1_state_dict': sac_agent.critic_q1.state_dict(),
+        'critic_q2_state_dict': sac_agent.critic_q2.state_dict(),
+    }, final_path)
+    logger.info(f"Saved final SAC model to {final_path}")
+
+    return sac_agent
+
+
+def train_reinforce_loop(
     nav_agent: AttentionContinuousPolicyGradient,
     train_paths: List[List[int]],
     entity_embeddings: nn.Embedding,
@@ -494,34 +728,75 @@ def main():
     # For the observation dimension, we concatenate the current state and target state
     dim_observation = dim_entity * 2  # current_state + target_state
     
-    nav_agent = AttentionContinuousPolicyGradient(
-        beta = args.rl_beta,
-        gamma = args.rl_gamma,
-        dim_action = dim_action_relation,
-        dim_hidden = args.rl_dim_hidden,
-        dim_observation = dim_observation,
-        use_attention = args.use_attention,
-        use_tanh_squashing=not args.dont_use_tanh_squashing,
-    )
-
-    ########################################
-    # Training
-    ########################################
-
-    trained_model = train_loop(
-        nav_agent,
-        train_paths,
-        entity_embeddings,
-        relation_embeddings,
-        epochs = args.epoch,
-        steps_in_episode = args.steps_in_episode,
-        batch_size = args.training_batch_size,
-        learning_rate = args.learning_rate,
-        device = device,
-        checkpoint_dir = args.checkpoint_dir,
-        save_interval = args.save_interval,
-        use_entropy_loss = not args.dont_use_entropy_loss,
-    )
+    if args.use_sac:
+        # Initialize SAC agent
+        nav_agent = SACGraphNavigator(
+            beta=args.rl_beta,
+            gamma=args.rl_gamma,
+            dim_action=dim_action_relation,
+            dim_hidden=args.rl_dim_hidden,
+            dim_observation=dim_observation,
+            use_attention=args.use_navigator and args.use_attention,
+            use_tanh_squashing=not args.dont_use_tanh_squashing,
+            lr=args.sac_lr,
+            tau=args.sac_tau,
+            use_auxiliary_loss=args.use_auxiliary_loss,
+            auxiliary_loss_weight=args.auxiliary_loss_weight,
+        )
+        
+        logger.info(f"SAC Navigation agent initialized")
+        logger.info(f"Total parameters: {sum(p.numel() for p in nav_agent.parameters()):,}")
+        logger.info(f"Use auxiliary loss: {args.use_auxiliary_loss}")
+        
+        # Start SAC training
+        trained_model = train_sac_loop(
+            sac_agent=nav_agent,
+            train_paths=train_paths,
+            entity_embeddings=entity_embeddings,
+            relation_embeddings=relation_embeddings,
+            epochs=args.epoch,
+            steps_in_episode=args.steps_in_episode,
+            batch_size=args.training_batch_size,
+            learning_rate=args.sac_lr,
+            device=device,
+            checkpoint_dir=args.checkpoint_dir,
+            save_interval=args.save_interval,
+            use_auxiliary_loss=args.use_auxiliary_loss,
+            auxiliary_loss_weight=args.auxiliary_loss_weight,
+            replay_buffer_size=args.replay_buffer_size,
+            sac_batch_size=args.sac_batch_size,
+            warmup_steps=args.warmup_steps,
+        )
+    else:
+        # Initialize REINFORCE agent
+        nav_agent = AttentionContinuousPolicyGradient(
+            beta=args.rl_beta,
+            gamma=args.rl_gamma,
+            dim_action=dim_action_relation,
+            dim_hidden=args.rl_dim_hidden,
+            dim_observation=dim_observation,
+            use_attention=args.use_attention,
+            use_tanh_squashing=not args.dont_use_tanh_squashing,
+        )
+        
+        logger.info(f"REINFORCE Navigation agent initialized: {type(nav_agent).__name__}")
+        logger.info(f"Total parameters: {sum(p.numel() for p in nav_agent.parameters()):,}")
+        
+        # Start REINFORCE training
+        trained_model = train_reinforce_loop(
+            nav_agent=nav_agent,
+            train_paths=train_paths,
+            entity_embeddings=entity_embeddings,
+            relation_embeddings=relation_embeddings,
+            epochs=args.epoch,
+            steps_in_episode=args.steps_in_episode,
+            batch_size=args.training_batch_size,
+            learning_rate=args.learning_rate,
+            device=device,
+            checkpoint_dir=args.checkpoint_dir,
+            save_interval=args.save_interval,
+            use_entropy_loss=not args.dont_use_entropy_loss,
+        )
 
 if __name__ == "__main__":
     logger = setup_logger("__PRETRAINING_SIMPLE_MAIN__")
