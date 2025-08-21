@@ -1,0 +1,24 @@
+{
+
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "src/experimental",
+    "src/typestubs"
+  ],
+
+  "ignore": [
+    "src/oldstuff"
+  ],
+
+  "defineConstant": {
+    "DEBUG": true
+  },
+
+
+  "reportMissingImports": "error",
+  "reportMissingTypeStubs": false,
+
+  "pythonPlatform": "Linux",
+"typeCheckingMode": "standard"
+}

@@ -55,7 +55,7 @@ class RandomWalkDataset(Dataset):
         # Get start and target embeddings
         start_embeddings = self.entity_embeddings(path[0])
         # target_embeddings = self.entity_embeddings(path[-1])
-        # Target_embedding should be the last non_padding, we should retreive that
+        # Target_embedding should be the last non_padding, we should retrieve that
         path_mask_entities = path != self.pad_id
         last_non_pad_id = path_mask_entities.sum() - 1
         target_embeddings = self.entity_embeddings(path[last_non_pad_id])
@@ -254,7 +254,6 @@ def train_loop(
             batch_size = start_states.size(0)
             
             # Initialize episode variables
-            states = []
             actions = []
             log_probs = []
             rewards = []
@@ -270,9 +269,6 @@ def train_loop(
             # step_i_distances = {f"step_{i}_distance": None for i in range(steps_in_episode) }
             action_magnitude = []
             for step in range(steps_in_episode):
-                # Store current state
-                states.append(current_states)
-                
                 actions_step, log_probs_step, entropy_step, mu, sigma = nav_agent(
                     current_states, target_states
                 )
@@ -336,10 +332,13 @@ def train_loop(
             # Convert episode data to tensors
             actions = torch.stack(actions)
             _action_magnitude = torch.mean(actions)
+            _debug_action = torch.linalg.vector_norm(actions, dim=-1).mean(dim=-1)
             log_probs = torch.stack(log_probs)
             rewards = torch.stack(rewards)
             masks = torch.stack(masks)
             entropies = torch.stack(entropies)
+
+            _step_rewards = torch.mean(rewards, dim=1)
             
             # Calculate returns (discounted rewards)
             # returns = compute_returns(rewards, nav_agent.get_gamma(), masks)
@@ -347,8 +346,8 @@ def train_loop(
             returns = torch.stack(returns)
             
             # Normalize returns for stability
-            returns = torch.sum(returns, dim=0)
-            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+            # returns = torch.sum(returns, dim=0)
+            # returns = (returns - returns.mean()) / (returns.std() + 1e-8)
 
             
             # Calculate policy loss
@@ -375,18 +374,25 @@ def train_loop(
             epoch_reward += rewards.mean().item()
             epoch_steps += 1
 
+            step_wise_rewards = { f"step_{i}_rewards": _step_rewards[i] for i in range(len(_step_rewards)) }
             step_wise_distances = { f"step_{i}_distance": step_distances[i] for i in range(len(step_distances)) }
+            step_wise_actions = { f"step_{i}_action": _debug_action[i] for i in range(len(_debug_action)) }
             training_metrics = {
                 'train/loss': loss.item(),
                 'train/reward': rewards.mean().item(),
                 # 'train/distance': torch.Tensor(step_distances).mean().item(),
                 'train/mu': torch.Tensor(mus).mean().item(),
                 'train/sigma': torch.Tensor(sigmas).mean().item(),
-                'train/action_magnitude': _action_magnitude.item(),
+                # 'train/action_magnitude': _action_magnitude.item(),
                 'train/policy_loss': policy_loss.item(),
                 'train/entropy_loss': entropy_loss.item(),
                 # **step_i_distances,
-                **step_wise_distances
+                # **(step_wise_distances.update(step_wise_rewards)),
+                **{
+                    **step_wise_distances,
+                    **step_wise_rewards,
+                    **step_wise_actions,
+                }
             }
             loss_metrics_str = { k: f"{v:.4f}" for k, v in training_metrics.items() }
             

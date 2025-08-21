@@ -228,7 +228,7 @@ class AttentionContinuousPolicyGradient(nn.Module):
         dim_observation: int,
         use_attention: bool = True,
         log_std_min: float = -20,
-        log_std_max: float = 2,
+        log_std_max: float = -2,
         use_tanh_squashing: bool= True,  # Make squashing configurable
     ):
         super().__init__()

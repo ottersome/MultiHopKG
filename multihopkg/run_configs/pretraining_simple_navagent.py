@@ -5,7 +5,7 @@ def arguments() -> argparse.Namespace:
 
     # -- General Training Parameters -- #
     parser.add_argument("--epoch", type=int, default=10)
-    parser.add_argument("--training_batch_size", type=int, default=128)
+    parser.add_argument("--training_batch_size", type=int, default=512)
     parser.add_argument("--steps_in_episode", type=int, default=8, help="Number of steps in each episode")
     parser.add_argument("--learning_rate", '-lr', type=float, default=5e-4, help="Learning rate for optimizer")
     parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints/navigator/")
