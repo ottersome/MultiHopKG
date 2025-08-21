@@ -36,6 +36,16 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--rl_dim_hidden", default=400, type=int, help="Representation size for policy network")
     parser.add_argument("--env_dim_observation", type=int, default=1000, help="Dimension of observation space (will be overridden)")
     parser.add_argument("--use_navigator", action="store_true", help="Use the navigator model with state-target attention")
+    parser.add_argument("--use_sac", action="store_true", help="Use SAC instead of REINFORCE")
+    parser.add_argument("--use_auxiliary_loss", action="store_true", help="Add supervised auxiliary loss for optimal actions")
+    parser.add_argument("--auxiliary_loss_weight", type=float, default=0.1, help="Weight for auxiliary supervised loss")
+    
+    # SAC-specific parameters
+    parser.add_argument("--sac_lr", type=float, default=3e-4, help="Learning rate for SAC")
+    parser.add_argument("--sac_tau", type=float, default=0.005, help="Soft update coefficient for target networks")
+    parser.add_argument("--replay_buffer_size", type=int, default=100000, help="Size of replay buffer")
+    parser.add_argument("--sac_batch_size", type=int, default=256, help="Batch size for SAC updates")
+    parser.add_argument("--warmup_steps", type=int, default=1000, help="Random action steps before training")
 
     parser.add_argument("--debug", "-d", action="store_true")
 

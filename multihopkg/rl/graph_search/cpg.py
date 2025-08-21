@@ -8,6 +8,8 @@ from typing import Tuple, Dict, List, Optional, Union
 import pdb
 
 import torch.nn.functional as F
+import torch.optim as optim
+from torch.distributions import Normal
 
 import sys
 
@@ -419,4 +421,236 @@ class ContinuousPolicyGradient(nn.Module):
 
     def _reparemeteriztion(self, dist, action):
         return dist.log_prob(action).sum(dim=-1)
+
+
+class SACGraphNavigator(nn.Module):
+    """
+    SAC implementation for graph navigation with optional supervised auxiliary loss.
+    """
+    def __init__(
+        self,
+        beta: float,
+        gamma: float,
+        dim_action: int,
+        dim_hidden: int,
+        dim_observation: int,
+        use_attention: bool = True,
+        log_std_min: float = -20,
+        log_std_max: float = 2,
+        use_tanh_squashing: bool = True,
+        lr: float = 3e-4,
+        tau: float = 0.005,
+        use_auxiliary_loss: bool = False,
+        auxiliary_loss_weight: float = 0.1,
+    ):
+        super().__init__()
+        
+        self.gamma = gamma
+        self.tau = tau
+        self.use_auxiliary_loss = use_auxiliary_loss
+        self.auxiliary_loss_weight = auxiliary_loss_weight
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Actor (Policy Network)
+        if use_attention:
+            self.actor = AttentionContinuousPolicyGradient(
+                beta=beta,
+                gamma=gamma,
+                dim_action=dim_action,
+                dim_hidden=dim_hidden,
+                dim_observation=dim_observation,
+                use_attention=use_attention,
+                log_std_min=log_std_min,
+                log_std_max=log_std_max,
+                use_tanh_squashing=use_tanh_squashing,
+            )
+        else:
+            self.actor = ContinuousPolicyGradient(
+                beta=beta,
+                gamma=gamma,
+                dim_action=dim_action,
+                dim_hidden=dim_hidden,
+                dim_observation=dim_observation,
+                log_std_min=log_std_min,
+                log_std_max=log_std_max,
+            )
+        
+        # Critics (Q-Networks)
+        self.critic_q1 = self._build_critic(dim_observation + dim_action, dim_hidden)
+        self.critic_q2 = self._build_critic(dim_observation + dim_action, dim_hidden)
+        
+        # Target Critics
+        self.critic_q1_target = self._build_critic(dim_observation + dim_action, dim_hidden)
+        self.critic_q2_target = self._build_critic(dim_observation + dim_action, dim_hidden)
+        
+        # Initialize target networks
+        self.critic_q1_target.load_state_dict(self.critic_q1.state_dict())
+        self.critic_q2_target.load_state_dict(self.critic_q2.state_dict())
+        
+        # Automatic entropy tuning
+        self.target_entropy = -dim_action
+        self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+        
+        # Optimizers
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr)
+        self.critic_q1_optimizer = optim.Adam(self.critic_q1.parameters(), lr=lr)
+        self.critic_q2_optimizer = optim.Adam(self.critic_q2.parameters(), lr=lr)
+        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=lr)
+        
+    def _build_critic(self, input_dim: int, hidden_dim: int) -> nn.Module:
+        """Build a critic network."""
+        return nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+    
+    def forward(self, observations: torch.Tensor, target: torch.Tensor = None):
+        """Forward pass through actor."""
+        if hasattr(self.actor, 'navigator'):  # Attention-based
+            return self.actor(observations, target)
+        else:  # Simple policy gradient
+            return self.actor(observations)
+    
+    def get_q_values(self, observations: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get Q-values from both critics."""
+        obs_action = torch.cat([observations, actions], dim=-1)
+        q1 = self.critic_q1(obs_action)
+        q2 = self.critic_q2(obs_action)
+        return q1, q2
+    
+    def get_target_q_values(self, observations: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get Q-values from target critics."""
+        obs_action = torch.cat([observations, actions], dim=-1)
+        q1_target = self.critic_q1_target(obs_action)
+        q2_target = self.critic_q2_target(obs_action)
+        return q1_target, q2_target
+    
+    def update_critics(
+        self, 
+        observations: torch.Tensor, 
+        actions: torch.Tensor, 
+        rewards: torch.Tensor, 
+        next_observations: torch.Tensor, 
+        next_targets: torch.Tensor,
+        dones: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Update critic networks."""
+        with torch.no_grad():
+            # Get next actions from current policy
+            if hasattr(self.actor, 'navigator'):
+                next_actions, next_log_probs, _, _, _ = self.actor(next_observations, next_targets)
+            else:
+                next_actions, next_log_probs, _, _, _ = self.actor(next_observations)
+            
+            # Get target Q-values
+            next_q1_target, next_q2_target = self.get_target_q_values(next_observations, next_actions)
+            next_q_target = torch.min(next_q1_target, next_q2_target)
+            
+            # Compute target
+            alpha = self.log_alpha.exp()
+            target_q = rewards + self.gamma * (1 - dones) * (next_q_target - alpha * next_log_probs.unsqueeze(-1))
+        
+        # Get current Q-values
+        current_q1, current_q2 = self.get_q_values(observations, actions)
+        
+        # Compute critic losses
+        critic_q1_loss = F.mse_loss(current_q1, target_q)
+        critic_q2_loss = F.mse_loss(current_q2, target_q)
+        
+        # Update critics
+        self.critic_q1_optimizer.zero_grad()
+        critic_q1_loss.backward()
+        self.critic_q1_optimizer.step()
+        
+        self.critic_q2_optimizer.zero_grad()
+        critic_q2_loss.backward()
+        self.critic_q2_optimizer.step()
+        
+        return critic_q1_loss, critic_q2_loss
+    
+    def update_actor_and_alpha(
+        self, 
+        observations: torch.Tensor, 
+        targets: torch.Tensor = None,
+        optimal_actions: torch.Tensor = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Update actor network and alpha (temperature parameter)."""
+        # Get actions from current policy
+        if hasattr(self.actor, 'navigator'):
+            actions, log_probs, _, mu, _ = self.actor(observations, targets)
+        else:
+            actions, log_probs, _, mu, _ = self.actor(observations)
+        
+        # Get Q-values for current actions
+        q1, q2 = self.get_q_values(observations, actions)
+        min_q = torch.min(q1, q2)
+        
+        # Actor loss (SAC objective)
+        alpha = self.log_alpha.exp()
+        actor_loss = (alpha * log_probs.unsqueeze(-1) - min_q).mean()
+        
+        # Add supervised auxiliary loss if enabled
+        auxiliary_loss = torch.tensor(0.0, device=self.device)
+        if self.use_auxiliary_loss and optimal_actions is not None:
+            auxiliary_loss = F.mse_loss(mu, optimal_actions)
+            total_actor_loss = actor_loss + self.auxiliary_loss_weight * auxiliary_loss
+        else:
+            total_actor_loss = actor_loss
+        
+        # Update actor
+        self.actor_optimizer.zero_grad()
+        total_actor_loss.backward()
+        self.actor_optimizer.step()
+        
+        # Update alpha (temperature parameter)
+        alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
+        
+        self.alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.alpha_optimizer.step()
+        
+        return actor_loss, alpha_loss, auxiliary_loss
+    
+    def soft_update_targets(self):
+        """Soft update of target networks."""
+        for target_param, param in zip(self.critic_q1_target.parameters(), self.critic_q1.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+        
+        for target_param, param in zip(self.critic_q2_target.parameters(), self.critic_q2.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+    
+    def compute_optimal_actions(self, current_states: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Compute optimal actions for TransE navigation.
+        In TransE space, optimal action is approximately target - current_state.
+        """
+        return targets - current_states
+
+
+class ReplayBuffer:
+    """Experience replay buffer for SAC."""
+    def __init__(self, capacity: int, obs_dim: int, action_dim: int):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+        
+    def push(self, obs, action, reward, next_obs, next_target, done):
+        """Add experience to buffer."""
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (obs, action, reward, next_obs, next_target, done)
+        self.position = (self.position + 1) % self.capacity
+    
+    def sample(self, batch_size: int):
+        """Sample batch of experiences."""
+        import random
+        batch = random.sample(self.buffer, batch_size)
+        obs, action, reward, next_obs, next_target, done = map(torch.stack, zip(*batch))
+        return obs, action, reward, next_obs, next_target, done
+    
+    def __len__(self):
+        return len(self.buffer)
 
