@@ -293,7 +293,7 @@ def train_loop(
                 step_rewards = 1.0 / (1.0 + distances)  # Higher reward for closer distance
                 
                 # Add bonus reward for reaching target
-                target_reached = distances < 0.1 # TODO: Find something better than this. This is too arbitrary.
+                target_reached = distances < 0.06 # TODO: Find something better than this. This is too arbitrary.
                 if epoch == 1:
                     debugpy.breakpoint()
                 # step_rewards = step_rewards + 2.0 * target_reached.float()
@@ -317,9 +317,9 @@ def train_loop(
                 mus.append(mu.mean().item())
                 sigmas.append(sigma.mean().item())
                 if dones.any():
-                    import pdb
-                    print(f"Wow. We got here")
-                    pdb.set_trace()
+                    # import pdb
+                    print(f"Wow. We got here. At step {step} with a distances of {distances}")
+                    # pdb.set_trace()
                     # current_states = torch.where(
                     #     dones.unsqueeze(1),
                     #     current_states,  # Keep the same state if done
