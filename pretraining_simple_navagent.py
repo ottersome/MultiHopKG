@@ -279,10 +279,7 @@ def train_sac_loop(
                         # Random actions during warmup
                         action = torch.randn(action_dim, device=device)
                     else:
-                        if hasattr(sac_agent.actor, 'navigator'):
-                            action, _, _, _, _ = sac_agent.actor(current_state, target_state)
-                        else:
-                            action, _, _, _, _ = sac_agent.actor(obs.unsqueeze(0))
+                        action, _, _, _, _ = sac_agent.actor(current_state, target_state)
                         action = action.squeeze(0)
                     
                     # Apply action to get next state

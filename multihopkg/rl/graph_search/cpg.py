@@ -451,29 +451,17 @@ class SACGraphNavigator(nn.Module):
         self.auxiliary_loss_weight = auxiliary_loss_weight
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # Actor (Policy Network)
-        if use_attention:
-            self.actor = AttentionContinuousPolicyGradient(
-                beta=beta,
-                gamma=gamma,
-                dim_action=dim_action,
-                dim_hidden=dim_hidden,
-                dim_observation=dim_observation,
-                use_attention=use_attention,
-                log_std_min=log_std_min,
-                log_std_max=log_std_max,
-                use_tanh_squashing=use_tanh_squashing,
-            )
-        else:
-            self.actor = ContinuousPolicyGradient(
-                beta=beta,
-                gamma=gamma,
-                dim_action=dim_action,
-                dim_hidden=dim_hidden,
-                dim_observation=dim_observation,
-                log_std_min=log_std_min,
-                log_std_max=log_std_max,
-            )
+        self.actor = AttentionContinuousPolicyGradient(
+            beta=beta,
+            gamma=gamma,
+            dim_action=dim_action,
+            dim_hidden=dim_hidden,
+            dim_observation=dim_observation,
+            use_attention=use_attention,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
+            use_tanh_squashing=use_tanh_squashing,
+        )
         
         # Critics (Q-Networks)
         self.critic_q1 = self._build_critic(dim_observation + dim_action, dim_hidden)
@@ -509,10 +497,7 @@ class SACGraphNavigator(nn.Module):
     
     def forward(self, observations: torch.Tensor, target: torch.Tensor = None):
         """Forward pass through actor."""
-        if hasattr(self.actor, 'navigator'):  # Attention-based
-            return self.actor(observations, target)
-        else:  # Simple policy gradient
-            return self.actor(observations)
+        return self.actor(observations, target)
     
     def get_q_values(self, observations: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get Q-values from both critics."""
@@ -540,10 +525,7 @@ class SACGraphNavigator(nn.Module):
         """Update critic networks."""
         with torch.no_grad():
             # Get next actions from current policy
-            if hasattr(self.actor, 'navigator'):
-                next_actions, next_log_probs, _, _, _ = self.actor(next_observations, next_targets)
-            else:
-                next_actions, next_log_probs, _, _, _ = self.actor(next_observations)
+            next_actions, next_log_probs, _, _, _ = self.actor(next_observations, next_targets)
             
             # Get target Q-values
             next_q1_target, next_q2_target = self.get_target_q_values(next_observations, next_actions)
@@ -579,10 +561,7 @@ class SACGraphNavigator(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Update actor network and alpha (temperature parameter)."""
         # Get actions from current policy
-        if hasattr(self.actor, 'navigator'):
-            actions, log_probs, _, mu, _ = self.actor(observations, targets)
-        else:
-            actions, log_probs, _, mu, _ = self.actor(observations)
+        actions, log_probs, _, mu, _ = self.actor(observations, targets)
         
         # Get Q-values for current actions
         q1, q2 = self.get_q_values(observations, actions)
