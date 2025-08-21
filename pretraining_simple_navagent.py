@@ -272,7 +272,7 @@ def train_sac_loop(
                 # Run episode and collect experiences
                 for step in range(steps_in_episode):
                     # Create observation (concatenate current state and target)
-                    obs = torch.cat([current_state, target_state], dim=-1).squeeze(0)
+                    obs = current_state
                     
                     # Get action from policy
                     if total_steps < warmup_steps:
@@ -291,7 +291,7 @@ def train_sac_loop(
                     reward = 1.0 / (1.0 + distance.item())  # Higher reward for closer distance
                     
                     # Create next observation
-                    next_obs = torch.cat([next_state, target_state], dim=-1).squeeze(0)
+                    next_obs = next_state
                     
                     # Check if done (reached target or last step)
                     done = (step == steps_in_episode - 1) or (distance < 0.06)
