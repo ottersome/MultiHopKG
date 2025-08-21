@@ -17,11 +17,39 @@ def init_layer_uniform(layer: nn.Linear, init_w: float = 3e-3) -> nn.Linear:
     layer.bias.data.uniform_(-init_w, init_w)
     return layer
 
+class TransformerBlock(nn.Module):
+    """A single transformer block with multi-head attention and feed-forward network."""
+    def __init__(self, hidden_dim: int, num_heads: int, dropout: float = 0.1):
+        super(TransformerBlock, self).__init__()
+        
+        self.attention = MultiHeadAttention(hidden_dim, num_heads)
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        
+        # Feed-forward network
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 4),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 4, hidden_dim),
+            nn.Dropout(dropout)
+        )
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Self-attention with residual connection
+        attn_out = self.attention(x, x, x)
+        x = self.norm1(x + attn_out)
+        
+        # Feed-forward with residual connection
+        ffn_out = self.ffn(x)
+        x = self.norm2(x + ffn_out)
+        
+        return x
+
 class AttentionGraphNavigator(nn.Module):
     """
-    A neural network that learns to navigate through a TransE graph.
-    Takes a current state and a target (either a node or a question embedding)
-    and produces actions to navigate towards the target.
+    A GPT-like transformer network that learns to navigate through a TransE graph.
+    Takes a current state and a target and produces actions to navigate towards the target.
     """
     def __init__(
         self,
@@ -29,7 +57,8 @@ class AttentionGraphNavigator(nn.Module):
         target_dim: int,
         action_dim: int,
         hidden_dim: int = 256,
-        num_layers: int = 2,
+        num_layers: int = 4,
+        num_heads: int = 8,
         dropout: float = 0.1,
     ):
         super(AttentionGraphNavigator, self).__init__()
@@ -40,36 +69,21 @@ class AttentionGraphNavigator(nn.Module):
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
         
-        # State encoder
-        self.state_encoder = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout)
-        )
+        # Input projections (replace separate encoders with simple projections)
+        self.state_proj = nn.Linear(state_dim, hidden_dim)
+        self.target_proj = nn.Linear(target_dim, hidden_dim)
         
-        # Target encoder
-        self.target_encoder = nn.Sequential(
-            nn.Linear(target_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout)
-        )
+        # Multi-layer transformer blocks (like GPT)
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(hidden_dim, num_heads, dropout)
+            for _ in range(num_layers)
+        ])
         
-        # Attention mechanism to focus on relevant parts of state and target
-        self.attention = MultiHeadAttention(hidden_dim, num_heads=4)
+        # Final layer norm
+        self.final_norm = nn.LayerNorm(hidden_dim)
         
         # Action predictor
-        self.action_predictor = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, action_dim * 2)  # Output both mu and log_sigma
-        )
+        self.action_predictor = nn.Linear(hidden_dim, action_dim * 2)  # Output both mu and log_sigma
         
     def forward(self, state: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """
@@ -83,23 +97,25 @@ class AttentionGraphNavigator(nn.Module):
             action_params: Action parameters (batch_size, action_dim*2)
                           First half is mu, second half is log_sigma
         """
-        # Encode state and target
-        state_encoded = self.state_encoder(state)  # (batch_size, hidden_dim)
-        target_encoded = self.target_encoder(target)  # (batch_size, hidden_dim)
+        # Project inputs to hidden dimension
+        state_proj = self.state_proj(state).unsqueeze(1)  # (batch_size, 1, hidden_dim)
+        target_proj = self.target_proj(target).unsqueeze(1)  # (batch_size, 1, hidden_dim)
         
-        # Apply attention between state and target
-        attended_features = self.attention(
-            state_encoded.unsqueeze(1),  # (batch_size, 1, hidden_dim)
-            target_encoded.unsqueeze(1)   # (batch_size, 1, hidden_dim)
-        )  # (batch_size, 1, hidden_dim)
+        # Concatenate state and target as sequence
+        x = torch.cat([state_proj, target_proj], dim=1)  # (batch_size, 2, hidden_dim)
         
-        attended_features = attended_features.squeeze(1)  # (batch_size, hidden_dim)
+        # Pass through transformer blocks
+        for transformer_block in self.transformer_blocks:
+            x = transformer_block(x)
         
-        # Concatenate attended features with target encoding for action prediction
-        combined = torch.cat([attended_features, target_encoded], dim=-1)  # (batch_size, hidden_dim*2)
+        # Apply final layer norm
+        x = self.final_norm(x)
+        
+        # Pool the sequence (take mean of state and target representations)
+        pooled = x.mean(dim=1)  # (batch_size, hidden_dim)
         
         # Predict action parameters (mu and log_sigma)
-        action_params = self.action_predictor(combined)  # (batch_size, action_dim*2)
+        action_params = self.action_predictor(pooled)  # (batch_size, action_dim*2)
         
         return action_params
 
@@ -245,7 +261,9 @@ class AttentionContinuousPolicyGradient(nn.Module):
                 state_dim=dim_observation // 2,  # Assuming observation is [state, target] concatenated
                 target_dim=dim_action,
                 action_dim=dim_action,
-                hidden_dim=dim_hidden
+                hidden_dim=dim_hidden,
+                num_layers=4,  # More layers like GPT
+                num_heads=8    # More attention heads
             )
         else:
             self.navigator = SimpleGraphNavigator(
