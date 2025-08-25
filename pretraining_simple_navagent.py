@@ -264,82 +264,82 @@ def train_sac_loop(
             # Collect experiences for each path in batch
             batch_rewards = []
             
-            for i in range(batch_size_actual):
-                current_state = start_states[i:i+1]
-                target_state = target_states[i:i+1]
-                episode_rewards = []
+            current_states = start_states
+            episode_rewards = []
+            
+            # Run episode and collect experiences
+            for step in range(steps_in_episode):
+                # Create observation (concatenate current state and target)
+                obs = current_states
                 
-                # Run episode and collect experiences
-                for step in range(steps_in_episode):
-                    # Create observation (concatenate current state and target)
-                    obs = current_state
-                    
-                    # Get action from policy
-                    if total_steps < warmup_steps:
-                        # Random actions during warmup
-                        action = torch.randn(action_dim, device=device)
-                    else:
-                        action, _, _, _, _ = sac_agent.actor(current_state, target_state)
-                        action = action.squeeze(0)
-                    
-                    # Apply action to get next state
-                    next_state = current_state + action.unsqueeze(0)
-                    
-                    # Calculate reward based on distance to target
-                    distance = torch.linalg.vector_norm(next_state - target_state, dim=-1)
-                    # TODO: Play with this reward a bit. Doesn't feel entirely right to me. 
-                    reward = 1.0 / (1.0 + distance.item())  # Higher reward for closer distance
-                    
-                    # Create next observation
-                    next_obs = next_state
-                    
-                    # Check if done (reached target or last step)
-                    done = (step == steps_in_episode - 1) or (distance < 0.06)
-                    
-                    # Store experience in replay buffer
+                # Get action from policy
+                if total_steps < warmup_steps:
+                    # Random actions during warmup
+                    action = torch.randn_like(current_states, device=device)
+                else:
+                    action, _, _, _, _ = sac_agent.actor(current_states, target_states)
+               
+                # Apply action to get next state
+                next_state = current_states + action
+                
+                # Calculate reward based on distance to target
+                distance = torch.linalg.vector_norm(next_state - target_states, dim=-1)
+                # TODO: the distance above 👆: Try just simple mse. 
+                # TODO: Play with this reward a bit. Doesn't feel entirely right to me. 
+                reward = 1.0 / (1.0 + distance)  # Higher reward for closer distance
+                
+                # Check if done (reached target or last step)
+                done_steps =  distance < 0.06
+                final_step = step == steps_in_episode - 1
+                truly_done = done_steps.all() or final_step
+                
+                # Store experience in replay buffer
+                batch_size = obs.size(0)
+                for i in range(batch_size):
                     replay_buffer.push(
-                        obs.cpu(),
-                        action.cpu(),
-                        torch.tensor(reward),
-                        next_obs.cpu(),
-                        target_state.squeeze(0).cpu(),
-                        torch.tensor(float(done))
+                        obs[i].cpu(),
+                        action[i].cpu(),
+                        torch.tensor(reward[i]),
+                        next_state[i].cpu(),
+                        target_states[i].squeeze(0).cpu() if target_states.dim() == 3 else target_states[i].cpu(),
+                        torch.tensor(float(done_steps[i]))
                     )
-                    
-                    episode_rewards.append(reward)
-                    current_state = next_state
-                    total_steps += 1
-                    
-                    if done:
-                        break
+
+                # Check which specific steps are done and remove them from the batch 
+                current_states = next_state[~done_steps]
+                next_state = next_state[~done_steps]
                 
-                batch_rewards.append(episode_rewards)
+                # episode_rewards.append(reward)
+                total_steps += 1
+                
+                if truly_done:
+                    break
+            
+            # TODO: What are we using this for ?
+            batch_rewards.append(episode_rewards)
             
             # Train SAC if we have enough experiences
             if len(replay_buffer) >= sac_batch_size and total_steps > warmup_steps:
                 # Sample batch from replay buffer
-                obs_batch, action_batch, reward_batch, next_obs_batch, next_target_batch, done_batch = replay_buffer.sample(sac_batch_size)
+                obs_batch, action_batch, reward_batch, next_obs_batch, target_batch, done_batch = replay_buffer.sample(sac_batch_size)
                 
                 obs_batch = obs_batch.to(device)
                 action_batch = action_batch.to(device)
                 reward_batch = reward_batch.to(device).unsqueeze(-1)
                 next_obs_batch = next_obs_batch.to(device)
-                next_target_batch = next_target_batch.to(device)
+                target_batch = target_batch.to(device)
                 done_batch = done_batch.to(device).unsqueeze(-1)
                 
-                # Split observations back into state and target
-                state_batch = obs_batch[:, :action_dim]
-                target_batch = obs_batch[:, action_dim:]
                 
                 # Update critics
                 critic_q1_loss, critic_q2_loss = sac_agent.update_critics(
-                    obs_batch, action_batch, reward_batch, next_obs_batch, next_target_batch, done_batch
+                    obs_batch, action_batch, reward_batch, next_obs_batch, target_batch, done_batch
                 )
                 
                 # Compute optimal actions for auxiliary loss
                 optimal_actions = None
                 if use_auxiliary_loss:
-                    optimal_actions = sac_agent.compute_optimal_actions(state_batch, target_batch)
+                    optimal_actions = sac_agent.compute_optimal_actions(obs_batch, target_batch)
                 
                 # Update actor and alpha
                 actor_loss, alpha_loss, auxiliary_loss = sac_agent.update_actor_and_alpha(
@@ -355,8 +355,8 @@ def train_sac_loop(
                 if use_auxiliary_loss:
                     epoch_auxiliary_losses.append(auxiliary_loss.item())
             
-            # Track rewards
-            if batch_rewards:
+            # We start reporting after the actor is actually acting. 
+            if total_steps > warmup_steps: 
                 avg_reward = np.mean([np.sum(rewards) for rewards in batch_rewards])
                 epoch_rewards.append(avg_reward)
                 
@@ -724,7 +724,7 @@ def main():
 
     # Create the Navigator
     # For the observation dimension, we concatenate the current state and target state
-    dim_observation = dim_entity * 2  # current_state + target_state
+    dim_observation = dim_entity  # current_state
     
     if args.use_sac:
         # Initialize SAC agent

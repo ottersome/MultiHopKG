@@ -260,7 +260,7 @@ class AttentionContinuousPolicyGradient(nn.Module):
         
         if self.use_attention:
             self.navigator = AttentionGraphNavigator(
-                state_dim=dim_observation // 2,  # Assuming observation is [state, target] concatenated
+                state_dim=dim_observation,  # Assuming observation is [state, target] concatenated
                 target_dim=dim_action,
                 action_dim=dim_action,
                 hidden_dim=dim_hidden,
@@ -269,7 +269,7 @@ class AttentionContinuousPolicyGradient(nn.Module):
             )
         else:
             self.navigator = SimpleGraphNavigator(
-                state_dim=dim_observation // 2,  # Assuming observation is [state, target] concatenated
+                state_dim=dim_observation,  # Assuming observation is [state, target] concatenated
                 target_dim=dim_action,
                 action_dim=dim_action,
                 hidden_dim=dim_hidden
