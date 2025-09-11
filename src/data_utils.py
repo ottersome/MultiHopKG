@@ -208,6 +208,7 @@ def prepare_kb_envrioment(raw_kb_path, train_path, dev_path, test_path, test_mod
             return 'entity'
 
     def hist_to_vocab(_dict):
+        # Just sort them, first by frequency and then key  ?
         return sorted(sorted(_dict.items(), key=lambda x: x[0]), key=lambda x: x[1], reverse=True)
 
     # Create entity and relation indices

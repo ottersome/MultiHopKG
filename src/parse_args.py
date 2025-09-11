@@ -227,4 +227,7 @@ parser.add_argument('--tune', type=str, default='',
 parser.add_argument('--grid_search', action='store_true',
                     help='Conduct grid search of hyperparameters')
 
+# LG: Debug
+parser.add_argument('--debug', action="store_true", help="Flag that activtes debugpy")
+
 args = parser.parse_args()

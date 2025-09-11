@@ -14,6 +14,8 @@ import itertools
 import numpy as np
 import os, sys
 import random
+import debugpy
+import platform
 
 import torch
 
@@ -181,6 +183,9 @@ def construct_model(args):
     Construct NN graph.
     """
     kg = KnowledgeGraph(args)
+    assert not args.model.endswith(".gc"), \
+        "As far as I know this sort of logic is way legacy.\n"\
+        "If not, some major assumptions have been broke."
     if args.model.endswith('.gc'):
         kg.load_fuzzy_facts()
 
@@ -762,4 +767,10 @@ def run_experiment(args):
                     export_error_cases(lf)
 
 if __name__ == '__main__':
+
+    if args.debug:
+        debugpy.listen(42023)
+        print(f"debugpy listening on 42023", flush=True)
+        debugpy.wait_for_client()
+    
     run_experiment(args)
