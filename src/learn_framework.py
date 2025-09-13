@@ -172,7 +172,8 @@ class LFramework(nn.Module):
             if self.run_analysis or (epoch_id > 0 and epoch_id % self.num_peek_epochs == 0):
                 self.eval()
                 self.batch_size = self.dev_batch_size
-                dev_scores = self.forward(dev_data, verbose=False)
+                with torch.no_grad():
+                    dev_scores = self.forward(dev_data, verbose=False)
                 print('Dev set performance: (correct evaluation)')
                 h1, h3, h5, h10, mrr = src.eval.hits_and_ranks(dev_data, dev_scores, self.kg.dev_objects, verbose=True)
                 metrics = mrr
