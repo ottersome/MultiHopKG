@@ -1,0 +1,4 @@
+[tool.basedpyright]
+# Use standard (non-strict) type checking
+typeCheckingMode = "standard"
+

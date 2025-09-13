@@ -143,6 +143,8 @@ parser.add_argument('--complex_state_dict_path', type=str, default='',
                     help='Path to the ComplEx network state dict (default: '')')
 parser.add_argument('--conve_state_dict_path', type=str, default='',
                     help='Path to the ConvE network state dict (default: '')')
+parser.add_argument('--transe_state_dict_path', type=str, default='',
+                    help='Path to the ConvE network state dict (default: '')')
 
 # Policy Network
 parser.add_argument('--ff_dropout_rate', type=float, default=0.1,

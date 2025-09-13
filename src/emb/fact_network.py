@@ -9,7 +9,9 @@
 """
 
 import copy
+import os
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -213,6 +215,77 @@ class DistMult(nn.Module):
         S = F.sigmoid(S)
         return S
 
+class TransE(nn.Module):
+    def __init__(self, args):
+        super(TransE, self).__init__()
+        # No learnable parameters; uses KG embeddings directly.
+        # Memory-efficient scoring via entity chunking.
+        self.entity_chunk_size = getattr(args, 'transe_entity_chunk_size', 4096)
+
+    def forward(self, e1, r, kg):
+        """
+        Compute TransE scores for all possible objects.
+        Returns a [batch_size x num_entities] matrix of sigmoid(-L1 distance).
+        Implemented with memory-efficient chunking to avoid allocating [B, N, d].
+        """
+        E1 = kg.get_entity_embeddings(e1)          # [B, d]
+        R = kg.get_relation_embeddings(r)          # [B, d]
+        E2 = kg.get_all_entity_embeddings()        # [N, d]
+        head = (E1 + R)                            # [B, d]
+
+        # Memory-efficient computation: avoid building [B, N, d]
+        B, d = head.size(0), head.size(1)
+        N = E2.size(0)
+        chunk = max(1, min(self.entity_chunk_size, N))
+        scores_chunks = []
+        for start in range(0, N, chunk):
+            end = min(start + chunk, N)
+            e2_chunk = E2[start:end]               # [C, d]
+            # Vectorized within chunk; keeps peak tensor at [B, C, d]
+            diff = head.unsqueeze(1) - e2_chunk.unsqueeze(0)  # [B, C, d]
+            sc = -torch.sum(torch.abs(diff), dim=2)           # [B, C]
+            scores_chunks.append(sc)
+        scores = torch.cat(scores_chunks, dim=1)    # [B, N]
+        return F.sigmoid(scores)
+
+    def forward_fact(self, e1, r, e2, kg):
+        """
+        Compute TransE score for specific facts (e1, r, e2).
+        Returns a [batch_size x 1] vector of sigmoid(-L1 distance).
+        """
+        E1 = kg.get_entity_embeddings(e1)          # [B, d]
+        R = kg.get_relation_embeddings(r)          # [B, d]
+        E2 = kg.get_entity_embeddings(e2)          # [B, d]
+        diff = (E1 + R) - E2                       # [B, d]
+        scores = -torch.sum(torch.abs(diff), dim=1, keepdim=True)
+        return F.sigmoid(scores)
+
+# class TransE(nn.Module):
+#     def __init__(self, args):
+#         super(TransE, self).__init__()
+#         self.args = args #  TOREM: Likely not needed
+#
+#     def forward(self, e1, r, kg) -> torch.Tensor:        
+#         E1 = self.entity_embeddings(entity_id)
+#         R = self.relation_embeddings(relation_id)
+#         return self.forward_displacement(E1, R)
+#     
+#     def forward_displacement(self, E1: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
+#         """
+#         Compute the displacement of the head entity along the relation vector.
+#         .. math::
+#             \mathbf{e}_t \approx \mathbf{e}_h + \mathbf{e}_r
+#         
+#         Parameters:
+#         E1 (torch.Tensor): Embedding of the head entity (batch_size, embedding_dim).
+#         R (torch.Tensor): Embedding of the relation (batch_size, embedding_dim).
+#         
+#         Returns:
+#         torch.Tensor: Displacement embedding, representing the expected tail entity.
+#         """
+#         return (E1 + R)
+
+
 def get_conve_nn_state_dict(state_dict):
     conve_nn_state_dict = {}
     for param_name in ['mdl.b', 'mdl.conv1.weight', 'mdl.conv1.bias', 'mdl.bn0.weight', 'mdl.bn0.bias',
@@ -241,4 +314,15 @@ def get_distmult_kg_state_dict(state_dict):
         kg_state_dict[param_name.split('.', 1)[1]] = state_dict['state_dict'][param_name]
     return kg_state_dict
 
+def get_transe_kg_state_dict(pretraining_path: str):
+    entity_embeddings_path = os.path.join(pretraining_path, 'entity_embedding.npy')
+    relation_embeddings_path = os.path.join(pretraining_path, 'relation_embedding.npy')
 
+    entity_embeddings = np.load(entity_embeddings_path)
+    relation_embeddings = np.load(relation_embeddings_path)
+    kg_state_dict = {
+        'entity_embeddings.weight': torch.from_numpy(entity_embeddings),
+        'relation_embeddings.weight': torch.from_numpy(relation_embeddings)
+    }
+
+    return kg_state_dict

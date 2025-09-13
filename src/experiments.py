@@ -25,7 +25,7 @@ import src.data_utils as data_utils
 import src.eval
 from src.hyperparameter_range import hp_range
 from src.knowledge_graph import KnowledgeGraph
-from src.emb.fact_network import ComplEx, ConvE, DistMult
+from src.emb.fact_network import ComplEx, ConvE, DistMult, TransE
 from src.emb.fact_network import get_conve_kg_state_dict, get_complex_kg_state_dict, get_distmult_kg_state_dict
 from src.emb.emb import EmbeddingBasedMethod
 from src.rl.graph_search.pn import GraphSearchPolicy
@@ -129,6 +129,14 @@ def initialize_model_directory(args, random_seed=None):
             args.emb_dropout_rate,
             args.label_smoothing_epsilon
         )
+    elif args.model == 'transe':
+        hyperparam_sig = '{}-{}-{}-{}-{}'.format(
+            args.entity_dim,
+            args.relation_dim,
+            args.learning_rate,
+            args.emb_dropout_rate,
+            args.label_smoothing_epsilon
+        )
     elif args.model in ['conve', 'hypere', 'triplee']:
         hyperparam_sig = '{}-{}-{}-{}-{}-{}-{}-{}-{}'.format(
             args.entity_dim,
@@ -189,6 +197,7 @@ def construct_model(args):
     if args.model.endswith('.gc'):
         kg.load_fuzzy_facts()
 
+    # NOTE: Policy Gradient is a child class to LFramework
     if args.model in ['point', 'point.gc']:
         pn = GraphSearchPolicy(args)
         lf = PolicyGradient(args, kg, pn)
@@ -207,6 +216,9 @@ def construct_model(args):
         elif fn_model == 'conve':
             fn = ConvE(fn_args, kg.num_entities)
             fn_kg = KnowledgeGraph(fn_args)
+        elif fn_model == 'transe':
+            fn = TransE(fn_args)
+            fn_kg = KnowledgeGraph(fn_args)
         lf = RewardShapingPolicyGradient(args, kg, pn, fn_kg, fn)
     elif args.model == 'complex':
         fn = ComplEx(args)
@@ -216,6 +228,9 @@ def construct_model(args):
         lf = EmbeddingBasedMethod(args, kg, fn)
     elif args.model == 'conve':
         fn = ConvE(args, kg.num_entities)
+        lf = EmbeddingBasedMethod(args, kg, fn)
+    elif args.model == 'transe':
+        fn = TransE(args)
         lf = EmbeddingBasedMethod(args, kg, fn)
     else:
         raise NotImplementedError

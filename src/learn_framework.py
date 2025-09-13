@@ -214,6 +214,7 @@ class LFramework(nn.Module):
                 e1_label[i][e1[i]] = 1
             return e1_label
 
+        # Will fill an array with (batch_size, num_labels) with 1's where the label is 1
         def convert_to_binary_multi_object(e2):
             e2_label = zeros_var_cuda([len(e2), num_labels])
             for i in range(len(e2)):

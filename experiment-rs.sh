@@ -57,6 +57,7 @@ cmd="python3 -m src.experiments \
     --distmult_state_dict_path $distmult_state_dict_path \
     --complex_state_dict_path $complex_state_dict_path \
     --conve_state_dict_path $conve_state_dict_path \
+    --transe_state_dict_path $transe_state_dict_path \
     --gpu $gpu \
     $ARGS"
 

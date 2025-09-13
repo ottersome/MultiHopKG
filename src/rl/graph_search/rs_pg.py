@@ -12,7 +12,7 @@ from tqdm import tqdm
 import torch
 
 from src.emb.fact_network import get_conve_nn_state_dict, get_conve_kg_state_dict, \
-    get_complex_kg_state_dict, get_distmult_kg_state_dict
+    get_complex_kg_state_dict, get_distmult_kg_state_dict, get_transe_kg_state_dict
 from src.rl.graph_search.pg import PolicyGradient
 import src.utils.ops as ops
 from src.utils.ops import zeros_var_cuda
@@ -44,6 +44,8 @@ class RewardShapingPolicyGradient(PolicyGradient):
         elif fn_model == 'hypere':
             fn_state_dict = torch.load(args.conve_state_dict_path)
             fn_kg_state_dict = get_conve_kg_state_dict(fn_state_dict)
+        elif fn_model == 'transe':
+            fn_kg_state_dict = get_transe_kg_state_dict(args.transe_state_dict_path)
         else:
             raise NotImplementedError
         self.fn_kg.load_state_dict(fn_kg_state_dict)

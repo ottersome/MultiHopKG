@@ -6,8 +6,8 @@ group_examples_by_query="False"
 use_action_space_bucketing="True"
 
 bandwidth=400
-entity_dim=200
-relation_dim=200
+relation_dim=500
+entity_dim=500
 history_dim=200
 history_num_layers=3
 num_rollouts=20
@@ -24,13 +24,13 @@ baseline="n/a"
 grad_norm=0
 emb_dropout_rate=0.3
 ff_dropout_rate=0.1
-action_dropout_rate=0.5
-action_dropout_anneal_interval=1000
+action_dropout_rate=0.5 action_dropout_anneal_interval=1000
 reward_shaping_threshold=0
 beta=0.02
 relation_only="False"
 beam_size=128
 
+transe_state_dict_path="models/graph_embeddings/transE_mquake_dim500_complete/"
 distmult_state_dict_path="model/FB15K-237-distmult-xavier-200-200-0.003-0.3-0.1/model_best.tar"
 complex_state_dict_path="model/FB15K-237-complex-RV-xavier-200-200-0.003-0.3-0.1/model_best.tar"
 conve_state_dict_path="model/FB15K-237-conve-RV-xavier-200-200-0.003-32-3-0.3-0.3-0.2-0.1/model_best.tar"
