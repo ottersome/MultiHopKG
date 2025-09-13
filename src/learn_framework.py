@@ -74,6 +74,19 @@ class LFramework(nn.Module):
         best_dev_metrics = 0
         dev_metrics_history = []
 
+        # Setup wandb model watching if enabled
+        _wandb_enabled = getattr(self.args, 'wandb_enabled', False)
+        _wandb = None
+        if _wandb_enabled:
+            try:
+                import wandb as _wandb  # type: ignore
+                # Only watch once per run
+                if not hasattr(self, '_wandb_watching'):
+                    _wandb.watch(self, log='gradients', log_freq=500)
+                    setattr(self, '_wandb_watching', True)
+            except Exception:
+                _wandb_enabled = False
+
         for epoch_id in range(self.start_epoch, self.num_epochs):
             print('Epoch {}'.format(epoch_id))
             if self.rl_variation_tag.startswith('rs'):
@@ -125,11 +138,27 @@ class LFramework(nn.Module):
                     else:
                         fns = torch.cat([fns, loss['fn']])
             # Check training statistics
-            stdout_msg = 'Epoch {}: average training loss = {}'.format(epoch_id, np.mean(batch_losses))
+            avg_train_loss = float(np.mean(batch_losses)) if batch_losses else 0.0
+            stdout_msg = 'Epoch {}: average training loss = {}'.format(epoch_id, avg_train_loss)
             if entropies:
-                stdout_msg += ' entropy = {}'.format(np.mean(entropies))
+                avg_entropy = float(np.mean(entropies))
+                stdout_msg += ' entropy = {}'.format(avg_entropy)
+            else:
+                avg_entropy = None
             print(stdout_msg)
             self.save_checkpoint(checkpoint_id=epoch_id, epoch_id=epoch_id)
+            # wandb: log training metrics
+            if _wandb_enabled:
+                log_dict = {
+                    'epoch': epoch_id,
+                    'train/loss': avg_train_loss,
+                    'lr': float(self.optim.param_groups[0]['lr']) if self.optim and self.optim.param_groups else None,
+                }
+                if avg_entropy is not None:
+                    log_dict['train/entropy'] = avg_entropy
+                if hasattr(self, 'action_dropout_rate'):
+                    log_dict['train/action_dropout'] = float(self.action_dropout_rate)
+                _wandb.log(log_dict)
             if self.run_analysis:
                 print('* Analysis: # path types seen = {}'.format(self.num_path_types))
                 num_hits = float(rewards.sum())
@@ -145,10 +174,20 @@ class LFramework(nn.Module):
                 self.batch_size = self.dev_batch_size
                 dev_scores = self.forward(dev_data, verbose=False)
                 print('Dev set performance: (correct evaluation)')
-                _, _, _, _, mrr = src.eval.hits_and_ranks(dev_data, dev_scores, self.kg.dev_objects, verbose=True)
+                h1, h3, h5, h10, mrr = src.eval.hits_and_ranks(dev_data, dev_scores, self.kg.dev_objects, verbose=True)
                 metrics = mrr
                 print('Dev set performance: (include test set labels)')
                 src.eval.hits_and_ranks(dev_data, dev_scores, self.kg.all_objects, verbose=True)
+                # wandb: log dev metrics
+                if _wandb_enabled:
+                    _wandb.log({
+                        'epoch': epoch_id,
+                        'dev/mrr': float(mrr),
+                        'dev/hits@1': float(h1),
+                        'dev/hits@3': float(h3),
+                        'dev/hits@5': float(h5),
+                        'dev/hits@10': float(h10),
+                    })
                 # Action dropout anneaking
                 if self.model.startswith('point'):
                     eta = self.action_dropout_anneal_interval

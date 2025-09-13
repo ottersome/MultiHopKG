@@ -38,6 +38,55 @@ torch.cuda.set_device(args.gpu)
 torch.manual_seed(args.seed)
 torch.cuda.manual_seed_all(args.seed)
 
+
+def setup_wandb(args, job_type='train'):
+    """Initialize Weights & Biases run if enabled via args.wandb.
+    Sets args.wandb_enabled to True/False based on initialization success.
+    """
+    # Default to disabled
+    setattr(args, 'wandb_enabled', False)
+    if not getattr(args, 'wandb', False):
+        return
+    # Allow disabling via mode param
+    if getattr(args, 'wandb_mode', '') == 'disabled':
+        return
+    try:
+        import wandb  # type: ignore
+    except Exception as e:
+        print(f"wandb not available ({e}); disabling wandb logging.")
+        return
+    # Respect chosen mode
+    if getattr(args, 'wandb_mode', None):
+        os.environ.setdefault('WANDB_MODE', args.wandb_mode)
+    run_name = args.wandb_run_name or os.path.basename(os.path.normpath(args.model_dir))
+    tags = [t.strip() for t in getattr(args, 'wandb_tags', '').split(',') if t.strip()]
+    init_kwargs = dict(
+        project=getattr(args, 'wandb_project', 'kg-reasoning'),
+        entity=(args.wandb_entity or None),
+        name=run_name,
+        dir=args.model_dir,
+        reinit=True,
+        job_type=job_type,
+        config=vars(args)
+    )
+    if getattr(args, 'wandb_group', ''):
+        init_kwargs['group'] = args.wandb_group
+    if getattr(args, 'wandb_notes', ''):
+        init_kwargs['notes'] = args.wandb_notes
+    if tags:
+        init_kwargs['tags'] = tags
+    try:
+        wandb.init(**init_kwargs)
+        # Define a common step metric for nice charts
+        wandb.define_metric('epoch')
+        wandb.define_metric('train/*', step_metric='epoch')
+        wandb.define_metric('dev/*', step_metric='epoch')
+        setattr(args, 'wandb_enabled', True)
+        print(f"wandb run initialized: {run_name}")
+    except Exception as e:
+        print(f"Failed to initialize wandb ({e}); continuing without logging.")
+        setattr(args, 'wandb_enabled', False)
+
 def process_data():
     data_dir = args.data_dir
     raw_kb_path = os.path.join(data_dir, 'raw.kb')
@@ -252,6 +301,9 @@ def train(lf):
     dev_data = data_utils.load_triples(dev_path, entity_index_path, relation_index_path, seen_entities=seen_entities)
     if args.checkpoint_path is not None:
         lf.load_checkpoint(args.checkpoint_path)
+    # Ensure wandb is initialized before training if requested
+    if not getattr(args, 'wandb_enabled', False):
+        setup_wandb(args, job_type='train')
     lf.run_train(train_data, dev_data)
 
 def inference(lf):
@@ -613,6 +665,7 @@ def run_experiment(args):
                     torch.manual_seed(random_seed)
                     torch.cuda.manual_seed_all(args, random_seed)
                     initialize_model_directory(args, random_seed)
+                    setup_wandb(args, job_type='sweep')
                     lf = construct_model(args)
                     lf.cuda()
                     train(lf)
@@ -713,6 +766,7 @@ def run_experiment(args):
                         signature += ':{}'.format(value)
                         print('* {}: {}'.format(hp, value))
                     initialize_model_directory(args)
+                    setup_wandb(args, job_type='grid-search')
                     lf = construct_model(args)
                     lf.cuda()
                     train(lf)
@@ -759,6 +813,7 @@ def run_experiment(args):
                 run_ablation_studies(args)
             else:
                 initialize_model_directory(args)
+                setup_wandb(args, job_type='run')
                 lf = construct_model(args)
                 lf.cuda()
 

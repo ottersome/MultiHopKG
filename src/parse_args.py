@@ -232,4 +232,22 @@ parser.add_argument('--grid_search', action='store_true',
 # LG: Debug
 parser.add_argument('--debug', action="store_true", help="Flag that activtes debugpy")
 
+# Weights & Biases (wandb)
+parser.add_argument('--wandb', action='store_true',
+                    help='Enable Weights & Biases logging (default: False)')
+parser.add_argument('--wandb_project', type=str, default='kg-reasoning',
+                    help='wandb project name (default: kg-reasoning)')
+parser.add_argument('--wandb_entity', type=str, default='',
+                    help='wandb entity/team (optional)')
+parser.add_argument('--wandb_run_name', type=str, default='',
+                    help='wandb run name (optional)')
+parser.add_argument('--wandb_tags', type=str, default='',
+                    help='comma-separated wandb tags (optional)')
+parser.add_argument('--wandb_group', type=str, default='',
+                    help='wandb group name (optional)')
+parser.add_argument('--wandb_notes', type=str, default='',
+                    help='wandb run notes (optional)')
+parser.add_argument('--wandb_mode', type=str, default='online',
+                    help='wandb mode: online, offline, or disabled (default: online)')
+
 args = parser.parse_args()
