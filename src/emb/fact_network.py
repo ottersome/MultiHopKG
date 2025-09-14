@@ -220,7 +220,7 @@ class TransE(nn.Module):
         super(TransE, self).__init__()
         # No learnable parameters; uses KG embeddings directly.
         # Memory-efficient scoring via entity chunking.
-        self.entity_chunk_size = getattr(args, 'transe_entity_chunk_size', 4096)
+        self.entity_chunk_size = getattr(args, 'transe_entity_chunk_size', 32)
 
     def forward(self, e1, r, kg):
         """
@@ -233,20 +233,32 @@ class TransE(nn.Module):
         E2 = kg.get_all_entity_embeddings()        # [N, d]
         head = (E1 + R)                            # [B, d]
 
-        # Memory-efficient computation: avoid building [B, N, d]
+        # Chunk by batches instead 
         B, d = head.size(0), head.size(1)
         N = E2.size(0)
-        chunk = max(1, min(self.entity_chunk_size, N))
-        scores_chunks = []
-        for start in range(0, N, chunk):
-            end = min(start + chunk, N)
-            e2_chunk = E2[start:end]               # [C, d]
-            # Vectorized within chunk; keeps peak tensor at [B, C, d]
-            diff = head.unsqueeze(1) - e2_chunk.unsqueeze(0)  # [B, C, d]
-            sc = -torch.sum(torch.abs(diff), dim=2)           # [B, C]
-            scores_chunks.append(sc)
-        scores = torch.cat(scores_chunks, dim=1)    # [B, N]
-        return F.sigmoid(scores)
+        chunk = max(1, min(self.entity_chunk_size, B))
+
+        batch_losses = torch.zeros((B,N), dtype=torch.float32, device=head.device)
+        for start in range(0, B, chunk):
+            end = min(start+chunk, B)
+            micro_head = head[start:end, :].unsqueeze(1)
+            micro_target = E2.unsqueeze(0)
+            diff = F.mse_loss(micro_head, micro_target, reduction='none').mean(dim=-1)
+            batch_losses[start:end] = diff
+
+        # Memory-efficient computation: avoid building [B, N, d]
+        # B, d = head.size(0), head.size(1)
+        # N = E2.size(0)
+        # chunk = max(1, min(self.entity_chunk_size, N))
+        # scores_chunks = []
+        # for start in range(0, N, chunk):
+        #     end = min(start + chunk, N)
+        #     e2_chunk = E2[start:end]               # [C, d]
+        #     # Vectorized within chunk; keeps peak tensor at [B, C, d]
+        #     diff = head.unsqueeze(1) - e2_chunk.unsqueeze(0)  # [B, C, d]
+        #     sc = -torch.sum(torch.abs(diff), dim=2)           # [B, C]
+        #     scores_chunks.append(sc)
+        return torch.sigmoid(batch_losses)
 
     def forward_fact(self, e1, r, e2, kg):
         """
@@ -314,15 +326,21 @@ def get_distmult_kg_state_dict(state_dict):
         kg_state_dict[param_name.split('.', 1)[1]] = state_dict['state_dict'][param_name]
     return kg_state_dict
 
-def get_transe_kg_state_dict(pretraining_path: str):
-    entity_embeddings_path = os.path.join(pretraining_path, 'entity_embedding.npy')
-    relation_embeddings_path = os.path.join(pretraining_path, 'relation_embedding.npy')
-
-    entity_embeddings = np.load(entity_embeddings_path)
-    relation_embeddings = np.load(relation_embeddings_path)
-    kg_state_dict = {
-        'entity_embeddings.weight': torch.from_numpy(entity_embeddings),
-        'relation_embeddings.weight': torch.from_numpy(relation_embeddings)
-    }
-
+def get_transe_kg_state_dict(state_dict):
+    kg_state_dict = dict()
+    for param_name in ['kg.entity_embeddings.weight', 'kg.relation_embeddings.weight']:
+        kg_state_dict[param_name.split('.', 1)[1]] = state_dict['state_dict'][param_name]
     return kg_state_dict
+
+# def get_transe_kg_state_dict(pretraining_path: str):
+#     entity_embeddings_path = os.path.join(pretraining_path, 'entity_embedding.npy')
+#     relation_embeddings_path = os.path.join(pretraining_path, 'relation_embedding.npy')
+#
+#     entity_embeddings = np.load(entity_embeddings_path)
+#     relation_embeddings = np.load(relation_embeddings_path)
+#     kg_state_dict = {
+#         'entity_embeddings.weight': torch.from_numpy(entity_embeddings),
+#         'relation_embeddings.weight': torch.from_numpy(relation_embeddings)
+#     }
+#
+#     return kg_state_dict

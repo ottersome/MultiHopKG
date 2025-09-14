@@ -25,6 +25,7 @@ class EmbeddingBasedMethod(LFramework):
         self.label_smoothing_epsilon = args.label_smoothing_epsilon
         self.loss_fun = nn.BCELoss()
 
+        self.model = args.model
         self.theta = args.theta
         self.secondary_kg = secondary_kg
         self.tertiary_kg = tertiary_kg

@@ -87,6 +87,11 @@ class LFramework(nn.Module):
             except Exception:
                 _wandb_enabled = False
 
+        # Global step counter for inter-batch logging
+        if not hasattr(self, '_global_step'):
+            self._global_step = 0
+        log_interval = int(getattr(self.args, 'wandb_log_interval', 0) or 0)
+
         for epoch_id in range(self.start_epoch, self.num_epochs):
             print('Epoch {}'.format(epoch_id))
             if self.rl_variation_tag.startswith('rs'):
@@ -137,8 +142,25 @@ class LFramework(nn.Module):
                         fns = loss['fn']
                     else:
                         fns = torch.cat([fns, loss['fn']])
+
+                # Inter-batch wandb logging
+                self._global_step += 1
+                if _wandb_enabled and log_interval > 0 and (self._global_step % log_interval == 0):
+                    log_dict = {
+                        'step': int(self._global_step),
+                        'train_step/loss': float(loss['print_loss']) if isinstance(loss['print_loss'], (int, float)) else float(loss['print_loss']),
+                        'train_step/epoch': int(epoch_id),
+                    }
+                    if 'entropy' in loss:
+                        try:
+                            log_dict['train_step/entropy'] = float(loss['entropy'])
+                        except Exception:
+                            pass
+                    if self.optim and self.optim.param_groups:
+                        log_dict['lr'] = float(self.optim.param_groups[0]['lr'])
+                    _wandb.log(log_dict)
             # Check training statistics
-            avg_train_loss = float(np.mean(batch_losses)) if batch_losses else 0.0
+            avg_train_loss = np.mean(batch_losses).item() if batch_losses else 0.0
             stdout_msg = 'Epoch {}: average training loss = {}'.format(epoch_id, avg_train_loss)
             if entropies:
                 avg_entropy = float(np.mean(entropies))
@@ -169,7 +191,7 @@ class LFramework(nn.Module):
                 print('* Analysis: false negative ratio = {}'.format(fn_ratio))
 
             # Check dev set performance
-            if self.run_analysis or (epoch_id > 0 and epoch_id % self.num_peek_epochs == 0):
+            if self.run_analysis or epoch_id % self.num_peek_epochs == 0:
                 self.eval()
                 self.batch_size = self.dev_batch_size
                 with torch.no_grad():

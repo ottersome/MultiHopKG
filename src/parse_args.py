@@ -131,7 +131,7 @@ parser.add_argument('--feat_dropout_rate', type=float, default=0.2,
                     help='ConvE feature dropout rate (default: 0.2)')
 parser.add_argument('--emb_2D_d1', type=int, default=10,
                     help='ConvE embedding 2D shape dimension 1 (default: 10)')
-parser.add_argument('--emb_2D_d2', type=int, default=20,
+parser.add_argument('--emb_2D_d2', type=int, default=10,
                     help='ConvE embedding 2D shape dimension 2 (default: 20)')
 parser.add_argument('--num_out_channels', type=int, default=32,
                     help='ConvE number of output channels of the convolution layer (default: 32)')
@@ -231,13 +231,14 @@ parser.add_argument('--grid_search', action='store_true',
 
 # LG: Debug
 parser.add_argument('--debug', action="store_true", help="Flag that activtes debugpy")
+parser.add_argument('--debug_port', type=int, default=42023, help="Port to attach debugpyto")
 
 # Weights & Biases (wandb)
 parser.add_argument('--wandb', action='store_true',
                     help='Enable Weights & Biases logging (default: False)')
-parser.add_argument('--wandb_project', type=str, default='kg-reasoning',
+parser.add_argument('--wandb_project', type=str, default='salesforce-entity_training',
                     help='wandb project name (default: kg-reasoning)')
-parser.add_argument('--wandb_entity', type=str, default='',
+parser.add_argument('--wandb_entity', type=str, default='halcyon-solutions',
                     help='wandb entity/team (optional)')
 parser.add_argument('--wandb_run_name', type=str, default='',
                     help='wandb run name (optional)')
@@ -249,5 +250,7 @@ parser.add_argument('--wandb_notes', type=str, default='',
                     help='wandb run notes (optional)')
 parser.add_argument('--wandb_mode', type=str, default='online',
                     help='wandb mode: online, offline, or disabled (default: online)')
+parser.add_argument('--wandb_log_interval', type=int, default=100,
+                    help='log inter-batch metrics every N steps (0 disables)')
 
 args = parser.parse_args()

@@ -61,7 +61,7 @@ def setup_wandb(args, job_type='train'):
     run_name = args.wandb_run_name or os.path.basename(os.path.normpath(args.model_dir))
     tags = [t.strip() for t in getattr(args, 'wandb_tags', '').split(',') if t.strip()]
     init_kwargs = dict(
-        project=getattr(args, 'wandb_project', 'kg-reasoning'),
+        project=getattr(args, 'wandb_project', 'salesforce-multihopkg'),
         entity=(args.wandb_entity or None),
         name=run_name,
         dir=args.model_dir,
@@ -81,6 +81,9 @@ def setup_wandb(args, job_type='train'):
         wandb.define_metric('epoch')
         wandb.define_metric('train/*', step_metric='epoch')
         wandb.define_metric('dev/*', step_metric='epoch')
+        # Optional inter-batch step metric
+        wandb.define_metric('step')
+        wandb.define_metric('train_step/*', step_metric='step')
         setattr(args, 'wandb_enabled', True)
         print(f"wandb run initialized: {run_name}")
     except Exception as e:
@@ -839,8 +842,8 @@ def run_experiment(args):
 if __name__ == '__main__':
 
     if args.debug:
-        debugpy.listen(42023)
-        print(f"debugpy listening on 42023", flush=True)
+        debugpy.listen(args.debug_port)
+        print(f"debugpy listening on {args.debug_port}", flush=True)
         debugpy.wait_for_client()
     
     run_experiment(args)

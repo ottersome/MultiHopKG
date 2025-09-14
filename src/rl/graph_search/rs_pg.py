@@ -45,7 +45,8 @@ class RewardShapingPolicyGradient(PolicyGradient):
             fn_state_dict = torch.load(args.conve_state_dict_path)
             fn_kg_state_dict = get_conve_kg_state_dict(fn_state_dict)
         elif fn_model == 'transe':
-            fn_kg_state_dict = get_transe_kg_state_dict(args.transe_state_dict_path)
+            fn_state_dict = torch.load(args.transe_state_dict_path)
+            fn_kg_state_dict = get_transe_kg_state_dict(fn_state_dict)
         else:
             raise NotImplementedError
         self.fn_kg.load_state_dict(fn_kg_state_dict)

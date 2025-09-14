@@ -1,11 +1,25 @@
 {
   "configurations": [
     {
-      "name": "Remote, Lab",
+      "name": "Remote, Lab: 42023",
       "type": "python",
       "host": "127.0.0.1",
       "request": "attach",
-      "port": 42023,
+      "port": 42025,
+      "subProcess": true,
+      "pathMappings": [
+        {
+          "localRoot": "${workspaceFolder}",
+          "remoteRoot": "/root/salesforce/"
+        }
+      ]
+    },
+    {
+      "name": "Remote, Lab:42020",
+      "type": "python",
+      "host": "127.0.0.1",
+      "request": "attach",
+      "port": 42020,
       "subProcess": true,
       "pathMappings": [
         {
