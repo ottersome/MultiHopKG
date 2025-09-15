@@ -11,6 +11,7 @@ import collections
 import numpy as np
 import os
 import pickle
+import pandas as pd
 
 START_RELATION = 'START_RELATION'
 NO_OP_RELATION = 'NO_OP_RELATION'
@@ -438,3 +439,94 @@ def load_configs(args, config_path):
             else:
                 raise ValueError('Unrecognized argument: {}'.format(arg_name))
     return args
+
+def load_qa_data(
+    cached_metadata_path: str,
+    raw_QAData_path: str,
+    question_tokenizer_name: str,
+    entity2id: Dict[str, int],
+    relation2id: Dict[str, int], 
+    seed: Optional[int] = None,
+    logger: Optional[logging.Logger] = None,
+    force_recompute: bool = False,
+    override_split: bool = True,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    """
+    Load QA dataset with intelligent caching and fallback processing.
+    
+    Attempts to load preprocessed data from cache first. If cache is missing
+    or force_recompute is True, processes raw data and creates new cache.
+    This function provides a unified interface for QA data loading with
+    automatic preprocessing and caching management.
+    
+    Args:
+        cached_metadata_path: Path to cached metadata JSON file
+        raw_QAData_path: Path to raw CSV data file (used if cache missing)
+        question_tokenizer_name: HuggingFace tokenizer identifier
+        entity2id: Entity name to integer ID mapping
+        relation2id: Relation name to integer ID mapping
+        seed: Optional seed for random number generation
+        logger: Optional logger for progress tracking
+        force_recompute: If True, ignore cache and reprocess data
+        override_split: If True, use SplitLabel column when available
+        
+    Returns:
+        Tuple containing:
+            - train_df: Training DataFrame
+            - dev_df: Development DataFrame  
+            - test_df: Test DataFrame
+            - train_metadata: Metadata dictionary with processing information
+            
+    Raises:
+        FileNotFoundError: If raw data file doesn't exist when cache is missing
+        json.JSONDecodeError: If cached metadata is corrupted
+        KeyError: If required entities/relations missing from vocabularies
+        
+    Note:
+        - Cached data is loaded from parquet files for efficiency
+        - Metadata tracks tokenizer, column mappings, and file locations
+        - Automatic fallback to raw processing if cache is invalid
+    """
+
+    if os.path.exists(cached_metadata_path) and not force_recompute:
+        # Load from cache
+        print(f"\033[93mFound cached QA data at {cached_metadata_path}, loading instead of "
+              f"processing {raw_QAData_path}\033[0m")
+              
+        # Load metadata and extract file paths
+        with open(cached_metadata_path, 'r') as f:
+            train_metadata = json.load(f)
+        saved_paths: Dict[str, str] = train_metadata["saved_paths"]
+
+        # Load preprocessed DataFrames
+        train_df = pd.read_parquet(saved_paths["train"])
+        dev_df = pd.read_parquet(saved_paths["dev"])
+        test_df = pd.read_parquet(saved_paths["test"])
+
+        print(f"Loaded cached data from \033[93m\033[4m{cached_metadata_path}\033[0m")
+        
+    else:
+        # Process raw data
+        print(f"\033[93mCache not found or force_recompute=True. "
+              f"Processing raw data from {raw_QAData_path}\033[0m")
+              
+        # Load tokenizer and process data
+        question_tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
+        df_split, train_metadata = process_and_cache_triviaqa_data(
+            raw_QAData_path,
+            cached_metadata_path,
+            question_tokenizer,
+            entity2id,
+            relation2id,
+            seed=seed,
+            override_split=override_split,
+            logger=logger,
+        )
+        
+        # Extract DataFrames from split object
+        train_df, dev_df, test_df = df_split.train, df_split.dev, df_split.test
+        print(f"Processing complete. Data saved to:\n"
+              f"\033[93m\033[4m{train_metadata['saved_paths']}\033[0m")
+
+    return train_df, dev_df, test_df, train_metadata
+
