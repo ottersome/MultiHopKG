@@ -61,9 +61,9 @@ cmd="python3 -m src.experiments \
     $use_action_space_bucketing_flag \
     $use_question_encoder_flag \
     --bert_model_name "$bert_model_name" \
-    --bert_hidden_size $bert_hidden_size \
     --max_question_len $max_question_len \
     --question_texts_path "$question_texts_path" \
+    --QAData_path $QAData_path \
     --gpu $gpu \
     $ARGS"
 

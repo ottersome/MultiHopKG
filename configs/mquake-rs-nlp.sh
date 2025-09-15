@@ -8,12 +8,11 @@ group_examples_by_query="False"
 use_action_space_bucketing="True"
 
 # Language conditioning
-use_question_encoder="True"
 bert_model_name="bert-base-uncased"
-bert_hidden_size=768
 max_question_len=64
 # Optional mapping from (e_s, r) -> question text; leave empty to default to zeros
 question_texts_path=""
+question_dataset=""
 
 bandwidth=400
 relation_dim=500

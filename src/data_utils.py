@@ -7,11 +7,18 @@
  Data processing utilities.
 """
 
+import logging
+import ast
 import collections
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import os
 import pickle
 import pandas as pd
+from transformers import AutoTokenizer, PreTrainedTokenizer
+
+from data.itl_typing import DFSplit
 
 START_RELATION = 'START_RELATION'
 NO_OP_RELATION = 'NO_OP_RELATION'
@@ -440,6 +447,238 @@ def load_configs(args, config_path):
                 raise ValueError('Unrecognized argument: {}'.format(arg_name))
     return args
 
+def extract_literals(column: Union[str, pd.Series], flatten: bool = False) -> Union[pd.Series, List[str]]:
+    """
+    Extract Python literals from string representations in pandas columns.
+    
+    Safely evaluates string representations of Python literals (lists, dicts, etc.)
+    using ast.literal_eval. Optionally flattens nested lists into a single flat list.
+    This is commonly used for processing path data stored as string representations
+    of lists in CSV files.
+    
+    Args:
+        column: Pandas Series containing string representations of Python literals,
+               or a single string representation
+        flatten: If True, flattens all extracted lists into a single list.
+                If False, returns a Series of individual lists
+                
+    Returns:
+        If flatten=False: Pandas Series where each element is the evaluated literal
+        If flatten=True: Single flattened list containing all elements from all lists
+        
+    Example:
+        >>> import pandas as pd
+        >>> data = pd.Series(['[1, 2, 3]', '[4, 5]', '[6]'])
+        >>> result = extract_literals(data, flatten=False)
+        >>> print(result.tolist())  # [[1, 2, 3], [4, 5], [6]]
+        >>> 
+        >>> flat_result = extract_literals(data, flatten=True)
+        >>> print(flat_result)  # [1, 2, 3, 4, 5, 6]
+        
+    Raises:
+        ValueError: If any string cannot be safely evaluated as a Python literal
+        SyntaxError: If any string contains invalid Python syntax
+    """
+    # Convert single string input to pandas Series for uniform processing
+    if isinstance(column, str):
+        column = pd.Series([column])
+
+    # Safely evaluate string representations of Python literals
+    evaluated_column = column.apply(ast.literal_eval)
+
+    # DEBUG TODO:  Need to fix the lsp problem here so we need to debug till here and disambiguiate
+    # Flatten all lists into a single list if requested
+    if flatten:
+        flattened_result = [item for sublist in evaluated_column for item in sublist]
+        return flattened_result
+        
+    return evaluated_column
+
+
+def process_and_cache_triviaqa_data(
+    raw_QAData_path: str,
+    cached_toked_qatriples_metadata_path: str,
+    question_tokenizer: PreTrainedTokenizer,
+    entity2id: Dict[str, int],
+    relation2id: Dict[str, int],
+    seed: Optional[int] = None,
+    override_split: bool = True,
+    logger: Optional[logging.Logger] = None,
+) -> Tuple[DFSplit, Dict[str, Any]]:
+    """
+    Process and cache question-answer dataset with entity/relation mapping.
+    
+    Loads raw QA data from CSV, tokenizes questions, maps entities and relations
+    to their integer IDs, creates train/dev/test splits, and caches the processed
+    data for future use. Supports both automatic splitting and label-guided splitting.
+    
+    The function expects CSV data with specific column structure:
+    - Question: Natural language questions
+    - Source-Entity: Starting entity for reasoning
+    - Answer-Entity: Target answer entity
+    - Paths: (Optional) Reasoning paths as string representations of lists
+    - Hops: (Optional) Number of reasoning hops
+    - SplitLabel: (Optional) Predefined split labels ('train', 'dev', 'test')
+    
+    Args:
+        raw_QAData_path: Path to the raw CSV file containing QA data
+        cached_toked_qatriples_metadata_path: Path where processed metadata will be saved
+        question_tokenizer: HuggingFace tokenizer for question text processing
+        entity2id: Mapping from entity names to integer IDs
+        relation2id: Mapping from relation names to integer IDs
+        seed: Optional seed for random number generation
+        override_split: If True, use SplitLabel column for splitting when available
+        logger: Optional logger for progress tracking and warnings
+        
+    Returns:
+        Tuple containing:
+            - DFSplit: Object with train/dev/test DataFrames
+            - Dict: Metadata including tokenizer info, column mappings, and file paths
+            
+    Raises:
+        AssertionError: If CSV file has fewer than 3 columns
+        ValueError: If git root cannot be determined
+        RuntimeError: If data loading fails or DataFrames are invalid
+        KeyError: If required entities/relations are missing from vocabularies
+        
+    Note:
+        - Questions are tokenized without special tokens ([CLS], [SEP])
+        - Entity and relation names are mapped to integer IDs
+        - Paths are converted from string representations to lists of [head, rel, tail] triples
+        - Automatic splitting uses 80/10/10 train/dev/test if no SplitLabel column
+        - Small test sets (<100 samples) are used as dev sets with 50/50 dev/test split
+    """
+
+    # Load and validate CSV data
+    csv_df = pd.read_csv(raw_QAData_path)
+    assert len(csv_df.columns) > 2, \
+        "CSV file must have at least 3 columns (Question, Source-Entity, Answer-Entity)"
+    
+    # Extract required columns
+    questions = csv_df["Question"]
+    source_ent = csv_df["Source-Entity"] 
+    answer_ent = csv_df["Answer-Entity"]
+    
+    # Extract optional columns
+    assert isinstance(csv_df, pd.Series), "LG assump-broke: we expected csv_df to be a pd.Series"
+    paths = extract_literals(csv_df["Paths"]) if 'Paths' in csv_df.columns else None
+    assert isinstance(paths, pd.Series) # FOr us to use .map a few lines below.
+    split_label = csv_df["SplitLabel"] if 'SplitLabel' in csv_df.columns else None
+    hops = csv_df["Hops"] if 'Hops' in csv_df.columns else None
+
+    # Ensure output directory exists
+    dir_name = os.path.dirname(cached_toked_qatriples_metadata_path)
+    os.makedirs(dir_name, exist_ok=True)
+
+    # Tokenize questions (without special tokens for later processing)
+    tokenized_questions = questions.map(
+        lambda x: question_tokenizer.encode(x, add_special_tokens=False)
+    )
+
+    # Map entities and relations to integer IDs
+    mapped_source_ent = source_ent.map(lambda ent: entity2id[ent])
+    mapped_answer_ent = answer_ent.map(lambda ent: entity2id[ent])
+    if paths is not None:
+        mapped_paths = paths.map(
+            lambda path: [
+                [entity2id[head], relation2id[rel], entity2id[tail]] 
+                for head, rel, tail in path
+            ]
+        )
+
+    # Generate unique timestamp for file naming
+    timestamp = str(int(datetime.now().timestamp()))
+    cached_split_locations: Dict[str, str] = {
+        name: cached_toked_qatriples_metadata_path.replace(".json", "") + 
+              f"_Split-{name}_date-{timestamp}.parquet"
+        for name in ["train", "dev", "test"]
+    }
+
+    # Get repository root for relative path generation
+    repo_root = get_git_root()
+    if repo_root is None:
+        raise ValueError("Cannot determine git root path. Ensure you're in a git repository.")
+
+    # Convert to relative paths
+    cached_split_locations = {
+        key: val.replace(repo_root + "/", "") 
+        for key, val in cached_split_locations.items()
+    }
+
+    # Combine all processed data into final DataFrame
+    data_columns = [tokenized_questions, mapped_source_ent, mapped_answer_ent]
+    if paths is not None:
+        data_columns.append(mapped_paths)
+    if hops is not None:
+        data_columns.append(hops)
+    if split_label is not None:
+        data_columns.append(split_label)
+        
+    new_df = pd.concat(data_columns, axis=1)
+    new_df = new_df.sample(frac=1, random_state=seed).reset_index(drop=True)  # Shuffle data with fixed seed
+
+    # Create train/dev/test splits
+    dev_splitted = False
+    if (override_split and 'SplitLabel' in new_df.columns and 
+        new_df['SplitLabel'].notna().any() and not new_df['SplitLabel'].eq('').all()):
+        # Use predefined split labels
+        train_df = new_df[new_df['SplitLabel'] == 'train'].reset_index(drop=True)
+
+        if 'test' in new_df["SplitLabel"].values and 'dev' in new_df["SplitLabel"].values:
+            test_df = new_df[new_df['SplitLabel'] == 'test'].reset_index(drop=True)
+            dev_df = new_df[new_df['SplitLabel'] == 'dev'].reset_index(drop=True)
+            dev_splitted = True
+            if logger: logger.info("Using SplitLabel column for dev/test splitting")
+        else:
+            test_df = new_df[new_df['SplitLabel'] != 'train'].reset_index(drop=True)
+
+        if logger: 
+            logger.info("Using SplitLabel column for data splitting")
+    else:
+        # Automatic splitting
+        train_df, test_df = train_test_split(new_df, test_size=0.2, random_state=seed)
+
+    # Handle dev set creation
+    if len(test_df) < 100:
+        # Use entire test set as dev set for small datasets
+        dev_df = test_df
+        if logger: 
+            logger.warning("Test set too small (<100 samples), using as dev set")
+    elif not dev_splitted:
+        # Automatic splitting
+        dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=seed)
+        if logger: logger.info("Automatically splitting test set into dev/test")
+
+    # Validate DataFrame creation
+    if not all(isinstance(df, pd.DataFrame) for df in [train_df, dev_df, test_df]):
+        raise RuntimeError("Data loading failed - invalid DataFrames created")
+
+    # Save processed data to parquet files
+    for name, df in {"train": train_df, "dev": dev_df, "test": test_df}.items():
+        df.to_parquet(cached_split_locations[name], index=False)
+
+    # Create metadata for reproducibility and documentation
+    metadata: Dict[str, Any] = {
+        "question_tokenizer": question_tokenizer.name_or_path,
+        "question_column": "Question",
+        "source_entities_column": "Source-Entity",
+        "answer_entity_column": "Answer-Entity",
+        "paths_column": "Paths",
+        "hops_column": "Hops",
+        "splitLabel_column": "SplitLabel",
+        "zero_indexed_columns": True,
+        "date_processed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "saved_paths": cached_split_locations,
+        "timestamp": timestamp,
+    }
+
+    # Save metadata to JSON file
+    with open(cached_toked_qatriples_metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    return DFSplit(train=train_df, dev=dev_df, test=test_df), metadata
+
+
 def load_qa_data(
     cached_metadata_path: str,
     raw_QAData_path: str,
@@ -529,4 +768,321 @@ def load_qa_data(
               f"\033[93m\033[4m{train_metadata['saved_paths']}\033[0m")
 
     return train_df, dev_df, test_df, train_metadata
+
+class QuestionBatcher:
+    """
+    A data batcher for Natural Language Question answering over Knowledge Graphs.
+    
+    This class handles the loading, preprocessing, and batching of question-answer pairs
+    for training and evaluation. It provides functionality to:
+    
+    1. Load and preprocess QA datasets with entity/relation vocabularies
+    2. Generate embeddings for questions using transformer models via EmbeddingServer
+    3. Batch data for training (random sampling) and testing (sequential)
+    4. Translate between entity/relation IDs and human-readable names
+    
+    The batcher supports both training and evaluation modes, automatically managing
+    data splits and providing appropriate batching strategies for each phase.
+    
+    Attributes:
+        batch_size (int): Number of samples per batch
+        mode (str): Current mode ('train', 'dev', or 'test')
+        entity_vocab (Dict[str, int]): Entity name to ID mapping
+        relation_vocab (Dict[str, int]): Relation name to ID mapping
+        rev_entity_vocab (Dict[int, str]): Entity ID to name mapping
+        rev_relation_vocab (Dict[int, str]): Relation ID to name mapping
+        ent2name (Dict[str, str]): Entity name to human-readable title mapping
+        rel2name (Dict[str, str]): Relation name to human-readable title mapping
+        train_df (pd.DataFrame): Training dataset
+        dev_df (pd.DataFrame): Development/validation dataset
+        test_df (pd.DataFrame): Test dataset
+        eval_df (pd.DataFrame): Current evaluation dataset based on mode
+        embedding_server (EmbeddingServer): Server for generating question embeddings
+        question_tokenizer (AutoTokenizer): Tokenizer for question text
+        pad_id (int): Padding token ID
+        cls_id (int): CLS token ID for BERT-style models
+        sep_id (int): SEP token ID for BERT-style models
+    """
+    def __init__(
+        self, 
+        input_dir: str,
+        batch_size: int, 
+        question_tokenizer_name: str,
+        cached_QAMetaData_path: str,
+        raw_QAData_path: str,
+        mode: str = "train",
+        seed: Optional[int] = None,
+        force_data_prepro: bool = False,
+        embedding_server: Optional[EmbeddingServer] = None,
+    ) -> None:
+        """
+        Initialize the QuestionBatcher with data loading and preprocessing.
+        
+        Args:
+            input_dir: Directory containing entity and relation vocabularies
+            batch_size: Number of samples per batch
+            question_tokenizer_name: HuggingFace model name for question tokenization
+            cached_QAMetaData_path: Path to cached preprocessed QA metadata JSON
+            raw_QAData_path: Path to raw QA dataset CSV file
+            mode: Initial mode ('train', 'dev', or 'test')
+            seed: Optional seed for random number generation
+            force_data_prepro: Whether to force reprocessing of cached data
+            embedding_server: Optional pre-initialized embedding server
+        """
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+        self.batch_size: int = batch_size
+
+        # Load knowledge graph vocabularies
+        ent2id, rel2id, id2ent, id2rel, ent2name, rel2name = load_dictionary(input_dir)
+        self.entity_vocab: Dict[str, int] = ent2id
+        self.relation_vocab: Dict[str, int] = rel2id
+        self.rev_entity_vocab: Dict[int, str] = id2ent
+        self.rev_relation_vocab: Dict[int, str] = id2rel
+        self.ent2name: Dict[str, str] = ent2name
+        self.rel2name: Dict[str, str] = rel2name
+
+        # Load and preprocess QA datasets
+        self.train_df: pd.DataFrame
+        self.dev_df: pd.DataFrame
+        self.test_df: pd.DataFrame
+        self.train_metadata: Dict
+        
+        self.train_df, self.dev_df, self.test_df, self.train_metadata = load_qa_data(
+            cached_metadata_path=cached_QAMetaData_path,
+            raw_QAData_path=raw_QAData_path,
+            question_tokenizer_name=question_tokenizer_name,
+            entity2id=ent2id,
+            relation2id=rel2id,
+            seed=seed,
+            logger=None,
+            force_recompute=force_data_prepro,
+        )
+
+        # Set initial mode and evaluation dataset
+        self.mode: str = mode
+        self.eval_df: pd.DataFrame
+        self.set_mode(mode)
+
+        # Initialize embedding server for question processing
+        self.embedding_server: EmbeddingServer = embedding_server or EmbeddingServer(question_tokenizer_name)
+
+        # Initialize tokenizer and special token IDs
+        self.question_tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
+        self.pad_id: int = self.question_tokenizer.pad_token_id or 0
+        self.cls_id: int = self.question_tokenizer.cls_token_id or 101
+        self.sep_id: int = self.question_tokenizer.sep_token_id or 102
+        
+        # Cache embedding dimensions for easy access
+        self._embedding_dim: Optional[int] = None
+        self.calculate_embedding_dimensions()  # Pre-fetch dimensions
+
+    def calculate_embedding_dimensions(self) -> Tuple[int, int]:
+        """
+        Get the embedding dimensions by testing the embedding server.
+
+        Returns:
+            Tuple of (batch_size, embedding_dim) where batch_size is 1 for the test
+        """
+        # Test with a simple question to get dimensions
+        test_question = [[0, 0, 0]]
+        test_embedding = self.embedding_server.embed(
+            token_id_batches=test_question,
+            pad_id=self.pad_id,
+            cls_id=self.cls_id,
+            sep_id=self.sep_id,
+        )
+        # Cache the embedding dimension for future use
+        if self._embedding_dim is None:
+            self._embedding_dim = test_embedding.shape[1]
+        return test_embedding.shape  # Returns (1, embedding_dim)
+
+    def get_embedding_dim(self) -> int:
+        """
+        Get just the embedding dimension (not the batch size).
+
+        Returns:
+            The embedding dimension as an integer
+        """
+        if self._embedding_dim is None:
+            self.calculate_embedding_dimensions()
+        return self._embedding_dim
+
+
+    def set_mode(self, mode: str) -> None:
+        """
+        Change the batcher mode and set the corresponding evaluation dataset.
+        
+        Args:
+            mode: New mode ('train', 'dev', or 'test')
+            
+        Raises:
+            AssertionError: If mode is not one of the valid options
+        """
+        assert mode in ['train', 'dev', 'test'], "Mode must be one of ['train', 'dev', 'test']"
+        self.mode = mode
+        if mode == 'train':
+            self.eval_df = self.train_df
+        elif mode == 'dev':
+            self.eval_df = self.dev_df
+        else:
+            self.eval_df = self.test_df
+
+    def set_batch_size(self, batch_size: int) -> None:
+        """
+        Update the batch size for subsequent batching operations.
+        
+        Args:
+            batch_size: New batch size
+        """
+        self.batch_size = batch_size
+
+    def get_mode(self) -> str:
+        """
+        Get the current batcher mode.
+        
+        Returns:
+            Current mode string ('train', 'dev', or 'test')
+        """
+        return self.mode
+
+    def get_question_num(self) -> int:
+        """
+        Get the total number of questions in the current evaluation dataset.
+        
+        Returns:
+            Number of questions in current mode's dataset
+        """
+        return len(self.eval_df)
+
+    def yield_next_batch_train(self) -> Generator[Tuple[List[str], np.ndarray, np.ndarray, np.ndarray], None, None]:
+        """
+        Generate infinite training batches with random sampling.
+        
+        Yields batches by randomly sampling questions from the training dataset.
+        Each batch contains question texts, embeddings, source entities, and answer entities.
+        
+        Yields:
+            Tuple containing:
+                - questions (List[str]): Raw question text strings
+                - question_embeddings (np.ndarray): Question embeddings [batch_size, embedding_dim]
+                - source_ent (np.ndarray): Source entity IDs [batch_size]
+                - answers (np.ndarray): Answer entity IDs [batch_size]
+                
+        Raises:
+            AssertionError: If batcher is not in training mode
+        """
+        assert self.mode == 'train', "Batcher is not in training mode"
+        while True:
+            # Randomly sample batch indices
+            batch_idx = np.random.randint(0, len(self.eval_df), size=self.batch_size)
+            batch = self.eval_df.iloc[batch_idx]
+            
+            # Extract data fields
+            questions: List[str] = batch['Question'].tolist()
+            source_ent: np.ndarray = batch["Source-Entity"].to_numpy(dtype=int)
+            answers: np.ndarray = batch['Answer-Entity'].to_numpy(dtype=int)
+
+            # Generate embeddings via the embedding server
+            question_embeddings: np.ndarray = self.embedding_server.embed(
+                token_id_batches=questions,
+                pad_id=self.pad_id,
+                cls_id=self.cls_id,
+                sep_id=self.sep_id,
+                max_length=128,
+            )
+
+            yield questions, question_embeddings, source_ent, answers
+
+    def yield_next_batch_test(self) -> Generator[Tuple[List[str], np.ndarray, np.ndarray, np.ndarray], None, None]:
+        """
+        Generate sequential test/evaluation batches without repetition.
+        
+        Iterates through the evaluation dataset sequentially, yielding batches until
+        all questions have been processed. Handles partial batches at the end.
+        
+        Yields:
+            Tuple containing:
+                - questions (List[str]): Raw question text strings
+                - question_embeddings (np.ndarray): Question embeddings [batch_size, embedding_dim]
+                - source_ent (np.ndarray): Source entity IDs [batch_size]
+                - answers (np.ndarray): Answer entity IDs [batch_size]
+        """
+        remaining_questions: int = len(self.eval_df)
+        current_idx: int = 0
+        
+        while True:
+            if remaining_questions == 0:
+                return
+            
+            # Determine batch indices for current iteration
+            if remaining_questions - self.batch_size > 0:
+                batch_idx = np.arange(current_idx, current_idx + self.batch_size)
+                current_idx += self.batch_size
+                remaining_questions -= self.batch_size
+            else:
+                # Handle final partial batch
+                batch_idx = np.arange(current_idx, len(self.eval_df))
+                remaining_questions = 0
+
+            # Extract batch data
+            batch = self.eval_df.iloc[batch_idx]
+            questions: List[str] = batch['Question'].tolist()
+            source_ent: np.ndarray = batch["Source-Entity"].to_numpy(dtype=int)
+            answers: np.ndarray = batch['Answer-Entity'].to_numpy(dtype=int)
+
+            # Generate embeddings via the embedding server
+            question_embeddings: np.ndarray = self.embedding_server.embed(
+                token_id_batches=questions,
+                pad_id=self.pad_id,
+                cls_id=self.cls_id,
+                sep_id=self.sep_id,
+                max_length=128,
+            )
+
+            yield questions, question_embeddings, source_ent, answers
+
+    def translate_entities(self, entity_ids: np.ndarray) -> List[str]:
+        """
+        Convert entity IDs to their human-readable names.
+        
+        Args:
+            entity_ids: Array of entity IDs to translate
+            
+        Returns:
+            List of entity names corresponding to the input IDs
+        """
+        if self.ent2name:
+            return [self.ent2name.get(self.rev_entity_vocab.get(eid, "Unknown"), "Unknown") for eid in entity_ids]
+        else:
+            return [self.rev_entity_vocab.get(eid, "Unknown") for eid in entity_ids]
+
+    def translate_relations(self, relation_ids: np.ndarray) -> List[str]:
+        """
+        Convert relation IDs to their human-readable names.
+        
+        Args:
+            relation_ids: Array of relation IDs to translate
+            
+        Returns:
+            List of relation names corresponding to the input IDs
+        """
+        if self.rel2name:
+            return [self.rel2name.get(self.rev_relation_vocab.get(rid, "Unknown"), "Unknown") for rid in relation_ids]
+        else:
+            return [self.rev_relation_vocab.get(rid, "Unknown") for rid in relation_ids]
+
+    def translate_questions(self, questions: Union[List[List[int]], List[str]]) -> List[str]:
+        """
+        Convert tokenized questions back to human-readable text.
+        
+        Args:
+            questions: List of tokenized questions (as token ID lists) or text strings
+            
+        Returns:
+            List of decoded question text strings
+        """
+        if isinstance(questions[0], str):
+            return questions  # Already decoded
+        return [self.question_tokenizer.decode(question) for question in questions]
 
