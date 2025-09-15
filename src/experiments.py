@@ -29,6 +29,7 @@ from src.emb.fact_network import ComplEx, ConvE, DistMult, TransE
 from src.emb.fact_network import get_conve_kg_state_dict, get_complex_kg_state_dict, get_distmult_kg_state_dict
 from src.emb.emb import EmbeddingBasedMethod
 from src.rl.graph_search.pn import GraphSearchPolicy
+from src.rl.graph_search.pn_bert import GraphSearchPolicyBert
 from src.rl.graph_search.pg import PolicyGradient
 from src.rl.graph_search.rs_pg import RewardShapingPolicyGradient
 from src.utils.ops import flatten

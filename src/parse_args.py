@@ -72,6 +72,18 @@ parser.add_argument('--relation_only', action='store_true',
 parser.add_argument('--relation_only_in_path', action='store_true',
                     help='include intermediate entities in path (default: False)')
 
+# Language conditioning (BERT/question encoder)
+parser.add_argument('--use_question_encoder', action='store_true',
+                    help='append a question representation to the policy state (default: False)')
+parser.add_argument('--bert_model_name', type=str, default='bert-base-uncased',
+                    help='HuggingFace model name or path for question encoder (default: bert-base-uncased)')
+parser.add_argument('--bert_hidden_size', type=int, default=768,
+                    help='hidden size of the question encoder output (default: 768)')
+parser.add_argument('--max_question_len', type=int, default=64,
+                    help='max token length for questions (default: 64)')
+parser.add_argument('--question_texts_path', type=str, default='',
+                    help='optional TSV/JSONL file mapping (e_s, r) to question text (default: empty)')
+
 # Knowledge Graph
 parser.add_argument('--num_graph_convolution_layers', type=int, default=0,
                     help='number of graph convolution layers to use (default: 0, no GC is used)')
