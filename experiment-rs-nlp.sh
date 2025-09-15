@@ -21,6 +21,12 @@ if [[ $use_action_space_bucketing = *"True"* ]]; then
     use_action_space_bucketing_flag='--use_action_space_bucketing'
 fi
 
+# Language conditioning flags
+use_question_encoder_flag=''
+if [[ $use_question_encoder = *"True"* ]]; then
+    use_question_encoder_flag='--use_question_encoder'
+fi
+
 cmd="python3 -m src.experiments \
     --data_dir $data_dir \
     $exp \
@@ -54,9 +60,15 @@ cmd="python3 -m src.experiments \
     --num_paths_per_entity $num_paths_per_entity \
     $group_examples_by_query_flag \
     $use_action_space_bucketing_flag \
+    $use_question_encoder_flag \
+    --bert_model_name "$bert_model_name" \
+    --bert_hidden_size $bert_hidden_size \
+    --max_question_len $max_question_len \
+    --question_texts_path "$question_texts_path" \
     --distmult_state_dict_path $distmult_state_dict_path \
     --complex_state_dict_path $complex_state_dict_path \
     --conve_state_dict_path $conve_state_dict_path \
+    --transe_state_dict_path $transe_state_dict_path \
     --gpu $gpu \
     $ARGS"
 
