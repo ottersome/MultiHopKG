@@ -72,8 +72,10 @@ class RewardShapingPolicyGradient(PolicyGradient):
                 real_reward = self.fn.forward_fact(e1, r, pred_e2, self.fn_kg, [self.fn_secondary_kg]).squeeze(1)
             else:
                 real_reward = self.fn.forward_fact(e1, r, pred_e2, self.fn_kg).squeeze(1)
+            # Treat reward as a constant for PG; detach to avoid backprop through fact network or inputs
+            real_reward = real_reward.detach()
             real_reward_mask = (real_reward > self.reward_shaping_threshold).float()
-            real_reward *= real_reward_mask
+            real_reward = real_reward * real_reward_mask
             if self.model.endswith('rsc'):
                 return real_reward
             else:
