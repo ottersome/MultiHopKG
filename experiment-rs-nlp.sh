@@ -20,11 +20,9 @@ use_action_space_bucketing_flag=''
 if [[ $use_action_space_bucketing = *"True"* ]]; then
     use_action_space_bucketing_flag='--use_action_space_bucketing'
 fi
-
-# Language conditioning flags
-use_question_encoder_flag=''
-if [[ $use_question_encoder = *"True"* ]]; then
-    use_question_encoder_flag='--use_question_encoder'
+recompute_qadata_cache_flag=''
+if [[ $recompute_qadata_cache = *"True"* ]]; then
+    recompute_qadata_cache_flag="--recompute_qadata_cache"
 fi
 
 cmd="python3 -m src.experiments \
@@ -60,15 +58,15 @@ cmd="python3 -m src.experiments \
     --num_paths_per_entity $num_paths_per_entity \
     $group_examples_by_query_flag \
     $use_action_space_bucketing_flag \
-    $use_question_encoder_flag \
-    --bert_model_name "$bert_model_name" \
-    --bert_hidden_size $bert_hidden_size \
+    --use_question_encoder \
+    --cached_qa_metadata_path $cached_qa_metadata_path \
+    --raw_QAData_path $raw_QAData_path \
+    $recompute_qadata_cache_flag \
+    --bert_model_name $bert_model_name \
     --max_question_len $max_question_len \
-    --question_texts_path "$question_texts_path" \
     --distmult_state_dict_path $distmult_state_dict_path \
     --complex_state_dict_path $complex_state_dict_path \
     --conve_state_dict_path $conve_state_dict_path \
-    --transe_state_dict_path $transe_state_dict_path \
     --gpu $gpu \
     $ARGS"
 

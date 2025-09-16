@@ -7,11 +7,21 @@
  Data processing utilities.
 """
 
+import json
+import logging
+import ast
 import collections
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple, Union
+from sklearn.model_selection import train_test_split
 import numpy as np
 import os
 import pickle
 import pandas as pd
+from transformers import AutoTokenizer, PreTrainedTokenizer
+
+from src.itl_typing import DFSplit
+from src.setup import get_git_root
 
 START_RELATION = 'START_RELATION'
 NO_OP_RELATION = 'NO_OP_RELATION'
@@ -181,6 +191,19 @@ def load_index(input_path):
             index[v] = i
             rev_index[i] = v
     return index, rev_index
+
+def load_explicit_index(input_path):
+    """
+    Assumes that the second column are the predetermined ids for an embedding matrix.
+    """
+    str2int, int2str = {}, {}
+    with open(input_path) as f:
+        for i, line in enumerate(f.readlines()):
+            str_idx, int_idx = line.strip().split()
+            _int_idx = int(int_idx)
+            str2int[str_idx] = _int_idx
+            int2str[_int_idx] = str_idx
+    return str2int, int2str 
 
 def prepare_kb_envrioment(raw_kb_path, train_path, dev_path, test_path, test_mode, add_reverse_relations=True):
     """
@@ -440,17 +463,253 @@ def load_configs(args, config_path):
                 raise ValueError('Unrecognized argument: {}'.format(arg_name))
     return args
 
+def extract_literals(column: Union[str, pd.Series], flatten: bool = False) -> Union[pd.Series, List[str]]:
+    """
+    Extract Python literals from string representations in pandas columns.
+    
+    Safely evaluates string representations of Python literals (lists, dicts, etc.)
+    using ast.literal_eval. Optionally flattens nested lists into a single flat list.
+    This is commonly used for processing path data stored as string representations
+    of lists in CSV files.
+    
+    Args:
+        column: Pandas Series containing string representations of Python literals,
+               or a single string representation
+        flatten: If True, flattens all extracted lists into a single list.
+                If False, returns a Series of individual lists
+                
+    Returns:
+        If flatten=False: Pandas Series where each element is the evaluated literal
+        If flatten=True: Single flattened list containing all elements from all lists
+        
+    Example:
+        >>> import pandas as pd
+        >>> data = pd.Series(['[1, 2, 3]', '[4, 5]', '[6]'])
+        >>> result = extract_literals(data, flatten=False)
+        >>> print(result.tolist())  # [[1, 2, 3], [4, 5], [6]]
+        >>> 
+        >>> flat_result = extract_literals(data, flatten=True)
+        >>> print(flat_result)  # [1, 2, 3, 4, 5, 6]
+        
+    Raises:
+        ValueError: If any string cannot be safely evaluated as a Python literal
+        SyntaxError: If any string contains invalid Python syntax
+    """
+    # Convert single string input to pandas Series for uniform processing
+    if isinstance(column, str):
+        column = pd.Series([column])
+
+    # Safely evaluate string representations of Python literals
+    evaluated_column = column.apply(ast.literal_eval)
+
+    # DEBUG TODO:  Need to fix the lsp problem here so we need to debug till here and disambiguiate
+    # Flatten all lists into a single list if requested
+    if flatten:
+        flattened_result = [item for sublist in evaluated_column for item in sublist]
+        return flattened_result
+        
+    return evaluated_column
+
+
+def process_and_cache_triviaqa_data(
+    raw_QAData_path: str,
+    cached_toked_qatriples_metadata_path: str,
+    question_tokenizer: PreTrainedTokenizer,
+    entity2id_path: str,
+    relation2id_path: str,
+    seed: Optional[int] = None,
+    override_split: bool = True,
+    logger: Optional[logging.Logger] = None,
+) -> Tuple[DFSplit, Dict[str, Any]]:
+    """
+    Process and cache question-answer dataset with entity/relation mapping.
+    
+    Loads raw QA data from CSV, tokenizes questions, maps entities and relations
+    to their integer IDs, creates train/dev/test splits, and caches the processed
+    data for future use. Supports both automatic splitting and label-guided splitting.
+    
+    The function expects CSV data with specific column structure:
+    - Question: Natural language questions
+    - Source-Entity: Starting entity for reasoning
+    - Answer-Entity: Target answer entity
+    - Paths: (Optional) Reasoning paths as string representations of lists
+    - Hops: (Optional) Number of reasoning hops
+    - SplitLabel: (Optional) Predefined split labels ('train', 'dev', 'test')
+    
+    Args:
+        raw_QAData_path: Path to the raw CSV file containing QA data
+        cached_toked_qatriples_metadata_path: Path where processed metadata will be saved
+        question_tokenizer: HuggingFace tokenizer for question text processing
+        entity2id: Path to mapping from entity names to integer IDs
+        relation2id: Path to mapping from relation names to integer IDs
+        seed: Optional seed for random number generation
+        override_split: If True, use SplitLabel column for splitting when available
+        logger: Optional logger for progress tracking and warnings
+        
+    Returns:
+        Tuple containing:
+            - DFSplit: Object with train/dev/test DataFrames
+            - Dict: Metadata including tokenizer info, column mappings, and file paths
+            
+    Raises:
+        AssertionError: If CSV file has fewer than 3 columns
+        ValueError: If git root cannot be determined
+        RuntimeError: If data loading fails or DataFrames are invalid
+        KeyError: If required entities/relations are missing from vocabularies
+        
+    Note:
+        - Questions are tokenized without special tokens ([CLS], [SEP])
+        - Entity and relation names are mapped to integer IDs
+        - Paths are converted from string representations to lists of [head, rel, tail] triples
+        - Automatic splitting uses 80/10/10 train/dev/test if no SplitLabel column
+        - Small test sets (<100 samples) are used as dev sets with 50/50 dev/test split
+    """
+
+    # Load and validate CSV data
+    csv_df = pd.read_csv(raw_QAData_path)
+    assert len(csv_df.columns) > 2, \
+        "CSV file must have at least 3 columns (Question, Source-Entity, Answer-Entity)"
+    
+    # Extract required columns
+    questions = csv_df["Question"]
+    source_ent = csv_df["Source-Entity"] 
+    answer_ent = csv_df["Answer-Entity"]
+    
+    # Extract optional columns
+    paths = extract_literals(csv_df["Paths"]) if 'Paths' in csv_df.columns else None
+    assert isinstance(paths, pd.Series) # FOr us to use .map a few lines below.
+    split_label = csv_df["SplitLabel"] if 'SplitLabel' in csv_df.columns else None
+    hops = csv_df["Hops"] if 'Hops' in csv_df.columns else None
+
+    # Ensure output directory exists
+    dir_name = os.path.dirname(cached_toked_qatriples_metadata_path)
+    os.makedirs(dir_name, exist_ok=True)
+
+    # Tokenize questions (without special tokens for later processing)
+    tokenized_questions = questions.map(
+        lambda x: question_tokenizer.encode(x, add_special_tokens=False)
+    )
+     
+    entity2id, _ = load_index(entity2id_path)
+    relation2id, _ = load_index(relation2id_path)
+
+    # Map entities and relations to integer IDs
+    mapped_source_ent = source_ent.map(lambda ent: entity2id[ent])
+    mapped_answer_ent = answer_ent.map(lambda ent: entity2id[ent])
+    if paths is not None:
+        mapped_paths = paths.map(
+            lambda path: [
+                [entity2id[head], relation2id[rel], entity2id[tail]] 
+                for head, rel, tail in path
+            ]
+        )
+
+    # Generate unique timestamp for file naming
+    timestamp = str(int(datetime.now().timestamp()))
+    cached_split_locations: Dict[str, str] = {
+        name: cached_toked_qatriples_metadata_path.replace(".json", "") + 
+              f"_Split-{name}_date-{timestamp}.parquet"
+        for name in ["train", "dev", "test"]
+    }
+
+    # Get repository root for relative path generation
+    repo_root = get_git_root()
+    if repo_root is None:
+        raise ValueError("Cannot determine git root path. Ensure you're in a git repository.")
+
+    # Convert to relative paths
+    cached_split_locations = {
+        key: val.replace(repo_root + "/", "") 
+        for key, val in cached_split_locations.items()
+    }
+
+    # Combine all processed data into final DataFrame
+    data_columns = [tokenized_questions, mapped_source_ent, mapped_answer_ent]
+    if paths is not None:
+        data_columns.append(mapped_paths)
+    if hops is not None:
+        data_columns.append(hops)
+    if split_label is not None:
+        data_columns.append(split_label)
+        
+    new_df = pd.concat(data_columns, axis=1)
+    new_df = new_df.sample(frac=1, random_state=seed).reset_index(drop=True)  # Shuffle data with fixed seed
+
+    # Create train/dev/test splits
+    dev_splitted = False
+    if (override_split and 'SplitLabel' in new_df.columns and 
+        new_df['SplitLabel'].notna().any() and not new_df['SplitLabel'].eq('').all()):
+        # Use predefined split labels
+        train_df = new_df[new_df['SplitLabel'] == 'train'].reset_index(drop=True)
+
+        if 'test' in new_df["SplitLabel"].values and 'dev' in new_df["SplitLabel"].values:
+            test_df = new_df[new_df['SplitLabel'] == 'test'].reset_index(drop=True)
+            dev_df = new_df[new_df['SplitLabel'] == 'dev'].reset_index(drop=True)
+            dev_splitted = True
+            if logger: logger.info("Using SplitLabel column for dev/test splitting")
+        else:
+            test_df = new_df[new_df['SplitLabel'] != 'train'].reset_index(drop=True)
+
+        if logger: 
+            logger.info("Using SplitLabel column for data splitting")
+    else:
+        # Automatic splitting
+        assert False, "I dont believe this should be running"
+        train_df, test_df = train_test_split(new_df, test_size=0.2, random_state=seed)
+
+    # Handle dev set creation
+    if len(test_df) < 100:
+        # Use entire test set as dev set for small datasets
+        dev_df = test_df
+        if logger: 
+            logger.warning("Test set too small (<100 samples), using as dev set")
+    elif not dev_splitted:
+        # Automatic splitting
+        assert False, "I dont believe this should be running"
+        dev_df, test_df = train_test_split(test_df, test_size=0.5, random_state=seed)
+        if logger: logger.info("Automatically splitting test set into dev/test")
+
+    # Validate DataFrame creation
+    if not all(isinstance(df, pd.DataFrame) for df in [train_df, dev_df, test_df]):
+        raise RuntimeError("Data loading failed - invalid DataFrames created")
+
+    # Save processed data to parquet files
+    for name, df in {"train": train_df, "dev": dev_df, "test": test_df}.items():
+        df.to_parquet(cached_split_locations[name], index=False)
+
+    # Create metadata for reproducibility and documentation
+    metadata: Dict[str, Any] = {
+        "question_tokenizer": question_tokenizer.name_or_path,
+        "question_column": "Question",
+        "source_entities_column": "Source-Entity",
+        "answer_entity_column": "Answer-Entity",
+        "paths_column": "Paths",
+        "hops_column": "Hops",
+        "splitLabel_column": "SplitLabel",
+        "zero_indexed_columns": True,
+        "date_processed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "saved_paths": cached_split_locations,
+        "timestamp": timestamp,
+    }
+
+    # Save metadata to JSON file
+    with open(cached_toked_qatriples_metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    return DFSplit(train=train_df, dev=dev_df, test=test_df), metadata
+
+
 def load_qa_data(
     cached_metadata_path: str,
     raw_QAData_path: str,
     question_tokenizer_name: str,
-    entity2id: Dict[str, int],
-    relation2id: Dict[str, int], 
+    entity2id_path: str,
+    relation2id_path: str, 
     seed: Optional[int] = None,
     logger: Optional[logging.Logger] = None,
     force_recompute: bool = False,
     override_split: bool = True,
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+) -> Tuple[List, List, List, Dict[str, Any]]:
     """
     Load QA dataset with intelligent caching and fallback processing.
     
@@ -516,8 +775,8 @@ def load_qa_data(
             raw_QAData_path,
             cached_metadata_path,
             question_tokenizer,
-            entity2id,
-            relation2id,
+            entity2id_path,
+            relation2id_path,
             seed=seed,
             override_split=override_split,
             logger=logger,
@@ -528,5 +787,10 @@ def load_qa_data(
         print(f"Processing complete. Data saved to:\n"
               f"\033[93m\033[4m{train_metadata['saved_paths']}\033[0m")
 
-    return train_df, dev_df, test_df, train_metadata
+    # At this point we need to make it more compatible w/ sales force
 
+    train_list = train_df[['Source-Entity', 'Answer-Entity', 'Question']].values.tolist()
+    dev_list = dev_df[['Source-Entity', 'Answer-Entity', 'Question']].values.tolist()
+    test_list = test_df[['Source-Entity', 'Answer-Entity', 'Question']].values.tolist()
+
+    return train_list, dev_list, test_list, train_metadata

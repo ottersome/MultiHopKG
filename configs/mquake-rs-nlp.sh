@@ -3,21 +3,21 @@
 # BERT-conditioned Reward Shaping on MQuake
 
 data_dir="data/mquake_salesforce_compatible"
-model="point.rs.transe"
+model="point.rs.conve"
 group_examples_by_query="False"
 use_action_space_bucketing="True"
 
 # Language conditioning
-use_question_encoder="True"
 bert_model_name="bert-base-uncased"
-bert_hidden_size=768
+cached_qa_metadata_path="./.cache/mquake/mquake_clean.json"
+raw_QAData_path="data/mquake_salesforce_compatible/mquake_qa_2hop.csv" # This ought to change a lot depending on what it is that you are testing.
+recompute_qadata_cache="False"
 max_question_len=64
-# Optional mapping from (e_s, r) -> question text; leave empty to default to zeros
-question_texts_path=""
+
 
 bandwidth=400
-relation_dim=500
-entity_dim=500
+relation_dim=100
+entity_dim=100
 history_dim=200
 history_num_layers=3
 num_rollouts=20
@@ -40,11 +40,10 @@ beta=0.02
 relation_only="False"
 beam_size=128
 
-transe_state_dict_path="model/mquake_salesforce_compatible-transe-RV-xavier-500-500-0.003-0.3-0.1/model_best.tar"
 # Reference placeholders for other FNs (unused here)
 distmult_state_dict_path="model/FB15K-237-distmult-xavier-200-200-0.003-0.3-0.1/model_best.tar"
 complex_state_dict_path="model/FB15K-237-complex-RV-xavier-200-200-0.003-0.3-0.1/model_best.tar"
-conve_state_dict_path="model/kinship-conve-RV-xavier-200-200-0.003-32-3-0.2-0.3-0.2-0.1/model_best.tar"
+conve_state_dict_path="model/mquake_standdata_train-graph/model_best.tar"
 
 num_paths_per_entity=-1
 margin=-1

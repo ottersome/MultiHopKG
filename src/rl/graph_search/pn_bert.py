@@ -109,9 +109,8 @@ class GraphSearchPolicyBert(GraphSearchPolicy):
 
     def transit(self, e, obs, kg, use_action_space_bucketing=True, merge_aspace_batching_outcome=False):
         # Unpack and compute base features as in parent
-        src_entity, question_relation, target_entity, last_step, last_r, seen_nodes = obs
+        src_entity, nlp_question, target_entity, last_step, last_r, seen_nodes = obs
 
-        Q = kg.get_relation_embeddings(question_relation)
         H = self.path[-1][0][-1, :, :]
         if self.relation_only:
             X = torch.cat([H, Q], dim=-1)
@@ -131,7 +130,7 @@ class GraphSearchPolicyBert(GraphSearchPolicy):
         X2 = self.W2Dropout(X)
 
         # Concatenate question representation to X2 and fuse to action_dim
-        Q_txt = self._encode_questions(src_entity, question_relation, X2.device)
+        Q_txt = self._encode_questions(question_relation, X2.device)
         X2q = torch.cat([X2, Q_txt], dim=-1)
         X2_fused = self.fusion(X2q)
 

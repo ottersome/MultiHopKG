@@ -285,10 +285,10 @@ class LFramework(nn.Module):
 
         batch_e1, batch_e2, batch_r = [], [], []
         for i in range(len(batch_data)):
-            e1, e2, r = batch_data[i]
+            e1, e2, question_vector = batch_data[i]
             batch_e1.append(e1)
             batch_e2.append(e2)
-            batch_r.append(r)
+            batch_r.append(question_vector)
         batch_e1 = var_cuda(torch.LongTensor(batch_e1), requires_grad=False)
         batch_r = var_cuda(torch.LongTensor(batch_r), requires_grad=False)
         if type(batch_e2[0]) is list:

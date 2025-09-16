@@ -80,6 +80,7 @@ class RewardShapingPolicyGradient(PolicyGradient):
                 binary_reward = (pred_e2 == e2).float()
                 return binary_reward + self.mu * (1 - binary_reward) * real_reward
 
+    # TODO: LG: test_fn
     def test_fn(self, examples):
         fn_kg, fn = self.fn_kg, self.fn
         pred_scores = []

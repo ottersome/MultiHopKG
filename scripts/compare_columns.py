@@ -1,44 +1,52 @@
 #!/usr/bin/env python3
 """
-Compare two delimited text files (e.g., CSV/TSV) for column equivalence.
+Compare two delimited text files for equivalence w.r.t. columns under a fixed
+assumption about column order in each file.
 
-By default, checks that both files contain the same set of column names,
-ignoring order and case/whitespace if flags are provided. Optionally, the
-comparison can respect duplicate column names (multiset comparison).
+IMPORTANT ASSUMPTIONS (as requested):
+- The input XSV files have NO header row.
+- File A is in the column order a-b-c (i.e., columns [0,1,2]).
+- File B is in the column order a-c-b (i.e., columns [0,2,1]).
+- We consider the files equivalent if, after reordering columns in File B from
+  a-c-b to a-b-c, every row in File B matches the corresponding row in File A.
+
+Notes:
+- This script enforces exactly 3 columns per row in both files, matching the
+  a/b/c assumption above.
+- It compares rows as sets (order-insensitive). Duplicate rows are ignored for
+  equality purposes because sets are used, as requested.
 
 Exit codes:
-  0: columns are equivalent per the chosen mode
-  1: columns are NOT equivalent
-  2: usage or runtime error (e.g., file not found)
+  0: files are equivalent (per above assumptions)
+  1: files are NOT equivalent
+  2: usage or runtime error (e.g., file not found, wrong number of columns)
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import io
 import os
 import sys
-from collections import Counter
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 
-def read_header(
+def iter_rows(
     path: str,
     *,
     delimiter: Optional[str] = None,
     encoding: str = "utf-8",
     sample_bytes: int = 4096,
-) -> List[str]:
-    """Read the first row as header from a delimited file.
+) -> Iterator[List[str]]:
+    """Yield data rows from a delimited file (no header expected).
 
     Attempts to auto-detect the delimiter if not provided using csv.Sniffer.
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"File not found: {path}")
 
-    with open(path, "r", encoding=encoding, newline="") as f:
-        # Read a sample for sniffer if needed, then reset
+    f = open(path, "r", encoding=encoding, newline="")
+    try:
         sample = f.read(sample_bytes)
         f.seek(0)
 
@@ -46,73 +54,99 @@ def read_header(
             try:
                 dialect = csv.Sniffer().sniff(sample) if sample else csv.get_dialect("excel")
             except csv.Error:
-                # Fallback to comma if sniffing fails
                 dialect = csv.get_dialect("excel")
             reader = csv.reader(f, dialect=dialect)
         else:
             reader = csv.reader(f, delimiter=delimiter)
 
-        try:
-            header = next(reader)
-        except StopIteration:
-            raise ValueError(f"File appears to be empty: {path}")
-
-        return header
+        for row in reader:
+            yield row
+    finally:
+        f.close()
 
 
-def normalize_columns(
-    columns: Iterable[str], *, case_insensitive: bool, strip: bool
-) -> List[str]:
+def normalize_fields(fields: Iterable[str], *, strip: bool) -> List[str]:
     out: List[str] = []
-    for col in columns:
-        if strip:
-            col = col.strip()
-        if case_insensitive:
-            col = col.lower()
-        out.append(col)
+    for val in fields:
+        out.append(val.strip() if strip else val)
     return out
 
 
-def compare_columns(
-    cols_a: Iterable[str],
-    cols_b: Iterable[str],
+def compare_files_abc_acb(
+    file_a: str,
+    file_b: str,
     *,
-    respect_duplicates: bool = False,
+    delimiter: Optional[str],
+    encoding: str,
+    strip: bool,
 ) -> Tuple[bool, str]:
-    """Compare two column name lists.
-
-    Returns (equal, details).
+    """Compare two files assuming:
+    - file A columns: a-b-c => indices [0,1,2]
+    - file B columns: a-c-b => indices [0,2,1]
+    Rows must match after reordering B as [0,2,1].
     """
-    if respect_duplicates:
-        ca, cb = Counter(cols_a), Counter(cols_b)
-        if ca == cb:
-            return True, "Columns are equivalent (including duplicate counts)."
-        # Build a helpful diff
-        lines = ["Columns differ (considering duplicate counts):"]
-        all_keys = sorted(set(ca) | set(cb))
-        for k in all_keys:
-            a_n, b_n = ca.get(k, 0), cb.get(k, 0)
-            if a_n != b_n:
-                lines.append(f"  {k!r}: fileA={a_n}, fileB={b_n}")
-        return False, "\n".join(lines)
+    iter_a = iter_rows(file_a, delimiter=delimiter, encoding=encoding)
+    iter_b = iter_rows(file_b, delimiter=delimiter, encoding=encoding)
+
+    set_a = set()
+    set_b = set()
+
+    # Collect all rows from A
+    for idx_a, row_a in enumerate(iter_a, start=1):
+        if len(row_a) != 3:
+            return (
+                False,
+                f"File A, row {idx_a}: expected exactly 3 columns; got {len(row_a)}",
+            )
+        row_a_n = tuple(normalize_fields(row_a, strip=strip))
+        set_a.add(row_a_n)
+
+    # Collect all rows from B (after mapping a-c-b -> a-b-c)
+    for idx_b, row_b in enumerate(iter_b, start=1):
+        if len(row_b) != 3:
+            return (
+                False,
+                f"File B, row {idx_b}: expected exactly 3 columns; got {len(row_b)}",
+            )
+        row_b_n = tuple(normalize_fields([row_b[0], row_b[2], row_b[1]], strip=strip))
+        set_b.add(row_b_n)
+
+    if set_a == set_b:
+        return True, "Files are equivalent under A=abc and B=acb mapping (row order ignored)."
+
+    only_a = set_a - set_b
+    only_b = set_b - set_a
+
+    # Prepare a concise diff
+    def sample_rows(s, n=10):
+        out = []
+        for i, r in enumerate(s):
+            if i >= n:
+                break
+            out.append(str(list(r)))
+        return out
+
+    lines = [
+        "Files differ under A=abc and B=acb mapping (row order ignored):",
+        f"  Unique rows in A (showing up to 10):",
+    ]
+    if only_a:
+        lines.extend(["    " + x for x in sample_rows(only_a)])
     else:
-        sa, sb = set(cols_a), set(cols_b)
-        if sa == sb:
-            return True, "Columns are equivalent (ignoring order)."
-        only_a = sorted(sa - sb)
-        only_b = sorted(sb - sa)
-        lines = ["Columns differ (set comparison):"]
-        if only_a:
-            lines.append("  Only in fileA: " + ", ".join(repr(x) for x in only_a))
-        if only_b:
-            lines.append("  Only in fileB: " + ", ".join(repr(x) for x in only_b))
-        return False, "\n".join(lines)
+        lines.append("    (none)")
+    lines.append("  Unique rows in B (showing up to 10):")
+    if only_b:
+        lines.extend(["    " + x for x in sample_rows(only_b)])
+    else:
+        lines.append("    (none)")
+
+    return False, "\n".join(lines)
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Test if two delimited files have equivalent columns (ignoring order by default)."
+            "Compare two XSV files assuming A=abc and B=acb (no headers)."
         )
     )
     p.add_argument("file_a", help="Path to first file")
@@ -129,21 +163,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="File encoding (default: utf-8)",
     )
     p.add_argument(
-        "-i",
-        "--case-insensitive",
-        action="store_true",
-        help="Compare column names case-insensitively",
-    )
-    p.add_argument(
         "-s",
         "--strip",
         action="store_true",
-        help="Strip leading/trailing whitespace from column names before comparing",
-    )
-    p.add_argument(
-        "--respect-duplicates",
-        action="store_true",
-        help="Respect duplicate column names (multiset comparison)",
+        help="Strip leading/trailing whitespace from fields before comparing",
     )
     return p.parse_args(argv)
 
@@ -151,27 +174,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     try:
-        header_a = read_header(args.file_a, delimiter=args.delimiter, encoding=args.encoding)
-        header_b = read_header(args.file_b, delimiter=args.delimiter, encoding=args.encoding)
-
-        norm_a = normalize_columns(
-            header_a, case_insensitive=args.case_insensitive, strip=args.strip
-        )
-        norm_b = normalize_columns(
-            header_b, case_insensitive=args.case_insensitive, strip=args.strip
-        )
-
-        equal, details = compare_columns(
-            norm_a, norm_b, respect_duplicates=args.respect_duplicates
+        equal, details = compare_files_abc_acb(
+            args.file_a,
+            args.file_b,
+            delimiter=args.delimiter,
+            encoding=args.encoding,
+            strip=args.strip,
         )
         print(details)
-        if equal:
-            # Show a quick summary of the normalized columns for visibility
-            try:
-                example = ", ".join(sorted(set(norm_a)))
-                print(f"Columns: {example}")
-            except Exception:
-                pass
         return 0 if equal else 1
     except (OSError, ValueError, csv.Error) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -180,4 +190,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

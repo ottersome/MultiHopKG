@@ -15,11 +15,11 @@
       ]
     },
     {
-      "name": "Remote, Lab:42020",
+      "name": "Remote, Lab:42019",
       "type": "python",
       "host": "127.0.0.1",
       "request": "attach",
-      "port": 42020,
+      "port": 42019,
       "subProcess": true,
       "pathMappings": [
         {

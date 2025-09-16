@@ -294,9 +294,20 @@ def train(lf):
     dev_path = os.path.join(args.data_dir, 'dev.triples')
     entity_index_path = os.path.join(args.data_dir, 'entity2id.txt')
     relation_index_path = os.path.join(args.data_dir, 'relation2id.txt')
-    train_data = data_utils.load_triples(
-        train_path, entity_index_path, relation_index_path, group_examples_by_query=args.group_examples_by_query,
-        add_reverse_relations=args.add_reversed_training_edges)
+
+    if args.use_question_encoder:
+        train_data, dev_data, _, _ = data_utils.load_qa_data(
+            args.cached_qa_metadata_path,
+            args.raw_QAData_path,
+            args.bert_model_name,
+            entity_index_path,
+            relation_index_path
+        )
+    else:
+        train_data = data_utils.load_triples(
+            train_path, entity_index_path, relation_index_path, group_examples_by_query=args.group_examples_by_query,
+            add_reverse_relations=args.add_reversed_training_edges)
+
     if 'NELL' in args.data_dir:
         adj_list_path = os.path.join(args.data_dir, 'adj_list.pkl')
         seen_entities = data_utils.load_seen_entities(adj_list_path, entity_index_path)
