@@ -25,6 +25,11 @@ if [[ $recompute_qadata_cache = *"True"* ]]; then
     recompute_qadata_cache_flag="--recompute_qadata_cache"
 fi
 
+use_question_encoder_flag=''
+if [[ $use_question_encoder = *"True"* ]]; then
+    use_question_encoder_flag="--use_question_encoder"
+fi
+
 cmd="python3 -m src.experiments \
     --data_dir $data_dir \
     $exp \
@@ -58,7 +63,7 @@ cmd="python3 -m src.experiments \
     --num_paths_per_entity $num_paths_per_entity \
     $group_examples_by_query_flag \
     $use_action_space_bucketing_flag \
-    --use_question_encoder \
+    $use_question_encoder_flag \
     --cached_qa_metadata_path $cached_qa_metadata_path \
     --raw_QAData_path $raw_QAData_path \
     $recompute_qadata_cache_flag \

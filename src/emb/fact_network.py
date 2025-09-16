@@ -140,7 +140,12 @@ class ConvE(nn.Module):
 
     def forward(self, e1, r, kg):
         E1 = kg.get_entity_embeddings(e1).view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
-        R = kg.get_relation_embeddings(r).view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
+        # r may be relation ids (LongTensor) or precomputed question vectors (FloatTensor)
+        if isinstance(r, torch.Tensor) and r.dtype in (torch.int64, torch.int32):
+            R = kg.get_relation_embeddings(r).view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
+        else:
+            # Expect shape [B, relation_dim]
+            R = r.view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
         E2 = kg.get_all_entity_embeddings()
 
         stacked_inputs = torch.cat([E1, R], 2)
@@ -174,7 +179,10 @@ class ConvE(nn.Module):
         # print(e1.min(), r.min(), e2.min())
         # print(e1.max(), r.max(), e2.max())
         E1 = kg.get_entity_embeddings(e1).view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
-        R = kg.get_relation_embeddings(r).view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
+        if isinstance(r, torch.Tensor) and r.dtype in (torch.int64, torch.int32):
+            R = kg.get_relation_embeddings(r).view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
+        else:
+            R = r.view(-1, 1, self.emb_2D_d1, self.emb_2D_d2)
         E2 = kg.get_entity_embeddings(e2)
 
         stacked_inputs = torch.cat([E1, R], 2)

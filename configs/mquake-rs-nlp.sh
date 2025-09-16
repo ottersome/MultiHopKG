@@ -8,6 +8,7 @@ group_examples_by_query="False"
 use_action_space_bucketing="True"
 
 # Language conditioning
+use_question_encoder="True"
 bert_model_name="bert-base-uncased"
 cached_qa_metadata_path="./.cache/mquake/mquake_clean.json"
 raw_QAData_path="data/mquake_salesforce_compatible/mquake_qa_2hop.csv" # This ought to change a lot depending on what it is that you are testing.

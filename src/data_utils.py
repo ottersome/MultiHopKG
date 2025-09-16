@@ -789,6 +789,11 @@ def load_qa_data(
 
     # At this point we need to make it more compatible w/ sales force
 
+    # Convert it into a list rather than the array that comes in
+    train_df['Question'] = train_df['Question'].apply(lambda x: x.tolist())
+    dev_df['Question'] = dev_df['Question'].apply(lambda x: x.tolist())
+    test_df['Question'] = test_df['Question'].apply(lambda x: x.tolist())
+
     train_list = train_df[['Source-Entity', 'Answer-Entity', 'Question']].values.tolist()
     dev_list = dev_df[['Source-Entity', 'Answer-Entity', 'Question']].values.tolist()
     test_list = test_df[['Source-Entity', 'Answer-Entity', 'Question']].values.tolist()

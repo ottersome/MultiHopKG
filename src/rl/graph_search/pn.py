@@ -302,6 +302,10 @@ class GraphSearchPolicy(nn.Module):
         return (r_space, e_space), action_mask
 
     def get_ground_truth_edge_mask(self, e, r_space, e_space, e_s, q, e_t, kg):
+        # If q is not relation ids, we cannot match against r_space; return zeros
+        if not (isinstance(q, torch.Tensor) and q.dtype in (torch.int64, torch.int32)):
+            zeros = torch.zeros_like(r_space, dtype=torch.float)
+            return zeros
         ground_truth_edge_mask = \
             ((e == e_s).unsqueeze(1) * (r_space == q.unsqueeze(1)) * (e_space == e_t.unsqueeze(1)))
         inv_q = kg.get_inv_relation_id(q)
