@@ -78,7 +78,11 @@ class GraphSearchPolicy(nn.Module):
         e_s, q, e_t, last_step, last_r, seen_nodes = obs
 
         # Representation of the current state (current node and other observations)
-        Q = kg.get_relation_embeddings(q)
+        # q can be either relation ids (LongTensor) or a precomputed question vector (FloatTensor)
+        if isinstance(q, torch.Tensor) and q.dtype in (torch.int64, torch.int32):
+            Q = kg.get_relation_embeddings(q)
+        else:
+            Q = q  # already an embedding-sized vector
         H = self.path[-1][0][-1, :, :]
         if self.relation_only:
             X = torch.cat([H, Q], dim=-1)
@@ -306,6 +310,10 @@ class GraphSearchPolicy(nn.Module):
         return ((ground_truth_edge_mask + inv_ground_truth_edge_mask) * (e_s.unsqueeze(1) != kg.dummy_e)).float()
 
     def get_answer_mask(self, e_space, e_s, q, kg):
+        # If q is not relation ids, we cannot build an answer mask keyed by relation.
+        # Return zeros to disable false-negative masking in such cases.
+        if not (isinstance(q, torch.Tensor) and q.dtype in (torch.int64, torch.int32)):
+            return torch.zeros_like(e_space, dtype=torch.long)
         if kg.args.mask_test_false_negatives:
             answer_vectors = kg.all_object_vectors
         else:
@@ -324,6 +332,9 @@ class GraphSearchPolicy(nn.Module):
 
     def get_false_negative_mask(self, e_space, e_s, q, e_t, kg):
         answer_mask = self.get_answer_mask(e_space, e_s, q, kg)
+        if answer_mask.dtype != torch.long and answer_mask.dtype != torch.int64:
+            # Safety: if we returned zeros as float for any reason, convert to long
+            answer_mask = answer_mask.long()
         # This is a trick applied during training where we convert a multi-answer predction problem into several
         # single-answer prediction problems. By masking out the other answers in the training set, we are forcing
         # the agent to walk towards a particular answer.

@@ -22,6 +22,9 @@ from torch.nn.utils import clip_grad_norm_
 import src.eval
 from src.utils.ops import var_cuda, zeros_var_cuda
 import src.utils.ops as ops
+from typing import List, Optional
+
+from transformers import AutoTokenizer, AutoModel  # type: ignore
 
 
 class LFramework(nn.Module):
@@ -52,6 +55,34 @@ class LFramework(nn.Module):
         self.kg = kg
         self.mdl = mdl
         print('{} module created'.format(self.model))
+
+        # Optional question encoder (BERT) to replace relation ids with NL vectors
+        self.use_question_encoder = bool(getattr(args, 'use_question_encoder', False))
+        self._q_tokenizer = None
+        self._q_encoder = None
+        self._q_hidden = None
+        # Project question repr to relation_dim used throughout the policy
+        self._q_proj: Optional[nn.Linear] = None
+        if self.use_question_encoder:
+            if AutoTokenizer is not None and AutoModel is not None:
+                try:
+                    self._q_tokenizer = AutoTokenizer.from_pretrained(args.bert_model_name)
+                    self._q_encoder = AutoModel.from_pretrained(args.bert_model_name)
+                    self._q_encoder.eval()
+                    for p in self._q_encoder.parameters():
+                        p.requires_grad = False
+                    # Hidden size from config; default to 768 if unavailable
+                    self._q_hidden = int(getattr(getattr(self._q_encoder, 'config', object()), 'hidden_size', 768))
+                except Exception:
+                    # Fall back to zero vectors if model can't be loaded
+                    self._q_tokenizer = None
+                    self._q_encoder = None
+                    self._q_hidden = int(getattr(args, 'relation_dim', 200))
+            else:
+                # transformers not available
+                self._q_hidden = int(getattr(args, 'relation_dim', 200))
+            # Always set a projection to match relation_dim expected downstream
+            self._q_proj = nn.Linear(self._q_hidden, args.relation_dim)
 
     def print_all_model_parameters(self):
         print('\nModel Parameters')
@@ -282,15 +313,63 @@ class LFramework(nn.Module):
             for i in range(len(e2)):
                 e2_label[i][e2[i]] = 1
             return e2_label
-
-        batch_e1, batch_e2, batch_r = [], [], []
+        batch_e1, batch_e2 = [], []
+        # q_inputs collects either relation ids or token id lists depending on mode
+        q_inputs: List = []
         for i in range(len(batch_data)):
-            e1, e2, question_vector = batch_data[i]
+            e1, e2, q = batch_data[i]
             batch_e1.append(e1)
             batch_e2.append(e2)
-            batch_r.append(question_vector)
+            q_inputs.append(q)
         batch_e1 = var_cuda(torch.LongTensor(batch_e1), requires_grad=False)
-        batch_r = var_cuda(torch.LongTensor(batch_r), requires_grad=False)
+
+        # Prepare query/question tensor
+        if self.use_question_encoder and any(isinstance(x, list) for x in q_inputs):
+            # q_inputs is a list of token id lists (already tokenized without specials)
+            # Build input_ids with [CLS] and [SEP] if tokenizer is available
+            max_len_cfg = int(getattr(self.args, 'max_question_len', 64))
+
+            assert self._q_tokenizer is not None, "q_tokenizer expected in format_batch for nlp mode "
+            cls_id = int(self._q_tokenizer.cls_token_id)
+            sep_id = int(self._q_tokenizer.sep_token_id)
+
+            proc_ids: List[List[int]] = []
+            for toks in q_inputs:
+                if isinstance(toks, list):
+                    core = toks[: max(0, max_len_cfg - 2)]
+                    seq = [cls_id] + core + [sep_id]
+                else:
+                    # Missing tokens; use just [CLS][SEP]
+                    seq = [cls_id, sep_id]
+                proc_ids.append(seq)
+
+            # Pad to batch max length
+            max_len = max(len(x) for x in proc_ids) if proc_ids else 2
+            input_ids = torch.full((len(proc_ids), max_len), fill_value=0, dtype=torch.long)
+            attention_mask = torch.zeros((len(proc_ids), max_len), dtype=torch.long)
+            for i, seq in enumerate(proc_ids):
+                L = len(seq)
+                input_ids[i, :L] = torch.tensor(seq, dtype=torch.long)
+                attention_mask[i, :L] = 1
+
+            input_ids = var_cuda(input_ids, requires_grad=False)
+            attention_mask = var_cuda(attention_mask, requires_grad=False)
+
+            with torch.no_grad():
+                # Ensure encoder on the same device
+                self._q_encoder.to(input_ids.device)
+                out = self._q_encoder(input_ids=input_ids, attention_mask=attention_mask)
+                # Prefer pooler_output; else take [CLS] token representation
+                pooled = out.pooler_output if hasattr(out, 'pooler_output') and out.pooler_output is not None \
+                    else out.last_hidden_state[:, 0, :]
+
+            # Project to relation_dim expected by policy network
+            assert self._q_proj is not None, "You also need q_proj for format_batch"
+            batch_r = self._q_proj(pooled)
+        else:
+            # Legacy path: q_inputs is a list of relation ids
+            batch_r = var_cuda(torch.LongTensor(q_inputs), requires_grad=False)
+
         if type(batch_e2[0]) is list:
             batch_e2 = convert_to_binary_multi_object(batch_e2)
         elif type(batch_e1[0]) is list:
@@ -307,10 +386,19 @@ class LFramework(nn.Module):
     def make_full_batch(self, mini_batch, batch_size, multi_answers=False):
         dummy_e = self.kg.dummy_e
         dummy_r = self.kg.dummy_r
+        # Try to mirror the "q" type of existing samples to avoid mixing modes
+        use_token_list = False
+        if len(mini_batch) > 0:
+            try:
+                use_token_list = isinstance(mini_batch[0][2], list)
+            except Exception:
+                use_token_list = False
         if multi_answers:
-            dummy_example = (dummy_e, [dummy_e], dummy_r)
+            dummy_q = [] if (self.use_question_encoder and use_token_list) else dummy_r
+            dummy_example = (dummy_e, [dummy_e], dummy_q)
         else:
-            dummy_example = (dummy_e, dummy_e, dummy_r)
+            dummy_q = [] if (self.use_question_encoder and use_token_list) else dummy_r
+            dummy_example = (dummy_e, dummy_e, dummy_q)
         for _ in range(batch_size - len(mini_batch)):
             mini_batch.append(dummy_example)
 
