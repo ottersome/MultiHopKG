@@ -142,20 +142,14 @@ def beam_search(pn, e_s, q, e_t, kg, num_steps, beam_size, return_path_component
     for t in range(num_steps):
         last_r, e = action
         # q can be [B] (relation ids) or [B, D] (question vectors)
-        assert(q.size(0) == e_s.size(0))
-        assert(q.size(0) == e_t.size(0))
         assert(e.size()[0] % batch_size == 0)
-        assert(q.size(0) % batch_size == 0)
+        # TODO: maybe place q_b checks on this
         k = int(e.size()[0] / batch_size)
         # => [batch_size*k]
-        if q.dim() == 1:
-            q = ops.tile_along_beam(q.view(batch_size, -1)[:, 0], k)
-        else:
-            # [B, D] -> tile on beam along batch dimension
-            q = ops.tile_along_beam(q, k)
+        q_b = ops.tile_along_beam(q.view(batch_size, -1), k)
         e_s = ops.tile_along_beam(e_s.view(batch_size, -1)[:, 0], k)
         e_t = ops.tile_along_beam(e_t.view(batch_size, -1)[:, 0], k)
-        obs = [e_s, q, e_t, t==(num_steps-1), last_r, seen_nodes]
+        obs = [e_s, q_b, e_t, t==(num_steps-1), last_r, seen_nodes]
         # one step forward in search
         db_outcomes, _, _ = pn.transit(
             e, obs, kg, use_action_space_bucketing=True, merge_aspace_batching_outcome=True)

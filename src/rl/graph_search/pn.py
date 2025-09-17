@@ -130,7 +130,8 @@ class GraphSearchPolicy(nn.Module):
             references = []
             db_action_spaces, db_references = self.get_action_space_in_buckets(e, obs, kg)
             for action_space_b, reference_b in zip(db_action_spaces, db_references):
-                X2_b = X2[reference_b, :]
+                X2_b = X2[reference_b, :] # Get the states for the set of entities in this bucket
+                # 💫 The policy is run here
                 action_dist_b, entropy_b = policy_nn_fun(X2_b, action_space_b)
                 references.extend(reference_b)
                 db_outcomes.append((action_space_b, action_dist_b))
@@ -247,7 +248,6 @@ class GraphSearchPolicy(nn.Module):
                     batch_ref[key] = []
                 batch_ref[key].append(i)
             for key in batch_ref:
-                # action_space = kg.action_space_buckets[key]
                 action_space = kg.action_space_buckets[key]
                 # l_batch_refs: ids of the examples in the current batch of examples
                 # g_bucket_ids: ids of the examples in the corresponding KG action space bucket
