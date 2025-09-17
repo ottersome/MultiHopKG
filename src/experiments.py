@@ -296,6 +296,7 @@ def train(lf):
     relation_index_path = os.path.join(args.data_dir, 'relation2id.txt')
 
     if args.use_question_encoder:
+        # Load QA-style train/dev with question tokens
         train_data, dev_data, _, _ = data_utils.load_qa_data(
             args.cached_qa_metadata_path,
             args.raw_QAData_path,
@@ -303,22 +304,27 @@ def train(lf):
             entity_index_path,
             relation_index_path
         )
+        assert 'NELL' not in args.data_dir,  "We have not accounted for NELL yet"
+        seen_entities = set()
+        # dev_data = data_utils.load_triples(dev_path, entity_index_path, relation_index_path, seen_entities=seen_entities)
     else:
         train_data = data_utils.load_triples(
             train_path, entity_index_path, relation_index_path, group_examples_by_query=args.group_examples_by_query,
             add_reverse_relations=args.add_reversed_training_edges)
 
-    if 'NELL' in args.data_dir:
-        adj_list_path = os.path.join(args.data_dir, 'adj_list.pkl')
-        seen_entities = data_utils.load_seen_entities(adj_list_path, entity_index_path)
-    else:
-        seen_entities = set()
-    dev_data = data_utils.load_triples(dev_path, entity_index_path, relation_index_path, seen_entities=seen_entities)
+        # Only construct dev_data from triples when not using the question encoder
+        if 'NELL' in args.data_dir:
+            adj_list_path = os.path.join(args.data_dir, 'adj_list.pkl')
+            seen_entities = data_utils.load_seen_entities(adj_list_path, entity_index_path)
+        else:
+            seen_entities = set()
+        dev_data = data_utils.load_triples(dev_path, entity_index_path, relation_index_path, seen_entities=seen_entities)
     if args.checkpoint_path is not None:
         lf.load_checkpoint(args.checkpoint_path)
     # Ensure wandb is initialized before training if requested
     if not getattr(args, 'wandb_enabled', False):
         setup_wandb(args, job_type='train')
+    # Train with QA questions and evaluate on standard triples dev set
     lf.run_train(train_data, dev_data)
 
 def inference(lf):

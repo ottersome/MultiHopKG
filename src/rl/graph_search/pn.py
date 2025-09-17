@@ -247,6 +247,7 @@ class GraphSearchPolicy(nn.Module):
                     batch_ref[key] = []
                 batch_ref[key].append(i)
             for key in batch_ref:
+                # action_space = kg.action_space_buckets[key]
                 action_space = kg.action_space_buckets[key]
                 # l_batch_refs: ids of the examples in the current batch of examples
                 # g_bucket_ids: ids of the examples in the corresponding KG action space bucket
