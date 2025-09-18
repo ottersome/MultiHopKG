@@ -10,11 +10,37 @@
 
 import numpy as np
 import pickle
+from numbers import Integral
 
 import torch
 
 from src.parse_args import args
 from src.data_utils import NO_OP_ENTITY_ID, DUMMY_ENTITY_ID
+
+
+def _get_answer_mask(all_answers, e1, query):
+    """Return list of answer ids to mask for a given (e1, query)."""
+    if all_answers is None:
+        return []
+
+    # Normalize query to int relation id when possible.
+    if isinstance(query, torch.Tensor):
+        if query.dim() == 0:
+            query_id = int(query.item())
+        else:
+            return []
+    elif isinstance(query, Integral):
+        query_id = int(query)
+    else:
+        return []
+
+    answers_for_e1 = all_answers.get(e1)
+    if answers_for_e1 is None:
+        return []
+    candidates = answers_for_e1.get(query_id)
+    if not candidates:
+        return []
+    return list(candidates)
 
 
 def hits_and_ranks(examples, scores, all_answers, verbose=False):
@@ -25,8 +51,9 @@ def hits_and_ranks(examples, scores, all_answers, verbose=False):
     # mask false negatives in the predictions
     dummy_mask = [DUMMY_ENTITY_ID, NO_OP_ENTITY_ID]
     for i, example in enumerate(examples):
-        e1, e2, r = example
-        e2_multi = dummy_mask + list(all_answers[e1][r]) 
+        e1, e2, query = example
+        answer_mask = _get_answer_mask(all_answers, e1, query)
+        e2_multi = list(dict.fromkeys(dummy_mask + answer_mask))
         # save the relevant prediction
         target_score = float(scores[i, e2])
         # mask all false negatives
@@ -86,8 +113,9 @@ def hits_at_k(examples, scores, all_answers, verbose=False):
     # mask false negatives in the predictions
     dummy_mask = [DUMMY_ENTITY_ID, NO_OP_ENTITY_ID]
     for i, example in enumerate(examples):
-        e1, e2, r = example
-        e2_multi = list(all_answers[e1][r]) + dummy_mask
+        e1, e2, query = example
+        answer_mask = _get_answer_mask(all_answers, e1, query)
+        e2_multi = list(dict.fromkeys(answer_mask + dummy_mask))
         # save the relevant prediction
         target_score = scores[i, e2]
         # mask all false negatives
@@ -243,4 +271,3 @@ def export_error_cases(examples, scores, all_answers, output_path):
                  
     print('{}/{} top-1 error cases written to {}'.format(len(top_1_errors), len(examples), output_path))
     print('{}/{} top-10 error cases written to {}'.format(len(top_10_errors), len(examples), output_path))
-
