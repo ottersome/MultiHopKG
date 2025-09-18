@@ -17,6 +17,8 @@ import random
 import debugpy
 import platform
 
+from typing import Dict
+
 import torch
 
 from src.parse_args import parser
@@ -29,7 +31,6 @@ from src.emb.fact_network import ComplEx, ConvE, DistMult, TransE
 from src.emb.fact_network import get_conve_kg_state_dict, get_complex_kg_state_dict, get_distmult_kg_state_dict
 from src.emb.emb import EmbeddingBasedMethod
 from src.rl.graph_search.pn import GraphSearchPolicy
-from src.rl.graph_search.pn_bert import GraphSearchPolicyBert
 from src.rl.graph_search.pg import PolicyGradient
 from src.rl.graph_search.rs_pg import RewardShapingPolicyGradient
 from src.utils.ops import flatten
@@ -330,6 +331,17 @@ def train(lf):
 def inference(lf):
     lf.batch_size = args.dev_batch_size
     lf.eval()
+    _wandb_enabled = getattr(args, 'wandb_enabled', False)
+    _wandb = None
+    if getattr(args, 'wandb', False) and not _wandb_enabled:
+        setup_wandb(args, job_type='inference')
+        _wandb_enabled = getattr(args, 'wandb_enabled', False)
+    if _wandb_enabled:
+        try:
+            import wandb as _wandb  # type: ignore
+        except Exception:
+            _wandb_enabled = False
+            _wandb = None
     if args.model == 'hypere':
         conve_kg_state_dict = get_conve_kg_state_dict(torch.load(args.conve_state_dict_path))
         lf.kg.load_state_dict(conve_kg_state_dict)
@@ -356,6 +368,19 @@ def inference(lf):
         'dev': {},
         'test': {}
     }
+
+    def _print_rollout_metrics(split_name: str, metrics: Dict[str, float]) -> None:
+        hits_keys = sorted(
+            [k for k in metrics.keys() if k.startswith('hits@')],
+            key=lambda item: int(item.split('@')[1]) if item.count('@') == 1 else item
+        )
+        summary = ' '.join(f"{k}={metrics[k]:.4f}" for k in hits_keys)
+        num_rollouts_used = metrics.get('num_rollouts')
+        pool_mode = metrics.get('pool', args.rollout_eval_pool)
+        print(
+            f"{split_name} rollout performance (num_rollouts={num_rollouts_used}, pool={pool_mode}): "
+            f"{summary} mrr={metrics['mrr']:.4f}"
+        )
 
     if args.compute_map:
         relation_sets = [
@@ -421,6 +446,36 @@ def inference(lf):
         eval_metrics['dev']['hits_at_10'] = dev_metrics[3]
         eval_metrics['dev']['mrr'] = dev_metrics[4]
         src.eval.hits_and_ranks(dev_data, pred_scores, lf.kg.all_objects, verbose=True)
+        if hasattr(lf, 'supports_rollout_evaluation') and lf.supports_rollout_evaluation():
+            rollout_dev_metrics = lf.evaluate_with_rollouts(dev_data, split_name='dev')
+            if rollout_dev_metrics:
+                _print_rollout_metrics('Dev', rollout_dev_metrics)
+                for k, v in rollout_dev_metrics.items():
+                    if k.startswith('hits@'):
+                        eval_metrics['dev'][f'rollout_{k}'] = v
+                eval_metrics['dev']['rollout_mrr'] = rollout_dev_metrics['mrr']
+                if _wandb_enabled and _wandb is not None:
+                    rollout_log = {
+                        f'inference/dev_rollout/{k}': float(v)
+                        for k, v in rollout_dev_metrics.items()
+                        if k.startswith('hits@') or k == 'mrr'
+                    }
+                    rollout_log['inference/dev_rollout/examples'] = float(rollout_dev_metrics.get('examples', len(dev_data)))
+                    if 'num_rollouts' in rollout_dev_metrics:
+                        rollout_log['inference/dev_rollout/num_rollouts'] = float(rollout_dev_metrics['num_rollouts'])
+                    if 'pool' in rollout_dev_metrics:
+                        rollout_log['inference/dev_rollout/pool'] = rollout_dev_metrics['pool']
+                    _wandb.log(rollout_log)
+        if _wandb_enabled and _wandb is not None:
+            dev_log = {
+                'inference/dev/hits@1': float(dev_metrics[0]),
+                'inference/dev/hits@3': float(dev_metrics[1]),
+                'inference/dev/hits@5': float(dev_metrics[2]),
+                'inference/dev/hits@10': float(dev_metrics[3]),
+                'inference/dev/mrr': float(dev_metrics[4]),
+                'inference/dev/examples': float(len(dev_data))
+            }
+            _wandb.log(dev_log)
         print('Test set performance:')
         pred_scores = lf.forward(test_data, verbose=False)
         test_metrics = src.eval.hits_and_ranks(test_data, pred_scores, lf.kg.all_objects, verbose=True)
@@ -429,6 +484,36 @@ def inference(lf):
         eval_metrics['test']['hits_at_5'] = test_metrics[2]
         eval_metrics['test']['hits_at_10'] = test_metrics[3]
         eval_metrics['test']['mrr'] = test_metrics[4]
+        if hasattr(lf, 'supports_rollout_evaluation') and lf.supports_rollout_evaluation():
+            rollout_test_metrics = lf.evaluate_with_rollouts(test_data, split_name='test')
+            if rollout_test_metrics:
+                _print_rollout_metrics('Test', rollout_test_metrics)
+                for k, v in rollout_test_metrics.items():
+                    if k.startswith('hits@'):
+                        eval_metrics['test'][f'rollout_{k}'] = v
+                eval_metrics['test']['rollout_mrr'] = rollout_test_metrics['mrr']
+                if _wandb_enabled and _wandb is not None:
+                    rollout_log = {
+                        f'inference/test_rollout/{k}': float(v)
+                        for k, v in rollout_test_metrics.items()
+                        if k.startswith('hits@') or k == 'mrr'
+                    }
+                    rollout_log['inference/test_rollout/examples'] = float(rollout_test_metrics.get('examples', len(test_data)))
+                    if 'num_rollouts' in rollout_test_metrics:
+                        rollout_log['inference/test_rollout/num_rollouts'] = float(rollout_test_metrics['num_rollouts'])
+                    if 'pool' in rollout_test_metrics:
+                        rollout_log['inference/test_rollout/pool'] = rollout_test_metrics['pool']
+                    _wandb.log(rollout_log)
+        if _wandb_enabled and _wandb is not None:
+            test_log = {
+                'inference/test/hits@1': float(test_metrics[0]),
+                'inference/test/hits@3': float(test_metrics[1]),
+                'inference/test/hits@5': float(test_metrics[2]),
+                'inference/test/hits@10': float(test_metrics[3]),
+                'inference/test/mrr': float(test_metrics[4]),
+                'inference/test/examples': float(len(test_data))
+            }
+            _wandb.log(test_log)
 
     return eval_metrics
 

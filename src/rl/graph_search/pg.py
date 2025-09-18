@@ -7,8 +7,12 @@
  Policy gradient (REINFORCE algorithm) training and inference.
 """
 
+from typing import Dict, Optional
+
+import numpy as np
 import torch
 
+from src.eval import RolloutEvaluator
 from src.learn_framework import LFramework
 import src.rl.graph_search.beam_search as search
 import src.utils.ops as ops
@@ -245,6 +249,87 @@ class PolicyGradient(LFramework):
             for i in range(len(e1)):
                 pred_scores[i][pred_e2s[i]] = torch.exp(pred_e2_scores[i])
         return pred_scores
+
+    def supports_rollout_evaluation(self) -> bool:
+        if getattr(self.args, 'disable_rollout_eval', False):
+            return False
+        return True
+
+    def evaluate_with_rollouts(self, data, split_name: str = 'dev',
+                               num_rollouts: Optional[int] = None) -> Optional[Dict[str, float]]:
+        if getattr(self.args, 'disable_rollout_eval', False):
+            return None
+        if not data:
+            return None
+
+        pool_mode = getattr(self.args, 'rollout_eval_pool', 'max')
+        eval_rollouts = num_rollouts if num_rollouts is not None else getattr(self.args, 'rollout_eval_num_rollouts', 0)
+        if not eval_rollouts or eval_rollouts <= 0:
+            eval_rollouts = getattr(self, 'beam_size', self.num_rollouts)
+        eval_rollouts = max(1, int(eval_rollouts))
+        eval_batch_size = getattr(self.args, 'rollout_eval_batch_size', 0)
+        if not eval_batch_size or eval_batch_size <= 0:
+            eval_batch_size = self.dev_batch_size if getattr(self, 'dev_batch_size', None) else self.batch_size
+        eval_batch_size = max(1, int(eval_batch_size))
+
+        evaluator = RolloutEvaluator(positive_reward=1.0, pool=pool_mode)
+
+        disable_dropout = not getattr(self.args, 'keep_rollout_eval_dropout', False)
+        prev_dropout = getattr(self, 'action_dropout_rate', 0.0)
+        if disable_dropout:
+            self.action_dropout_rate = 0.0
+
+        training_state = self.training
+        try:
+            self.eval()
+            total_examples = len(data)
+            with torch.no_grad():
+                for start in range(0, total_examples, eval_batch_size):
+                    mini_batch = data[start:start + eval_batch_size]
+                    if not mini_batch:
+                        continue
+
+                    e1, e2, r = self.format_batch(mini_batch)
+                    beam_output = search.beam_search(
+                        self.mdl,
+                        e1,
+                        r,
+                        e2,
+                        self.kg,
+                        self.num_rollout_steps,
+                        eval_rollouts
+                    )
+
+                    pred_entities = beam_output['pred_e2s']
+                    pred_scores = beam_output['pred_e2_scores']
+
+                    pred_entities_np = pred_entities.detach().cpu().numpy()
+                    pred_scores_np = pred_scores.detach().cpu().numpy()
+
+                    target_entities_np = e2.detach().cpu().numpy().reshape(-1, 1)
+                    rewards_np = (pred_entities_np == target_entities_np).astype(np.float64)
+
+                    dummy_entity = int(self.kg.dummy_e)
+                    invalid_mask = (pred_entities_np == dummy_entity)
+                    if np.any(invalid_mask):
+                        pred_scores_np = np.where(invalid_mask, -1e10, pred_scores_np)
+                        rewards_np[invalid_mask] = 0.0
+
+                    evaluator.update(pred_scores_np, rewards_np, pred_entities_np)
+        finally:
+            if disable_dropout:
+                self.action_dropout_rate = prev_dropout
+            if training_state:
+                self.train()
+
+        if evaluator.num_examples == 0:
+            return None
+
+        metrics = evaluator.compute()
+        metrics['num_rollouts'] = eval_rollouts
+        metrics['pool'] = pool_mode
+        metrics['split'] = split_name
+        return metrics
 
     def record_path_trace(self, path_trace):
         path_length = len(path_trace)

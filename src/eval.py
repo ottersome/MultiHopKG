@@ -11,6 +11,7 @@
 import numpy as np
 import pickle
 from numbers import Integral
+from typing import Dict, Iterable, Sequence, Tuple
 
 import torch
 
@@ -271,3 +272,202 @@ def export_error_cases(examples, scores, all_answers, output_path):
                  
     print('{}/{} top-1 error cases written to {}'.format(len(top_1_errors), len(examples), output_path))
     print('{}/{} top-10 error cases written to {}'.format(len(top_10_errors), len(examples), output_path))
+
+
+def _stable_logsumexp(values: Sequence[float]) -> float:
+    """Numerically stable log-sum-exp for a small sequence of scores."""
+    if not values:
+        return float('-inf')
+    arr = np.asarray(values, dtype=np.float64)
+    max_val = np.max(arr)
+    return max_val + np.log(np.sum(np.exp(arr - max_val)))
+
+
+def _normalize_hits(hits_ks: Iterable[int]) -> Tuple[int, ...]:
+    normalized = tuple(sorted({int(k) for k in hits_ks if k > 0}))
+    if not normalized:
+        raise ValueError('hits_ks must contain at least one positive integer')
+    return normalized
+
+
+def _find_answer_position_max(sorted_indices: np.ndarray,
+                              rewards_row: np.ndarray,
+                              entities_row: np.ndarray,
+                              positive_reward: float) -> int:
+    seen = set()
+    position = 0
+    for rollout_idx in sorted_indices:
+        if np.isclose(rewards_row[rollout_idx], positive_reward):
+            return position
+        entity_id = int(entities_row[rollout_idx])
+        if entity_id not in seen:
+            seen.add(entity_id)
+            position += 1
+    return -1
+
+
+def _find_answer_position_sum(sorted_indices: np.ndarray,
+                              log_probs_row: np.ndarray,
+                              rewards_row: np.ndarray,
+                              entities_row: np.ndarray,
+                              positive_reward: float) -> int:
+    scores_by_entity: Dict[int, list] = {}
+    correct_entity = None
+    for rollout_idx in sorted_indices:
+        entity_id = int(entities_row[rollout_idx])
+        scores_by_entity.setdefault(entity_id, []).append(log_probs_row[rollout_idx])
+        if correct_entity is None and np.isclose(rewards_row[rollout_idx], positive_reward):
+            correct_entity = entity_id
+    if correct_entity is None:
+        return -1
+    aggregated = {entity: _stable_logsumexp(scores) for entity, scores in scores_by_entity.items()}
+    ranked_entities = sorted(aggregated.items(), key=lambda item: item[1], reverse=True)
+    for position, (entity_id, _) in enumerate(ranked_entities):
+        if entity_id == correct_entity:
+            return position
+    return -1
+
+
+def _rollout_totals(log_probs_arr: np.ndarray,
+                    rewards_arr: np.ndarray,
+                    entities_arr: np.ndarray,
+                    positive_reward: float,
+                    pool: str,
+                    hits_ks: Tuple[int, ...]) -> Tuple[Dict[int, int], float, int]:
+    hits_counts = {k: 0 for k in hits_ks}
+    mrr_total = 0.0
+    batch_size = log_probs_arr.shape[0]
+    sorted_indices = np.argsort(-log_probs_arr, axis=1)
+
+    for row in range(batch_size):
+        if pool == 'max':
+            answer_pos = _find_answer_position_max(sorted_indices[row], rewards_arr[row], entities_arr[row], positive_reward)
+        else:
+            answer_pos = _find_answer_position_sum(sorted_indices[row], log_probs_arr[row], rewards_arr[row], entities_arr[row], positive_reward)
+
+        if answer_pos < 0:
+            continue
+
+        for k in hits_ks:
+            if answer_pos < k:
+                hits_counts[k] += 1
+        mrr_total += 1.0 / (answer_pos + 1)
+
+    return hits_counts, mrr_total, batch_size
+
+
+def evaluate_rollout_batch(log_probs: Sequence[Sequence[float]],
+                           rewards: Sequence[Sequence[float]],
+                           final_entities: Sequence[Sequence[int]],
+                           positive_reward: float = 1.0,
+                           pool: str = 'max',
+                           hits_ks: Iterable[int] = (1, 3, 5, 10, 20)) -> Dict[str, float]:
+    """
+    Compute Hits@K and MRR metrics for rollout-based reasoning batches.
+
+    This mirrors the MINERVA evaluation logic by ranking rollouts either by the
+    highest scoring unique entity (``pool='max'``) or by aggregating path scores per
+    entity with log-sum-exp (``pool='sum'``).
+    """
+    log_probs_arr = np.asarray(log_probs, dtype=np.float64)
+    rewards_arr = np.asarray(rewards, dtype=np.float64)
+    entities_arr = np.asarray(final_entities)
+
+    if log_probs_arr.ndim != 2:
+        raise ValueError('log_probs must be a 2-D array-like structure')
+    if rewards_arr.shape != log_probs_arr.shape:
+        raise ValueError('rewards must have the same shape as log_probs')
+    if entities_arr.shape != log_probs_arr.shape:
+        raise ValueError('final_entities must have the same shape as log_probs')
+    if log_probs_arr.shape[0] == 0:
+        raise ValueError('log_probs must contain at least one example')
+
+    pool = pool.lower()
+    if pool not in {'max', 'sum'}:
+        raise ValueError("pool must be either 'max' or 'sum'")
+
+    hits_ks = _normalize_hits(hits_ks)
+    hits_counts, mrr_total, batch_size = _rollout_totals(
+        log_probs_arr,
+        rewards_arr,
+        entities_arr,
+        positive_reward,
+        pool,
+        hits_ks
+    )
+
+    metrics = {f'hits@{k}': hits_counts[k] / batch_size for k in hits_ks}
+    metrics['mrr'] = mrr_total / batch_size if batch_size else 0.0
+    return metrics
+
+
+class RolloutEvaluator:
+    """Incrementally aggregates rollout-based evaluation metrics."""
+
+    def __init__(self,
+                 positive_reward: float = 1.0,
+                 pool: str = 'max',
+                 hits_ks: Iterable[int] = (1, 3, 5, 10, 20)) -> None:
+        self.positive_reward = positive_reward
+        self.pool = pool.lower()
+        if self.pool not in {'max', 'sum'}:
+            raise ValueError("pool must be either 'max' or 'sum'")
+        self.hits_ks = _normalize_hits(hits_ks)
+        self._hits_counts = {k: 0 for k in self.hits_ks}
+        self._mrr_total = 0.0
+        self._num_examples = 0
+
+    def update(self,
+               log_probs: Sequence[Sequence[float]],
+               rewards: Sequence[Sequence[float]],
+               final_entities: Sequence[Sequence[int]]) -> None:
+        log_probs_arr = np.asarray(log_probs, dtype=np.float64)
+        rewards_arr = np.asarray(rewards, dtype=np.float64)
+        entities_arr = np.asarray(final_entities)
+
+        if log_probs_arr.ndim != 2:
+            raise ValueError('log_probs must be a 2-D array-like structure')
+        if rewards_arr.shape != log_probs_arr.shape:
+            raise ValueError('rewards must have the same shape as log_probs')
+        if entities_arr.shape != log_probs_arr.shape:
+            raise ValueError('final_entities must have the same shape as log_probs')
+        if log_probs_arr.shape[0] == 0:
+            raise ValueError('log_probs must contain at least one example')
+
+        hits_counts, mrr_total, batch_size = _rollout_totals(
+            log_probs_arr,
+            rewards_arr,
+            entities_arr,
+            self.positive_reward,
+            self.pool,
+            self.hits_ks
+        )
+
+        for k in self.hits_ks:
+            self._hits_counts[k] += hits_counts[k]
+        self._mrr_total += mrr_total
+        self._num_examples += batch_size
+
+    def merge(self, other: 'RolloutEvaluator') -> None:
+        if not isinstance(other, RolloutEvaluator):
+            raise TypeError('Can only merge with another RolloutEvaluator')
+        if (self.positive_reward != other.positive_reward or
+                self.pool != other.pool or
+                self.hits_ks != other.hits_ks):
+            raise ValueError('Evaluators must share the same configuration to merge')
+        for k in self.hits_ks:
+            self._hits_counts[k] += other._hits_counts[k]
+        self._mrr_total += other._mrr_total
+        self._num_examples += other._num_examples
+
+    def compute(self) -> Dict[str, float]:
+        if self._num_examples == 0:
+            raise ValueError('No examples have been added to the evaluator')
+        metrics = {f'hits@{k}': self._hits_counts[k] / self._num_examples for k in self.hits_ks}
+        metrics['mrr'] = self._mrr_total / self._num_examples
+        metrics['examples'] = self._num_examples
+        return metrics
+
+    @property
+    def num_examples(self) -> int:
+        return self._num_examples

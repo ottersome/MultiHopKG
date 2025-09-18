@@ -202,6 +202,16 @@ parser.add_argument('--beta', type=float, default=0.0,
                     help='entropy regularization weight (default: 0.0)')
 parser.add_argument('--gamma', type=float, default=1,
                     help='moving average weight (default: 1)')
+parser.add_argument('--disable_rollout_eval', action='store_true',
+                    help='skip rollout-based metrics for policy gradient models during evaluation (default: False)')
+parser.add_argument('--rollout_eval_pool', type=str, default='max', choices=['max', 'sum'],
+                    help="aggregation strategy for rollout-based evaluation metrics (default: 'max')")
+parser.add_argument('--rollout_eval_num_rollouts', type=int, default=0,
+                    help='override number of rollouts used for evaluation (default: use training num_rollouts)')
+parser.add_argument('--rollout_eval_batch_size', type=int, default=0,
+                    help='override batch size for rollout evaluation (default: dev_batch_size)')
+parser.add_argument('--keep_rollout_eval_dropout', action='store_true',
+                    help='keep action dropout active during rollout evaluation (default: disabled)')
 
 # Policy Gradient
 parser.add_argument('--baseline', type=str, default='n/a',

@@ -22,7 +22,7 @@ from torch.nn.utils import clip_grad_norm_
 import src.eval
 from src.utils.ops import var_cuda, zeros_var_cuda
 import src.utils.ops as ops
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from transformers import AutoTokenizer, AutoModel  # type: ignore
 
@@ -83,6 +83,13 @@ class LFramework(nn.Module):
                 self._q_hidden = int(getattr(args, 'relation_dim', 200))
             # Always set a projection to match relation_dim expected downstream
             self._q_proj = nn.Linear(self._q_hidden, args.relation_dim)
+
+    def supports_rollout_evaluation(self) -> bool:
+        return False
+
+    def evaluate_with_rollouts(self, data, split_name: str = 'dev') -> Optional[Dict[str, float]]:
+        _ = split_name  # Unused in base implementation
+        return None
 
     def print_all_model_parameters(self):
         print('\nModel Parameters')
@@ -232,16 +239,44 @@ class LFramework(nn.Module):
                 metrics = mrr
                 print('Dev set performance: (include test set labels)')
                 src.eval.hits_and_ranks(dev_data, dev_scores, self.kg.all_objects, verbose=True)
+
+                rollout_metrics = None
+                if self.supports_rollout_evaluation():
+                    rollout_metrics = self.evaluate_with_rollouts(dev_data, split_name='dev')
+                    if rollout_metrics:
+                        hits_keys = sorted(
+                            [k for k in rollout_metrics.keys() if k.startswith('hits@')],
+                            key=lambda item: int(item.split('@')[1]) if item.count('@') == 1 else item
+                        )
+                        metrics_summary = ' '.join(
+                            f"{k}={rollout_metrics[k]:.4f}" for k in hits_keys
+                        )
+                        num_rollouts_used = rollout_metrics.get('num_rollouts', getattr(self, 'num_rollouts', None))
+                        pool_mode = rollout_metrics.get('pool', getattr(self.args, 'rollout_eval_pool', 'max'))
+                        print(
+                            f"Dev rollout evaluation (num_rollouts={num_rollouts_used}, pool={pool_mode}): "
+                            f"{metrics_summary} mrr={rollout_metrics['mrr']:.4f}"
+                        )
                 # wandb: log dev metrics
                 if _wandb_enabled:
-                    _wandb.log({
+                    log_dict = {
                         'epoch': epoch_id,
                         'dev/mrr': float(mrr),
                         'dev/hits@1': float(h1),
                         'dev/hits@3': float(h3),
                         'dev/hits@5': float(h5),
                         'dev/hits@10': float(h10),
-                    })
+                    }
+                    if rollout_metrics:
+                        for k, v in rollout_metrics.items():
+                            if k.startswith('hits@') or k == 'mrr':
+                                log_dict[f'dev_rollout/{k}'] = float(v)
+                        if 'examples' in rollout_metrics:
+                            log_dict['dev_rollout/examples'] = float(rollout_metrics['examples'])
+                        if 'num_rollouts' in rollout_metrics:
+                            log_dict['dev_rollout/num_rollouts'] = float(rollout_metrics['num_rollouts'])
+                        log_dict['dev_rollout/pool'] = rollout_metrics.get('pool', getattr(self.args, 'rollout_eval_pool', 'max'))
+                    _wandb.log(log_dict)
                 # Action dropout anneaking
                 if self.model.startswith('point'):
                     eta = self.action_dropout_anneal_interval
