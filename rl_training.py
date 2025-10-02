@@ -14,7 +14,8 @@ import logging
 import os
 import sys
 import time
-from typing import Any, DefaultDict, Dict, List, Tuple
+from collections import defaultdict
+from typing import Any, DefaultDict, Dict, List, Optional, Tuple
 
 import debugpy
 import matplotlib.pyplot as plt
@@ -47,6 +48,7 @@ from multihopkg.logs import torch_module_logging
 from multihopkg.models_language.classical import HunchBart, collate_token_ids_batch
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment, ReinforcedUnsupervisedEnv
+from multihopkg.rl.utils import ReplayBuffer
 from multihopkg.run_configs import rl_alpha
 from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
 from multihopkg.utils.convenience import tensor_normalization
@@ -1034,164 +1036,258 @@ def calculate_llm_reward(
     return reward, logits
 
 
-def rollout(
-    # TODO: self.mdl should point to (policy network)
-    steps_in_episode: int,
-    nav_agent: ContinuousPolicyGradient,
-    hunch_llm: nn.Module,
+@torch.no_grad()
+def collect_transitions(
     env: ITLGraphEnvironment,
-    questions_embeddings: torch.Tensor,
-    answers_ids: torch.Tensor,
-    query_ent: List[int],
-    query_rel: List[int],
-    answer_id: List[int],
-    dev_mode: bool = False,
-) -> Tuple[List[torch.Tensor], List[torch.Tensor], Dict[str, Any]]:
-    """
-    Executes reinforcement learning (RL) episode rollouts in parallel for a given number of steps.
-    This function is the core of the training process, used by both `batch_loop` and `batch_loop_dev`.
+    actor: ContinuousPolicyGradient,
+    hunch_llm: nn.Module,
+    *,
+    question_embeddings: torch.Tensor,
+    answer_token_ids: torch.Tensor,
+    answer_pad_mask: torch.Tensor,
+    answer_entity_ids: List[int],
+    query_entity_ids: List[int],
+    steps_in_episode: int,
+    action_overrides: Optional[torch.Tensor] = None,
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, float]]:
+    """Collect transitions for one batch without mutating external state."""
 
-    During the rollout:
-    - The navigation agent (`nav_agent`) interacts with the environment (`env`) to take actions.
-    - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE).
-    - Evaluation metrics are optionally collected in development mode (`dev_mode`).
+    if steps_in_episode <= 0:
+        raise ValueError("steps_in_episode must be positive")
 
-    args:
-        steps_in_episode (int):
-            The number of steps to execute in each episode.
-        nav_agent (ContinuousPolicyGradient):
-            The policy network responsible for deciding actions based on the current state.
-        hunch_llm (nn.Module):
-            A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
-        env (ITLGraphEnvironment):
-            The knowledge graph environment that provides observations, rewards, and state transitions.
-        questions_embeddings (torch.Tensor):
-            Pre-embedded representations of the questions to be answered. Shape: (batch_size, embedding_dim).
-        answers_ids (torch.Tensor):
-            Tokenized IDs of the correct answers. Shape: (batch_size, sequence_length).
-        relevant_entities (List[List[int]]):
-            A list of relevant entities for each question, represented as lists of entity IDs.
-        relevant_rels (List[List[int]]):
-            A list of relevant relations for each question, represented as lists of relation IDs.
-        answer_id (List[int]):
-            A list of IDs corresponding to the correct answer entities.
-        dev_mode (bool, optional):
-            If `True`, additional evaluation metrics are collected for debugging or analysis. Defaults to `False`.
-    returns:
-        - log_action_probs (List[torch.Tensor]):
-            A list of log probabilities of the actions taken by the navigation agent at each step.
-        - llm_rewards (List[torch.Tensor]):
-            A list of rewards computed by the language model for each step.
-        - kg_rewards (List[torch.Tensor]):
-            A list of rewards computed by the knowledge graph environment for each step.
-        - eval_metrics (Dict[str, Any]):
-            A dictionary of evaluation metrics collected during the rollout (only populated if `dev_mode=True`).
-    """
+    device = question_embeddings.device
+    batch_size = question_embeddings.size(0)
 
-    assert steps_in_episode > 0
+    if action_overrides is not None:
+        expected_shape = (steps_in_episode, batch_size) + replay_buffer.action_shape
+        if action_overrides.shape != expected_shape:
+            raise ValueError(
+                "action_overrides must have shape "
+                f"{expected_shape}, got {tuple(action_overrides.shape)}"
+            )
 
-    ########################################
-    # Prepare lists to be returned
-    ########################################
-    log_action_probs = []
-    llm_rewards = []
-    entropies = []
-    kg_rewards = []
-    eval_metrics = DefaultDict(list)
-
-    answer_tensor = get_embeddings_from_indices(
-        env.knowledge_graph.entity_embedding,
-        torch.tensor(answer_id, dtype=torch.int),
-    ).unsqueeze(
-        1
-    )  # Shape: (batch, 1, embedding_dim)
-
-    # Get initial observation. A concatenation of centroid and question atm. Passed through the path encoder
-    observations = env.reset(
-        questions_embeddings, answer_ent=answer_id, query_ent=query_ent
+    observation = env.reset(
+        question_embeddings,
+        answer_ent=answer_entity_ids,
+        query_ent=query_entity_ids,
+        warmup=True,
     )
 
-    cur_state = observations.state
-    # Should be of shape (batch_size, 1, hidden_dim)
+    current_state = observation.state
+    state_shape = current_state.shape[1:]
+    action_shape: Tuple[int, ...] = tuple()
+    states_so_far: List[torch.Tensor] = []
+    active_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
 
-    # pn.initialize_path(kg) # TOREM: Unecessasry to ask pn to form it for us.
-    states_so_far = []
-    for t in range(steps_in_episode):
+    metrics: DefaultDict[str, List[float]] = defaultdict(list)
 
-        # Ask the navigator to navigate, agent is presented state, not position
-        # State is meant to summrized path history.
-        sampled_actions, log_probs, entropy, _, _ = nav_agent(cur_state)
+    stored_states: List[torch.Tensor] = []
+    stored_actions: List[torch.Tensor] = []
+    stored_rewards: List[torch.Tensor] = []
+    stored_next_states: List[torch.Tensor] = []
+    stored_dones: List[torch.Tensor] = []
 
-        # TODO: Make sure we are gettign rewards from the environment.
-        observations, kg_extrinsic_rewards, kg_dones = env.step(sampled_actions)
-        # Ah ssampled_actions are the ones that have to go against the knowlde garph.
+    extra_rewards_env: List[torch.Tensor] = []
+    extra_rewards_llm: List[torch.Tensor] = []
+    extra_entropy: List[torch.Tensor] = []
+    extra_logprob: List[torch.Tensor] = []
 
-        cur_state = observations.state
-        # VISITED EMBEDDINGS IS THE ENCODER
+    for step_idx in range(steps_in_episode):
+        prev_state = current_state
 
-        ########################################
-        # Calculate the Reward
-        ########################################
-        states_so_far.append(cur_state)
+        if not active_mask.any():
+            break
+
+        if action_overrides is None:
+            actions, log_prob, entropy, _, _ = actor(prev_state)
+        else:
+            actions = action_overrides[step_idx].to(device)
+            log_prob = None
+            entropy = None
+        if actions.dim() == 1:
+            action_shape = tuple()
+        else:
+            action_shape = actions.shape[1:]
+
+        inactive_mask = ~active_mask
+        if inactive_mask.any():
+            # Ensure completed trajectories do not influence the environment anymore
+            actions = actions.clone()
+            actions[inactive_mask] = 0.0
+
+        next_observation, extrinsic_reward, done_flags = env.step(actions)
+        current_state = next_observation.state
+
+        states_so_far.append(current_state)
         stacked_states = torch.stack(states_so_far).permute(1, 0, 2)
-        # Calculate how close we are
-        llm_reward, logits = calculate_llm_reward(
-            hunch_llm, stacked_states, answers_ids
+        llm_reward, _ = calculate_llm_reward(
+            hunch_llm,
+            stacked_states,
+            answer_token_ids,
         )
 
-        llm_rewards.append(llm_reward)
+        token_mask = answer_pad_mask[:, 1:].to(llm_reward.device)
+        token_counts = token_mask.sum(dim=1).clamp(min=1)
+        llm_scalar_reward = (llm_reward * token_mask).sum(dim=1) / token_counts
 
-        kg_intrinsic_reward = env.knowledge_graph.absolute_difference(
-            observations.kge_cur_pos.unsqueeze(1),
-            answer_tensor,
-        ).norm(dim=-1)
+        extrinsic_scalar = extrinsic_reward.squeeze(-1)
+        total_reward = extrinsic_scalar + llm_scalar_reward
 
-        # TODO: Ensure the that the model stays within range of answer, otherwise set kg_done back to false so intrinsic reward kicks back in.
-        kg_rewards.append(
-            kg_dones * kg_extrinsic_rewards
-            - torch.logical_not(kg_dones) * kg_intrinsic_reward
-        )  # Merging positive environment rewards with negative intrinsic ones
+        active_prev_state = prev_state[active_mask].detach()
+        active_actions = actions[active_mask].detach()
+        active_rewards = total_reward[active_mask].unsqueeze(-1).detach()
+        active_next_states = current_state[active_mask].detach()
+        active_done = done_flags[active_mask].detach()
 
-        ########################################
-        # Log Stuff for across batch
-        ########################################
-        log_action_probs.append(log_probs)
-        entropies.append(entropy)
+        if active_prev_state.numel() == 0:
+            break
 
-        ########################################
-        # Stuff that we will only use for evaluation
-        ########################################
-        if dev_mode:
-            eval_metrics["sampled_actions"].append(sampled_actions.detach().cpu())
-            eval_metrics["kge_cur_pos"].append(observations.kge_cur_pos.detach().cpu())
-            eval_metrics["kge_prev_pos"].append(
-                observations.kge_prev_pos.detach().cpu()
+        stored_states.append(active_prev_state)
+        stored_actions.append(active_actions)
+        stored_rewards.append(active_rewards)
+        stored_next_states.append(active_next_states)
+        stored_dones.append(active_done)
+
+        extra_rewards_env.append(extrinsic_reward[active_mask].detach())
+        extra_rewards_llm.append(llm_scalar_reward[active_mask].unsqueeze(-1).detach())
+
+        metrics["reward/env_mean"].append(extrinsic_scalar[active_mask].mean().item())
+        metrics["reward/llm_mean"].append(llm_scalar_reward[active_mask].mean().item())
+        metrics["reward/total_mean"].append(total_reward[active_mask].mean().item())
+        metrics["done_ratio"].append(done_flags[active_mask].float().mean().item())
+
+        if entropy is not None:
+            extra_entropy.append(entropy[active_mask].unsqueeze(-1).detach())
+            metrics["policy/entropy_mean"].append(entropy[active_mask].mean().item())
+        if log_prob is not None:
+            extra_logprob.append(log_prob[active_mask].unsqueeze(-1).detach())
+            metrics["policy/logprob_mean"].append(log_prob[active_mask].mean().item())
+
+        active_mask = active_mask & (~done_flags.squeeze(-1))
+
+    if not stored_states:
+        empty = {
+            "states": torch.empty((0,) + state_shape, device=device),
+            "actions": torch.empty((0,) + action_shape, device=device),
+            "rewards": torch.empty((0, 1), device=device),
+            "next_states": torch.empty((0,) + state_shape, device=device),
+            "dones": torch.empty((0, 1), dtype=torch.bool, device=device),
+            "extras": {},
+        }
+        summary = {k: 0.0 for k in metrics}
+        summary["num_samples"] = 0
+        summary["num_env_steps"] = 0
+        summary["num_transitions"] = 0
+        return empty, summary
+
+    transitions = {
+        "states": torch.cat(stored_states, dim=0),
+        "actions": torch.cat(stored_actions, dim=0),
+        "rewards": torch.cat(stored_rewards, dim=0),
+        "next_states": torch.cat(stored_next_states, dim=0),
+        "dones": torch.cat(stored_dones, dim=0),
+        "extras": {
+            "reward_env": torch.cat(extra_rewards_env, dim=0),
+            "reward_llm": torch.cat(extra_rewards_llm, dim=0),
+        },
+    }
+
+    if extra_entropy:
+        transitions["extras"]["entropy"] = torch.cat(extra_entropy, dim=0)
+    if extra_logprob:
+        transitions["extras"]["log_prob"] = torch.cat(extra_logprob, dim=0)
+
+    summary = {k: (sum(v) / len(v)) for k, v in metrics.items() if v}
+    summary["num_samples"] = batch_size
+    summary["num_env_steps"] = len(stored_states)
+    summary["num_transitions"] = transitions["states"].size(0)
+
+    return transitions, summary
+
+
+@torch.no_grad()
+def populate_replay_buffer(
+    env: ITLGraphEnvironment,
+    actor: ContinuousPolicyGradient,
+    hunch_llm: nn.Module,
+    *,
+    mini_batch: pd.DataFrame,
+    steps_in_episode: int,
+    pad_token_id: int,
+    use_random_actions: bool = False,
+) -> Dict[str, float]:
+    """Helper that extracts tensors from the mini-batch and collects transitions."""
+
+    device = next(actor.parameters()).device
+
+    if "Answer-Entity" not in mini_batch:
+        raise KeyError("mini_batch must contain the 'Answer-Entity' column")
+
+    if env.use_kge_question_embedding:
+        if "Query-Entity" not in mini_batch or "Query-Relation" not in mini_batch:
+            raise KeyError(
+                "KGE question embedding requires 'Query-Entity' and 'Query-Relation' columns"
             )
-            eval_metrics["kge_action"].append(observations.kge_action.detach().cpu())
-
-            "LLM Metrics"
-            eval_metrics["hunch_llm_final_guesses"].append(logits.argmax(dim=-1))
-            llm_softmax = torch.nn.functional.softmax(logits, dim=-1)
-            llm_entropies = -torch.sum(llm_softmax * torch.log(llm_softmax), dim=-1)
-            eval_metrics["hunch_llm_entropy"].append(
-                llm_entropies.mean().detach().cpu()
+        query_entity_ids = mini_batch["Query-Entity"].tolist()
+        query_relation_ids = mini_batch["Query-Relation"].tolist()
+        question_embeddings = env.get_kge_question_embedding(
+            query_entity_ids, query_relation_ids, device
+        )
+    else:
+        if "Question" not in mini_batch:
+            raise KeyError(
+                "LLM question embedding requires the 'Question' column in the mini_batch"
             )
-            eval_metrics["hunch_llm_rewards"].append(llm_reward.detach().cpu())
+        questions = mini_batch["Question"].tolist()
+        question_embeddings = env.get_llm_embeddings(questions, device)
+        query_entity_ids = mini_batch["Query-Entity"].tolist()
 
-            "KGE Metrics"
-            eval_metrics["kg_extrinsic_rewards"].append(
-                kg_extrinsic_rewards.detach().cpu()
-            )
-            eval_metrics["kg_intrinsic_reward"].append(
-                kg_intrinsic_reward.detach().cpu()
-            )
-            eval_metrics["kg_dones"].append(kg_dones.detach().cpu())
+    answers_raw = mini_batch["Answer"].tolist()
+    answer_token_ids = collate_token_ids_batch(answers_raw, pad_token_id).to(torch.int64)
+    answer_token_ids = answer_token_ids.to(device)
+    answer_pad_mask = answer_token_ids.ne(pad_token_id)
 
-    if dev_mode:
-        eval_metrics = {k: torch.stack(v) for k, v in eval_metrics.items()}
+    answer_entity_ids = mini_batch["Answer-Entity"].tolist()
 
-    # Return Rewards of Rollout as a Tensor
-    return log_action_probs, entropies, llm_rewards, kg_rewards, eval_metrics
+    batch_size = question_embeddings.size(0)
+
+    if use_random_actions:
+        action_dim = actor.mu_layer.out_features
+        random_actions = torch.empty(
+            steps_in_episode,
+            batch_size,
+            action_dim,
+            device=device,
+        ).uniform_(-1.0, 1.0)
+        action_overrides = random_actions
+    else:
+        action_overrides = None
+
+    transitions, metrics = collect_transitions(
+        env,
+        actor,
+        hunch_llm,
+        question_embeddings=question_embeddings,
+        answer_token_ids=answer_token_ids,
+        answer_pad_mask=answer_pad_mask,
+        answer_entity_ids=answer_entity_ids,
+        query_entity_ids=query_entity_ids,
+        steps_in_episode=steps_in_episode,
+        action_overrides=action_overrides,
+    )
+
+    if transitions["states"].numel() > 0:
+        replay_buffer.add_batch(
+            states=transitions["states"],
+            actions=transitions["actions"],
+            rewards=transitions["rewards"],
+            next_states=transitions["next_states"],
+            dones=transitions["dones"],
+            extras=transitions["extras"],
+        )
+
+    metrics["used_random_actions"] = float(use_random_actions)
+    return metrics
 
 
 def main():
