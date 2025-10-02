@@ -26,6 +26,7 @@ valid_steps: 10000
 log_steps: 100
 test_log_steps: 1000
 autoencoder_flag: False
-wandb_project: "mquake_embeddings"
+wandb_project: "embedding_trainings"
+wandb_entity: "halcyon-solutions"
 track: True
 random_seed: 42

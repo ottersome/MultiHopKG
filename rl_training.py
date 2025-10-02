@@ -156,19 +156,21 @@ def batch_loop_dev(
     )
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
-    logger.warning(f"About to go into rollout")
-    log_probs, entropies, llm_rewards, kg_rewards, eval_extras = rollout(
-        steps_in_episode,
-        nav_agent,
-        hunch_llm,
-        env,
-        question_embeddings,
-        answer_ids_padded_tensor,
-        query_ent=query_ent,
-        query_rel=query_rel,
-        answer_id=answer_id,
-        dev_mode=True,
-    )
+
+    raise NotImplementedError("Removed Rollout here, Ought to be replaced for something else now")
+    #TODO: Remove. We dont do rollouts on SAC training
+    # log_probs, entropies, llm_rewards, kg_rewards, eval_extras = rollout(
+    #     steps_in_episode,
+    #     nav_agent,
+    #     hunch_llm,
+    #     env,
+    #     question_embeddings,
+    #     answer_ids_padded_tensor,
+    #     query_ent=query_ent,
+    #     query_rel=query_rel,
+    #     answer_id=answer_id,
+    #     dev_mode=True,
+    # )
 
     ########################################
     # Calculate Reinforce Objective
@@ -332,17 +334,18 @@ def batch_loop(
     # TODO: Come back to this and figure if this is necessary
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
-    log_probs, entropies, llm_rewards, kg_rewards, eval_extras = rollout(
-        steps_in_episode,
-        nav_agent,
-        hunch_llm,
-        env,
-        question_embeddings,
-        answer_ids_padded_tensor,
-        query_ent=query_ent,
-        query_rel=query_rel,
-        answer_id=answer_id,
-    )
+    rasie NotImplementedError(f"Have not implemented normal bootstrapped approach. Just deleted rollout")
+    # log_probs, entropies, llm_rewards, kg_rewards, eval_extras = rollout(
+    #     steps_in_episode,
+    #     nav_agent,
+    #     hunch_llm,
+    #     env,
+    #     question_embeddings,
+    #     answer_ids_padded_tensor,
+    #     query_ent=query_ent,
+    #     query_rel=query_rel,
+    #     answer_id=answer_id,
+    # )
 
     ########################################
     # Calculate Reinforce Objective
@@ -1217,7 +1220,7 @@ def main():
         )
 
     ########################################
-    # Load Pretrained Model
+    # Load Pretrained Graph To Language 
     ########################################
     pretrained_gtllm_metadata = torch.load(args.pretrained_gtllm_path, weights_only=False)
 

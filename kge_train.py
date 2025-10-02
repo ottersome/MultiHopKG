@@ -100,6 +100,7 @@ def parse_args(args=None):
     parser.add_argument('--autoencoder_lambda', default=0.1, type=float, help='Autoencoder regularization')
 
     parser.add_argument('--wandb_project', type=str, default='', help='wandb project name')
+    parser.add_argument('--wandb_entity', type=str, default='', help='wandb entity/org name')
     parser.add_argument('-track', action='store_true', help='track wandb')
 
     parser.add_argument('--saving_metric', default='', type=str, help='Metric used for the threshold required for saving model. If empty, no conditioning for saving model.')
@@ -237,6 +238,7 @@ def main(args):
         wandb.init(
             project=f"{args.wandb_project}",
             config=vars(args),
+            entity=args.wandb_entity,
             name=f"{args.model}-{args.data_path.split('/')[1]}-{args.timestamp}"
         )
         args = argparse.Namespace(**wandb.config)  # <-- Make sure args is overwritten

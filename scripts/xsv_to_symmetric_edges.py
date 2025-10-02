@@ -42,22 +42,22 @@ def parse_args() -> argparse.Namespace:
         "-o", "--output", type=Path, default=None, help="Output file path (default: stdout)"
     )
     p.add_argument(
-        "--in-delimiter",
-        default=",",
+        "--in_delimiter",
+        default="\t",
         help="Input delimiter (xSV). For tab, use $'\t' in most shells.",
     )
     p.add_argument(
-        "--out-delimiter",
+        "--out_delimiter",
         default=",",
         help="Output delimiter for the 4-column file.",
     )
     p.add_argument(
-        "--has-header",
+        "--has_header",
         action="store_true",
         help="Skip the first row of the input as a header",
     )
     p.add_argument(
-        "--no-dedupe",
+        "--no_dedupe",
         action="store_true",
         help="Do not deduplicate edges (by default edges are deduplicated)",
     )
@@ -85,14 +85,14 @@ def load_pairs(
                 )
                 raise ValueError("Invalid row: fewer than 3 columns")
 
-            s = str(row[0]).strip()
-            o = str(row[2]).strip()
-            if s == "" or o == "":
+            head = str(row[0]).strip()
+            tail = str(row[2]).strip()
+            if head == "" or tail == "":
                 # Skip incomplete nodes
                 continue
 
             # Add (s,o) and (o,s) to ensure symmetry
-            for a, b in ((s, o), (o, s)):
+            for a, b in ((head, tail), (tail, head)):
                 if dedupe:
                     if (a, b) in seen:
                         continue
@@ -114,7 +114,7 @@ def write_edges(
             out = out_f
 
         writer = csv.writer(out, delimiter=out_delim, lineterminator="\n")
-        empty = ""
+        empty = "0"
         for u, v in pairs:
             writer.writerow([u, empty, v, empty])
     finally:

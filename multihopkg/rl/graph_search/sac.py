@@ -509,6 +509,7 @@ class SACAgent:
         score = 0
         ep = 0
         ewma_reward = 0
+
         for self.total_step in tqdm(range(1, self.num_steps + 1)):
             action = self.select_action(state)
             next_state, reward, done = self.step(action)

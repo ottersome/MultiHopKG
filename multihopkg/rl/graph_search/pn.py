@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas
 
+from multihopkg.rl.graph_search.sac import ReplayBuffer
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -453,6 +454,8 @@ class ReinforcedUnsupervisedEnv(Environment):
         ann_index_manager_ent: ANN_IndexMan,
         ann_index_manager_rel: ANN_IndexMan,
         steps_in_episode: int,
+        replay_buffer_memory: int, 
+        batch_size: int, 
         num_rollouts: int = 0, # Number of trajectories to be used in the environment per question, 0 means 1 trajectory
         epsilon: float = 0.1, # For error margin in the distance, TODO: Must find a better value
     ):
@@ -465,6 +468,9 @@ class ReinforcedUnsupervisedEnv(Environment):
         self.ann_index_manager_rel = ann_index_manager_rel
         self._num_rollouts = num_rollouts  # Number of trajectories to be used in the environment per question
         self.steps_in_episode = steps_in_episode
+        self.batch_size = batch_size
+        
+        self.replay_buffer = ReplayBuffer(entity_dim, relation_dim, replay_buffer_memory, batch_size)  
 
         self.uniIdxDict = uniIdxDict
 
@@ -486,6 +492,9 @@ class ReinforcedUnsupervisedEnv(Environment):
         self.answer_found = None       # This is a flag to denote if the answer has been already been found (batch_size, 1)
         self.epsilon = epsilon                 # This is the error margin in the distance for finding the answer
 
+        # TODO: Perhaps initialize Replay Buffer here with Stuff.   
+
+    # TODO: ought only to be used for replenishing the replay buffer (so as to not have distributional shift)
     def reset(self, initial_state_info: Any) -> RUE_Observation:
 
         # TODO: Simply give the poistion. Ah shit 
