@@ -7,7 +7,8 @@
  Customized operators and utility functions.
 """
 
-from typing import Tuple, Union, List
+import ast
+from typing import Any, Tuple, Union, List
 
 import numpy as np
 import torch
@@ -218,6 +219,23 @@ def unique_max(unique_x, x, values, marker_2D=None):
     unique_idx = torch.cat(unique_indices)
     return unique_values, unique_idx
 
+def ensure_list_of_ints(seq: Any) -> List[int]:
+    """
+    Ensure that the input is a list of integers.
+    """
+    if isinstance(seq, np.ndarray):
+        return seq.astype(int).tolist()
+    if isinstance(seq, list):
+        return [int(x) for x in seq]
+    if isinstance(seq, str):
+        try:
+            literal = ast.literal_eval(seq)
+        except (ValueError, SyntaxError) as exc:
+            raise TypeError(
+                "String values must encode lists of integers"
+            ) from exc
+        return ensure_list_of_ints(literal)
+    raise TypeError(f"Expected list or ndarray, got {type(seq)}")
 
 if __name__ == '__main__':
     a = torch.randn(2)

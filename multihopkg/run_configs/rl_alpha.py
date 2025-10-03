@@ -19,6 +19,8 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--track_gradients', '-g', action='store_true', help='Track and log gradients during training')
     ap.add_argument('--preferred_config', type=str, default="configs/rl_config.yaml", help="Path to YAML configuration file (default: configs/my_config.yaml). " \
                         "If not empty, overrides the respective command line arguments.")
+    ap.add_argument('--replay_buffer', type=int, default=25000, help="Max number of steps that the replay buffer can hold.")
+    ap.add_argument('--replay_min_usable_size', type=int, defualt=10000, help="Minium number of transitions necessary in the Replay Buffer deemed sufficient to train the model.")
 
     # Learning Hyperparameters
     ap.add_argument('--learning_rate', type=float, default=0.00001, help='Learning rate for optimizer (default: 1e-5)')
@@ -31,7 +33,6 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--supervised_adapter_scalar', default=0.5, type=float, help='Scalar for the supervised adapter loss (default: 0.0)') 
     ap.add_argument('--supervised_sigma_scalar', default=0.1, type=float, help='Scalar for the supervised sigma loss (default: 0.1)')
     ap.add_argument('--supervised_expected_sigma', default=0.1, type=float, help='Scalar for the supervised expected sigma value (default: 0.1)') 
-                    #TODO: Add the warmup parameters here
 
 
     # Dropout Scheduling

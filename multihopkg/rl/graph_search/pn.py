@@ -421,7 +421,6 @@ class ITLGraphEnvironment(Environment, nn.Module):
         query_entity = torch.tensor(query_entity, dtype=torch.int)
     
         # Create more complete representation of state
-        init_emb = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, query_entity)
 
         if init_emb.dim() == 1: init_emb = init_emb.unsqueeze(0)
         assert init_emb.shape[0] == size, "Error! Initial states info and relevant embeddings must have the same batch size."
@@ -442,7 +441,7 @@ class ReinforcedUnsupervisedEnv(Environment):
         pass
     @dataclass
     class RUE_Observation:
-        arbitrary_tensor:  torch.Tensor
+        state:  torch.Tensor
 
     def __init__(
         self,
@@ -450,10 +449,8 @@ class ReinforcedUnsupervisedEnv(Environment):
         relation_dim: int,
         knowledge_graph: KGEModel,
         nav_start_emb_type: str,
-        uniIdxDict: UniversalIdxDictionary,
         ann_index_manager_ent: ANN_IndexMan,
         ann_index_manager_rel: ANN_IndexMan,
-        steps_in_episode: int,
         replay_buffer_memory: int, 
         batch_size: int, 
         num_rollouts: int = 0, # Number of trajectories to be used in the environment per question, 0 means 1 trajectory
@@ -462,53 +459,43 @@ class ReinforcedUnsupervisedEnv(Environment):
         super(ReinforcedUnsupervisedEnv, self).__init__() # Should be injected via information extracted from Knowledge Grap self.action_dim = relation_dim  # TODO: Ensure this is a solid default self.question_embedding_module_trainable = question_embedding_module_trainable
         self.entity_dim = entity_dim
         self.knowledge_graph = knowledge_graph
-        self.path = None
         self.relation_dim = relation_dim
         self.ann_index_manager_ent = ann_index_manager_ent
         self.ann_index_manager_rel = ann_index_manager_rel
-        self._num_rollouts = num_rollouts  # Number of trajectories to be used in the environment per question
-        self.steps_in_episode = steps_in_episode
         self.batch_size = batch_size
         
         self.replay_buffer = ReplayBuffer(entity_dim, relation_dim, replay_buffer_memory, batch_size)  
 
-        self.uniIdxDict = uniIdxDict
-
-        # Core States (3/5)
-        self.current_position: Optional[torch.Tensor] = None
-        self.current_step_no: Optional[int] = (
-            self.steps_in_episode
-        )  # This value denotes being at "reset" state. As in, when episode is done
+        # self.start_emb_func = {
+        #     'centroid': self.get_centroid_embedding,
+        #     'random': self.get_random_embedding,
+        #     'relevant': self.get_relevant_embedding
+        # }
 
         assert nav_start_emb_type in ['centroid', 'random', 'relevant'], f"Invalid start_embedding_type: {nav_start_emb_type}"
         self.nav_start_emb_type = nav_start_emb_type
 
-        ########################################
-        # Get the actual torch modules defined
-        # Of most importance is self.path_encoder
-        ########################################
-
-        self.answer_embeddings = None  # This is the embeddings of the answer (batch_size, entity_dim)
-        self.answer_found = None       # This is a flag to denote if the answer has been already been found (batch_size, 1)
-        self.epsilon = epsilon                 # This is the error margin in the distance for finding the answer
-
         # TODO: Perhaps initialize Replay Buffer here with Stuff.   
 
     # TODO: ought only to be used for replenishing the replay buffer (so as to not have distributional shift)
-    def reset(self, initial_state_info: Any) -> RUE_Observation:
+    def reset(self, initial_state_info: None = None) -> RUE_Observation:
+        """
+        Reset the environment
+        Args:
+            - initial_state_info: None for now, not used
+        """
 
-        # TODO: Simply give the poistion. Ah shit 
-        # use something like nav_start_emb_type
+        # For now we are passing noe
+        if self.nav_start_emb_type == 'relevant':
+            raise NotImplementedError("Unsupervised currently has no impolementation support for relevant start embedding type.")
+        init_emb = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, None)
 
-        meep = ReinforcedUnsupervisedEnv.RUE_Observation(torch.tensor([]))
-        return meep
+        return ReinforcedUnsupervisedEnv.RUE_Observation(init_emb.clone())
 
     def step(self, action: RUE_Action) -> RUE_Observation:
         assert isinstance(
             self.current_position, torch.Tensor
         ), f"invalid self.current_position, type: {type(self.current_position)}. Please make sure to run ITLKnowledgeGraph::rest() before running get_observations."
-
-        self.current_step_no += 1
 
         # Make sure action and current position are detached from computation graph
         detached_actions = actions.detach()                 # (batch_size, action_dim) or (batch_size, num_rollouts, action_dim)

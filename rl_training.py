@@ -8,12 +8,14 @@ Experiment Portal.
 """
 
 import argparse
+import ast
 import io
 import json
 import logging
 import os
 import sys
 import time
+import math
 from collections import defaultdict
 from typing import Any, DefaultDict, Dict, List, Optional, Tuple
 
@@ -21,7 +23,10 @@ import debugpy
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from multihopkg.utils.data_structures import DataPartitions
+from multihopkg.utils.ops import ensure_list_of_ints
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from rich import traceback
 
@@ -47,6 +52,7 @@ from multihopkg.logging import setup_logger
 from multihopkg.logs import torch_module_logging
 from multihopkg.models_language.classical import HunchBart, collate_token_ids_batch
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
+from multihopkg.rl.graph_search.sac import CriticQ, CriticV
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment, ReinforcedUnsupervisedEnv
 from multihopkg.rl.utils import ReplayBuffer
 from multihopkg.run_configs import rl_alpha
@@ -336,7 +342,9 @@ def batch_loop(
     # TODO: Come back to this and figure if this is necessary
     pad_mask = answer_ids_padded_tensor.ne(pad_token_id)
 
-    rasie NotImplementedError(f"Have not implemented normal bootstrapped approach. Just deleted rollout")
+    raise NotImplementedError(
+        "Have not implemented normal bootstrapped approach. Just deleted rollout"
+    )
     # log_probs, entropies, llm_rewards, kg_rewards, eval_extras = rollout(
     #     steps_in_episode,
     #     nav_agent,
@@ -469,6 +477,8 @@ def evaluate_training(
             The tokenizer used for processing answers.
         wandb_on (bool):
             If `True`, logs metrics to Weights & Biases (wandb).
+        num_update_steps (int):
+            Maximum number of gradient updates to run across the full training loop.
         iteration (int):
             The current iteration number, used for logging and tracking progress.
         answer_id (List[int], optional):
@@ -636,17 +646,16 @@ def evaluate_training(
 
 
 def train_multihopkg(
+    epochs: int, 
     batch_size: int,
     batch_size_dev: int,
-    epochs: int,
     nav_agent: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
     learning_rate: float,
-    steps_in_episode: int,
     env: ITLGraphEnvironment,
-    start_epoch: int,
-    train_data: pd.DataFrame,
-    test_data: pd.DataFrame,
+    data_partitions: DataPartitions,
+    replay_capacity: int,
+    warmup_transitions: int, 
     dev_df: pd.DataFrame,
     mbatches_b4_eval: int,
     verbose: bool,
@@ -656,6 +665,7 @@ def train_multihopkg(
     track_gradients: bool,
     num_batches_till_eval: int,
     wandb_on: bool,
+    num_update_steps: int,
 ):
     """
     Trains the navigation agent and language model using reinforcement learning (RL) on a knowledge graph environment.
@@ -675,24 +685,18 @@ def train_multihopkg(
             The batch size for training.
         batch_size_dev (int):
             The batch size for the development set.
-        epochs (int):
-            The total number of epochs to train the model.
         nav_agent (ContinuousPolicyGradient):
             The policy network responsible for deciding actions based on the current state.
         hunch_llm (nn.Module):
             A language model used to compute rewards based on how well the agent's state aligns with the expected answers.
         learning_rate (float):
             The learning rate for the optimizer.
-        steps_in_episode (int):
-            The number of steps to execute in each episode.
         env (ITLGraphEnvironment):
             The knowledge graph environment that provides observations, rewards, and state transitions.
         start_epoch (int):
             The epoch to start training from (useful for resuming training).
-        train_data (pd.DataFrame):
-            The training dataset containing questions, answers, relevant entities, and relations.
-        dev_df (pd.DataFrame):
-            The development dataset for periodic evaluation.
+        data_partitions (DataPartitions):
+            The data partitions containing the training, development, and test datasets.
         mbatches_b4_eval (int):
             The number of mini-batches to process before performing evaluation.
         verbose (bool):
@@ -719,6 +723,187 @@ def train_multihopkg(
         - Metrics and visualizations are logged to TensorBoard and optionally to wandb.
         - The function ensures that the environment and models are in training mode during the process.
     """
+    if answer_tokenizer.pad_token_id is None:
+        raise ValueError(
+            "Answer tokenizer must expose a pad token id before replay can be constructed"
+        )
+
+    device = next(nav_agent.parameters()).device
+    state_shape = (nav_agent.hidden1.in_features,)
+    action_shape = (nav_agent.mu_layer.out_features,)
+
+    replay_buffer = ReplayBuffer(
+        state_shape=state_shape,
+        action_shape=action_shape,
+        capacity=replay_capacity,
+        batch_size=batch_size,
+        warmup_size=warmup_transitions,
+        min_update_steps=0,
+    )
+
+    hidden_dim = nav_agent.hidden1.out_features
+    critic_q1 = CriticQ(state_shape[0] + action_shape[0], dim_hidden=hidden_dim).to(device)
+    critic_q2 = CriticQ(state_shape[0] + action_shape[0], dim_hidden=hidden_dim).to(device)
+    value_net = CriticV(in_dim=state_shape[0], dim_hidden=hidden_dim).to(device)
+    target_value_net = CriticV(in_dim=state_shape[0], dim_hidden=hidden_dim).to(device)
+    target_value_net.load_state_dict(value_net.state_dict())
+
+    critic_optimizer = torch.optim.Adam(
+        list(critic_q1.parameters()) + list(critic_q2.parameters()),
+        lr=learning_rate,
+    )
+    value_optimizer = torch.optim.Adam(value_net.parameters(), lr=learning_rate)
+    policy_optimizer = torch.optim.Adam(nav_agent.parameters(), lr=learning_rate)
+
+    log_alpha = torch.tensor(
+        [math.log(0.2)], device=device, dtype=torch.float32, requires_grad=True
+    )
+    alpha_optimizer = torch.optim.Adam([log_alpha], lr=learning_rate)
+    target_entropy = -float(action_shape[0])
+    tau = 0.005
+    gamma = nav_agent.gamma
+
+    def soft_update(source: nn.Module, target: nn.Module, tau: float) -> None:
+        for target_param, param in zip(target.parameters(), source.parameters()):
+            target_param.data.mul_(1.0 - tau)
+            target_param.data.add_(tau * param.data)
+
+    def sac_update_step(batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        nonlocal log_alpha
+
+        states = batch["states"].to(device)
+        actions = batch["actions"].to(device)
+        rewards = batch["rewards"].to(device)
+        next_states = batch["next_states"].to(device)
+        dones = batch["dones"].to(device).float()
+
+        alpha = log_alpha.exp()
+
+        with torch.no_grad():
+            target_values = target_value_net(next_states)
+            q_target = rewards + (1.0 - dones) * gamma * target_values
+
+        q1_pred = critic_q1(states, actions)
+        q2_pred = critic_q2(states, actions)
+        critic_loss = F.mse_loss(q1_pred, q_target) + F.mse_loss(q2_pred, q_target)
+
+        critic_optimizer.zero_grad()
+        critic_loss.backward()
+        critic_optimizer.step()
+
+        policy_actions, log_probs, entropy, _, _ = nav_agent(states)
+        q1_pi = critic_q1(states, policy_actions)
+        q2_pi = critic_q2(states, policy_actions)
+        min_q_pi = torch.min(q1_pi, q2_pi)
+
+        value_target = (min_q_pi - alpha * log_probs.unsqueeze(-1)).detach()
+        value_pred = value_net(states)
+        value_loss = F.mse_loss(value_pred, value_target)
+
+        value_optimizer.zero_grad()
+        value_loss.backward()
+        value_optimizer.step()
+
+        policy_loss = (alpha * log_probs.unsqueeze(-1) - min_q_pi).mean()
+        policy_optimizer.zero_grad()
+        policy_loss.backward()
+        policy_optimizer.step()
+
+        alpha_loss = -(log_alpha * (log_probs.detach() + target_entropy)).mean()
+        alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        alpha_optimizer.step()
+
+        soft_update(value_net, target_value_net, tau)
+
+        return {
+            "critic_loss": critic_loss.item(),
+            "value_loss": value_loss.item(),
+            "policy_loss": policy_loss.item(),
+            "alpha_loss": alpha_loss.item(),
+            "alpha": alpha.item(),
+            "entropy": entropy.mean().item(),
+            "log_prob": log_probs.mean().item(),
+        }
+
+    num_updates_limit = max(1, num_update_steps)
+    total_gradient_updates = 0
+
+    local_time = time.localtime()
+    timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+    writer = SummaryWriter(
+        log_dir=f"runs/mlm/{env.knowledge_graph.model_name.lower()}/{timestamp}/"
+    )
+
+    for epoch_id in tqdm(range(epochs), desc="Epoch"):
+        nav_agent.train()
+        hunch_llm.train()
+        env.train()
+        critic_q1.train()
+        critic_q2.train()
+        value_net.train()
+        target_value_net.eval()
+
+        for offset in tqdm(
+            range(0, len(data_partitions.train), batch_size),
+            desc="Collection",
+            leave=False,
+        ):
+            if total_gradient_updates >= num_updates_limit:
+                break
+            mini_batch = data_partitions.train[offset : offset + batch_size]
+            if mini_batch.empty:
+                continue
+
+            buffer_metrics = populate_replay_buffer(
+                env,
+                nav_agent,
+                hunch_llm,
+                replay_buffer,
+                mini_batch=mini_batch,
+                steps_in_episode=steps_in_episode,
+                pad_token_id=answer_tokenizer.pad_token_id,
+                use_random_actions=(total_gradient_updates == 0),
+            )
+
+            if wandb_on:
+                wandb.log({f"collect/{k}": v for k, v in buffer_metrics.items()})
+            for metric_name, metric_value in buffer_metrics.items():
+                writer.add_scalar(
+                    f"collect/{metric_name}", metric_value, total_gradient_updates
+                )
+
+            while (
+                replay_buffer.is_ready(total_gradient_updates)
+                and total_gradient_updates < num_updates_limit
+            ):
+                sampled_batch = replay_buffer.sample(device)
+                update_metrics = sac_update_step(sampled_batch)
+                if wandb_on:
+                    wandb.log({f"train/{k}": v for k, v in update_metrics.items()})
+                for metric_name, metric_value in update_metrics.items():
+                    writer.add_scalar(
+                        f"train/{metric_name}", metric_value, total_gradient_updates
+                    )
+                total_gradient_updates += 1
+
+                if total_gradient_updates >= num_updates_limit:
+                    break
+
+        logger.info(
+            "Epoch %d completed | replay_size=%d | gradient_updates=%d",
+            epoch_id,
+            len(replay_buffer),
+            total_gradient_updates,
+        )
+
+        if total_gradient_updates >= num_updates_limit:
+            logger.info("Reached gradient update budget; stopping training loop early.")
+            break
+
+    writer.close()
+    return
+
     # TODO: Get the rollout working
 
     # Print Model Parameters + Perhaps some more information
@@ -1038,7 +1223,7 @@ def calculate_llm_reward(
 
 @torch.no_grad()
 def collect_transitions(
-    env: ITLGraphEnvironment,
+    env: ReinforcedUnsupervisedEnv,
     actor: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
     *,
@@ -1059,7 +1244,11 @@ def collect_transitions(
     batch_size = question_embeddings.size(0)
 
     if action_overrides is not None:
-        expected_shape = (steps_in_episode, batch_size) + replay_buffer.action_shape
+        expected_shape = (
+            steps_in_episode,
+            batch_size,
+            actor.mu_layer.out_features,
+        )
         if action_overrides.shape != expected_shape:
             raise ValueError(
                 "action_overrides must have shape "
@@ -1067,10 +1256,7 @@ def collect_transitions(
             )
 
     observation = env.reset(
-        question_embeddings,
-        answer_ent=answer_entity_ids,
-        query_ent=query_entity_ids,
-        warmup=True,
+        question_embeddings
     )
 
     current_state = observation.state
@@ -1210,6 +1396,7 @@ def populate_replay_buffer(
     env: ITLGraphEnvironment,
     actor: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
+    replay_buffer: ReplayBuffer,
     *,
     mini_batch: pd.DataFrame,
     steps_in_episode: int,
@@ -1220,34 +1407,46 @@ def populate_replay_buffer(
 
     device = next(actor.parameters()).device
 
-    if "Answer-Entity" not in mini_batch:
-        raise KeyError("mini_batch must contain the 'Answer-Entity' column")
+    # TODO: Check the typing on this. Ideally I would like to just dump them as a tensor rather than a dataframe. Perhaps a dataclass or smeth
+    question_tokens = [
+        ensure_list_of_ints(seq)
+        for seq in mini_batch["enc_questions"].tolist()
+    ]
+    answer_sequences = [
+        np.array(ensure_list_of_ints(seq), dtype=np.int64)
+        for seq in mini_batch["enc_answer"].tolist()
+    ]
+    path_sequences = [
+        ensure_list_of_ints(path)
+        for path in mini_batch["triples_ints"].tolist()
+    ]
 
-    if env.use_kge_question_embedding:
-        if "Query-Entity" not in mini_batch or "Query-Relation" not in mini_batch:
-            raise KeyError(
-                "KGE question embedding requires 'Query-Entity' and 'Query-Relation' columns"
+    query_entity_ids: List[int] = []
+    query_relation_ids: List[int] = []
+    answer_entity_ids: List[int] = []
+    for path in path_sequences:
+        if len(path) < 3:
+            raise ValueError(
+                "Each path in 'triples_ints' must include at least an entity, relation, and terminal entity"
             )
-        query_entity_ids = mini_batch["Query-Entity"].tolist()
-        query_relation_ids = mini_batch["Query-Relation"].tolist()
+        query_entity_ids.append(int(path[0]))
+        answer_entity_ids.append(int(path[-1]))
+        query_relation_ids.append(int(path[1]))
+
+    # TODO: Remove this if we dont really find it useful
+    if env.use_kge_question_embedding:
+        query_entities_wrapped = [np.array([ent], dtype=np.int64) for ent in query_entity_ids]
+        query_relations_wrapped = [np.array([rel], dtype=np.int64) for rel in query_relation_ids]
         question_embeddings = env.get_kge_question_embedding(
-            query_entity_ids, query_relation_ids, device
+            query_entities_wrapped, query_relations_wrapped, device
         )
     else:
-        if "Question" not in mini_batch:
-            raise KeyError(
-                "LLM question embedding requires the 'Question' column in the mini_batch"
-            )
-        questions = mini_batch["Question"].tolist()
-        question_embeddings = env.get_llm_embeddings(questions, device)
-        query_entity_ids = mini_batch["Query-Entity"].tolist()
+        question_embeddings = env.get_llm_embeddings(question_tokens, device)
 
-    answers_raw = mini_batch["Answer"].tolist()
-    answer_token_ids = collate_token_ids_batch(answers_raw, pad_token_id).to(torch.int64)
+    answer_token_ids = collate_token_ids_batch(answer_sequences, pad_token_id).to(torch.int64)
     answer_token_ids = answer_token_ids.to(device)
     answer_pad_mask = answer_token_ids.ne(pad_token_id)
 
-    answer_entity_ids = mini_batch["Answer-Entity"].tolist()
 
     batch_size = question_embeddings.size(0)
 
@@ -1415,6 +1614,10 @@ def main():
         force_recompute=args.force_data_prepro,
         supervised=False,
     )
+    data_partitions = DataPartitions(
+        train_df, dev_df, test_df
+    )
+
     if not isinstance(dev_df, pd.DataFrame) or not isinstance(train_df, pd.DataFrame):
         raise RuntimeError(
             "The data was not loaded properly. Please check the data loading code."
@@ -1540,17 +1743,17 @@ def main():
         args.verbose = True
 
     train_multihopkg(
+        epochs=args.epochs,
         batch_size=args.batch_size,
         batch_size_dev=args.batch_size_dev,
         epochs=args.epochs,
         nav_agent=nav_agent,
         hunch_llm=hunch_llm,
         learning_rate=args.learning_rate,
-        steps_in_episode=args.num_rollout_steps,
         env=env,
-        start_epoch=args.start_epoch,
-        train_data=train_df,
-        test_data=test_df,
+        data_partitions=data_partitions,
+        replay_capacity=args.replay_capacity,
+        warmup_transitions=args.replay_min_usable_size,
         dev_df=dev_df,
         mbatches_b4_eval=args.batches_b4_eval,
         verbose=args.verbose,
@@ -1560,6 +1763,7 @@ def main():
         track_gradients=args.track_gradients,
         num_batches_till_eval=args.num_batches_till_eval,
         wandb_on=args.wandb,
+        num_update_steps=args.num_update_steps,
     )
     logger.info("Done with everything. Exiting...")
 
