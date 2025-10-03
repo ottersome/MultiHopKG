@@ -43,8 +43,7 @@ def get_args() -> argparse.Namespace:
     # Training Duration & Rollout
     ap.add_argument('--epochs',type=int,default=200, help='Total number of training epochs (default: 200)')
     ap.add_argument('--start_epoch', type=int, default=0, help='Epoch to start training instead of just observing (default: 0)') # TODO: Implement this.
-    ap.add_argument('--num_rollouts', type=int, default=5, help='Number simultaneous trajectories to sample from during training for each sample question (default: 1)')
-    ap.add_argument('--num_rollout_steps', type=int, default=8, help='Maximum number of steps per questions (default: 8)')
+    ap.add_argument('--num_update_steps', type=int, default=10000, help='Amount of graident updates to run in this training.')
 
     # Batch Settings
     ap.add_argument('--batch_size', type=int, default=256, help='Training mini-batch size (default: 256)')
