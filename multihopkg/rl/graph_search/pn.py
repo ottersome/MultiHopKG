@@ -449,19 +449,13 @@ class ReinforcedUnsupervisedEnv(Environment):
         relation_dim: int,
         knowledge_graph: KGEModel,
         nav_start_emb_type: str,
-        ann_index_manager_ent: ANN_IndexMan,
-        ann_index_manager_rel: ANN_IndexMan,
         replay_buffer_memory: int, 
         batch_size: int, 
-        num_rollouts: int = 0, # Number of trajectories to be used in the environment per question, 0 means 1 trajectory
-        epsilon: float = 0.1, # For error margin in the distance, TODO: Must find a better value
     ):
         super(ReinforcedUnsupervisedEnv, self).__init__() # Should be injected via information extracted from Knowledge Grap self.action_dim = relation_dim  # TODO: Ensure this is a solid default self.question_embedding_module_trainable = question_embedding_module_trainable
         self.entity_dim = entity_dim
         self.knowledge_graph = knowledge_graph
         self.relation_dim = relation_dim
-        self.ann_index_manager_ent = ann_index_manager_ent
-        self.ann_index_manager_rel = ann_index_manager_rel
         self.batch_size = batch_size
         
         self.replay_buffer = ReplayBuffer(entity_dim, relation_dim, replay_buffer_memory, batch_size)  
@@ -498,8 +492,8 @@ class ReinforcedUnsupervisedEnv(Environment):
         ), f"invalid self.current_position, type: {type(self.current_position)}. Please make sure to run ITLKnowledgeGraph::rest() before running get_observations."
 
         # Make sure action and current position are detached from computation graph
-        detached_actions = actions.detach()                 # (batch_size, action_dim) or (batch_size, num_rollouts, action_dim)
-        detached_curpos = self.current_position.detach()    # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
+        detached_actions = actions.detach()                 
+        detached_curpos = self.current_position.detach()   
 
         assert isinstance(
             self.current_questions_emb, torch.Tensor
@@ -510,20 +504,20 @@ class ReinforcedUnsupervisedEnv(Environment):
         ########################################
 
         # ! Restraining the movement to the neighborhood
-        prev_position = self.current_position.clone() # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
+        prev_position = self.current_position.clone() 
 
         self.current_position = self.knowledge_graph.flexible_forward(
             self.current_position, actions, 
-        ) # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
+        )
 
         # TODO: We need to create a softer answer reward here
         # No gradients are calculated here
         with torch.no_grad():
-            diff = self.knowledge_graph.absolute_difference(self.answer_embeddings, self.current_position) # (batch_size, entity_dim) or (batch_size, num_rollouts, entity_dim)
+            diff = self.knowledge_graph.absolute_difference(self.answer_embeddings, self.current_position) 
             
-            found_ans = torch.norm(diff, dim=-1, keepdim=True) < self.epsilon   # (batch_size, 1) or (batch_size, num_rollouts, 1))
-            self.answer_found = torch.logical_or(self.answer_found, found_ans)  # (batch_size, 1) or (batch_size, num_rollouts, 1)
-            extrinsic_reward = found_ans.float()                                # (batch_size, 1) or (batch_size, num_rollouts, 1)
+            found_ans = torch.norm(diff, dim=-1, keepdim=True) < self.epsilon  
+            self.answer_found = torch.logical_or(self.answer_found, found_ans)
+            extrinsic_reward = found_ans.float()
 
 
         ########################################
@@ -532,7 +526,7 @@ class ReinforcedUnsupervisedEnv(Environment):
         # ! Inspecting projections (gradients variance is too high from the start)
         projected_state = torch.cat(
             [self.q_projected, self.current_position], dim=-1 # query,
-        ) # (batch_size, emb_dim + entity_dim) or (batch_size, num_rollouts, emb_dim + entity_dim)
+        )
 
         # Corresponding indices is a list of indices of the matched embeddings (batch_size, topk=1)
         observation = Observation(

@@ -831,9 +831,6 @@ def train_multihopkg(
 
     local_time = time.localtime()
     timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
-    writer = SummaryWriter(
-        log_dir=f"runs/mlm/{env.knowledge_graph.model_name.lower()}/{timestamp}/"
-    )
 
     for epoch_id in tqdm(range(epochs), desc="Epoch"):
         nav_agent.train()
@@ -1232,20 +1229,15 @@ def collect_transitions(
     answer_pad_mask: torch.Tensor,
     answer_entity_ids: List[int],
     query_entity_ids: List[int],
-    steps_in_episode: int,
     action_overrides: Optional[torch.Tensor] = None,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, float]]:
     """Collect transitions for one batch without mutating external state."""
-
-    if steps_in_episode <= 0:
-        raise ValueError("steps_in_episode must be positive")
 
     device = question_embeddings.device
     batch_size = question_embeddings.size(0)
 
     if action_overrides is not None:
         expected_shape = (
-            steps_in_episode,
             batch_size,
             actor.mu_layer.out_features,
         )
@@ -1263,7 +1255,6 @@ def collect_transitions(
     state_shape = current_state.shape[1:]
     action_shape: Tuple[int, ...] = tuple()
     states_so_far: List[torch.Tensor] = []
-    active_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
 
     metrics: DefaultDict[str, List[float]] = defaultdict(list)
 
@@ -1278,78 +1269,67 @@ def collect_transitions(
     extra_entropy: List[torch.Tensor] = []
     extra_logprob: List[torch.Tensor] = []
 
-    for step_idx in range(steps_in_episode):
-        prev_state = current_state
+    if action_overrides is None:
+        actions, log_prob, entropy, _, _ = actor(current_state)
+    else:
+        actions = action_overrides[step_idx].to(device)
+        log_prob = None
+        entropy = None
 
-        if not active_mask.any():
-            break
+    if actions.dim() == 1:
+        action_shape = tuple()
+    else:
+        action_shape = actions.shape[1:]
 
-        if action_overrides is None:
-            actions, log_prob, entropy, _, _ = actor(prev_state)
-        else:
-            actions = action_overrides[step_idx].to(device)
-            log_prob = None
-            entropy = None
-        if actions.dim() == 1:
-            action_shape = tuple()
-        else:
-            action_shape = actions.shape[1:]
+    next_observation, extrinsic_reward, done_flags = env.step(actions)
+    current_state = next_observation.state
 
-        inactive_mask = ~active_mask
-        if inactive_mask.any():
-            # Ensure completed trajectories do not influence the environment anymore
-            actions = actions.clone()
-            actions[inactive_mask] = 0.0
+    states_so_far.append(current_state)
+    stacked_states = torch.stack(states_so_far).permute(1, 0, 2)
+    llm_reward, _ = calculate_llm_reward(
+        hunch_llm,
+        stacked_states,
+        answer_token_ids,
+    )
 
-        next_observation, extrinsic_reward, done_flags = env.step(actions)
-        current_state = next_observation.state
+    token_mask = answer_pad_mask[:, 1:].to(llm_reward.device)
+    token_counts = token_mask.sum(dim=1).clamp(min=1)
+    llm_scalar_reward = (llm_reward * token_mask).sum(dim=1) / token_counts
 
-        states_so_far.append(current_state)
-        stacked_states = torch.stack(states_so_far).permute(1, 0, 2)
-        llm_reward, _ = calculate_llm_reward(
-            hunch_llm,
-            stacked_states,
-            answer_token_ids,
-        )
+    extrinsic_scalar = extrinsic_reward.squeeze(-1)
+    total_reward = extrinsic_scalar + llm_scalar_reward
 
-        token_mask = answer_pad_mask[:, 1:].to(llm_reward.device)
-        token_counts = token_mask.sum(dim=1).clamp(min=1)
-        llm_scalar_reward = (llm_reward * token_mask).sum(dim=1) / token_counts
+    active_prev_state = prev_state[active_mask].detach()
+    active_actions = actions[active_mask].detach()
+    active_rewards = total_reward[active_mask].unsqueeze(-1).detach()
+    active_next_states = current_state[active_mask].detach()
+    active_done = done_flags[active_mask].detach()
 
-        extrinsic_scalar = extrinsic_reward.squeeze(-1)
-        total_reward = extrinsic_scalar + llm_scalar_reward
+    if active_prev_state.numel() == 0:
+        break
 
-        active_prev_state = prev_state[active_mask].detach()
-        active_actions = actions[active_mask].detach()
-        active_rewards = total_reward[active_mask].unsqueeze(-1).detach()
-        active_next_states = current_state[active_mask].detach()
-        active_done = done_flags[active_mask].detach()
+    stored_states.append(active_prev_state)
+    stored_actions.append(active_actions)
+    stored_rewards.append(active_rewards)
+    stored_next_states.append(active_next_states)
+    stored_dones.append(active_done)
 
-        if active_prev_state.numel() == 0:
-            break
+    extra_rewards_env.append(extrinsic_reward[active_mask].detach())
+    extra_rewards_llm.append(llm_scalar_reward[active_mask].unsqueeze(-1).detach())
 
-        stored_states.append(active_prev_state)
-        stored_actions.append(active_actions)
-        stored_rewards.append(active_rewards)
-        stored_next_states.append(active_next_states)
-        stored_dones.append(active_done)
+    metrics["reward/env_mean"].append(extrinsic_scalar[active_mask].mean().item())
+    metrics["reward/llm_mean"].append(llm_scalar_reward[active_mask].mean().item())
+    metrics["reward/total_mean"].append(total_reward[active_mask].mean().item())
+    metrics["done_ratio"].append(done_flags[active_mask].float().mean().item())
 
-        extra_rewards_env.append(extrinsic_reward[active_mask].detach())
-        extra_rewards_llm.append(llm_scalar_reward[active_mask].unsqueeze(-1).detach())
+    if entropy is not None:
+        extra_entropy.append(entropy[active_mask].unsqueeze(-1).detach())
+        metrics["policy/entropy_mean"].append(entropy[active_mask].mean().item())
+    if log_prob is not None:
+        extra_logprob.append(log_prob[active_mask].unsqueeze(-1).detach())
+        metrics["policy/logprob_mean"].append(log_prob[active_mask].mean().item())
 
-        metrics["reward/env_mean"].append(extrinsic_scalar[active_mask].mean().item())
-        metrics["reward/llm_mean"].append(llm_scalar_reward[active_mask].mean().item())
-        metrics["reward/total_mean"].append(total_reward[active_mask].mean().item())
-        metrics["done_ratio"].append(done_flags[active_mask].float().mean().item())
-
-        if entropy is not None:
-            extra_entropy.append(entropy[active_mask].unsqueeze(-1).detach())
-            metrics["policy/entropy_mean"].append(entropy[active_mask].mean().item())
-        if log_prob is not None:
-            extra_logprob.append(log_prob[active_mask].unsqueeze(-1).detach())
-            metrics["policy/logprob_mean"].append(log_prob[active_mask].mean().item())
-
-        active_mask = active_mask & (~done_flags.squeeze(-1))
+    active_mask = active_mask & (~done_flags.squeeze(-1))
 
     if not stored_states:
         empty = {
@@ -1399,7 +1379,6 @@ def populate_replay_buffer(
     replay_buffer: ReplayBuffer,
     *,
     mini_batch: pd.DataFrame,
-    steps_in_episode: int,
     pad_token_id: int,
     use_random_actions: bool = False,
 ) -> Dict[str, float]:
@@ -1453,7 +1432,6 @@ def populate_replay_buffer(
     if use_random_actions:
         action_dim = actor.mu_layer.out_features
         random_actions = torch.empty(
-            steps_in_episode,
             batch_size,
             action_dim,
             device=device,
@@ -1471,7 +1449,6 @@ def populate_replay_buffer(
         answer_pad_mask=answer_pad_mask,
         answer_entity_ids=answer_entity_ids,
         query_entity_ids=query_entity_ids,
-        steps_in_episode=steps_in_episode,
         action_overrides=action_overrides,
     )
 
@@ -1680,30 +1657,13 @@ def main():
     # Setting up the models
     logger.info(":: Setting up the environment")
     env = ReinforcedUnsupervisedEnv(
-        question_embedding_module=question_embedding_module,
-        question_embedding_module_trainable=(not args.frozen_llm_weights),
         entity_dim=dim_entity,
-        history_dim=args.history_dim,
-        history_num_layers=args.history_num_layers,
-        knowledge_graph=kge_model,
         relation_dim=dim_relation,
-        node_data=None,
-        node_data_key=None,
-        rel_data=None,
-        rel_data_key=None,
-        id2entity=id2ent,
-        entity2id=ent2id,
-        id2relation=id2rel,
-        relation2id=rel2id,
-        ann_index_manager_ent=ann_index_manager_ent,
-        ann_index_manager_rel=ann_index_manager_rel,
-        steps_in_episode=args.num_rollout_steps,
-        trained_pca=None,
-        graph_pca=None,
-        graph_annotation=None,
+        knowledge_graph=kge_model,
         nav_start_emb_type=args.nav_start_emb_type,
-        epsilon=args.nav_epsilon_error,
-    ).to(args.device)
+        replay_buffer_memory=args.replay_buffer_memory,
+        batch_size=args.batch_size,
+    )
 
     # Now we load this from the embedding models
 
