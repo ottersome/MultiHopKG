@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import torch
 
 
-class ReplayBuffer:
+class QuestionReplayBuffer:
     """Torch-based replay buffer tailored for SAC-style training."""
 
     def __init__(
