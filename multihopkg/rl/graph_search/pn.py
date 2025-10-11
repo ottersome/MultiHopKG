@@ -11,19 +11,19 @@ from dataclasses import dataclass
 import numpy as np
 import pandas
 
-from multihopkg.rl.graph_search.sac import ReplayBuffer
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
+from multihopkg.rl.utils import QuestionReplayBuffer
 from multihopkg.utils.convenience import sample_random_entity
 from multihopkg.utils.data_structures import UniversalIdxDictionary
 import multihopkg.utils.ops as ops
 from multihopkg.utils.ops import var_cuda, zeros_var_cuda
 from multihopkg.vector_search import ANN_IndexMan
-from multihopkg.environments import Environment, Observation
-from typing import Any, Tuple, List, Dict, Optional
+from multihopkg.environments import Environment, Observation, OffPolicyEnvironment
+from typing import Any, Tuple, List, Dict, Optional, Union
 import pdb
 
 import sys
@@ -434,31 +434,30 @@ class ITLGraphEnvironment(Environment, nn.Module):
         return action_space
 
 # Back to basics, to proper unsupervised
-class ReinforcedUnsupervisedEnv(Environment):
+class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
 
     @dataclass
     class RUE_Action:
-        pass
+        action: torch.Tensor
     @dataclass
     class RUE_Observation:
         state:  torch.Tensor
+        answer_id: torch.Tensor # Mostly to guide the training, almost debugging
 
     def __init__(
         self,
-        entity_dim: int,
-        relation_dim: int,
+        question_embedding_module: nn.Module,
         knowledge_graph: KGEModel,
         nav_start_emb_type: str,
-        replay_buffer_memory: int, 
-        batch_size: int, 
+        reached_destination_threshold: float,
+        replay_buffer: QuestionReplayBuffer
     ):
         super(ReinforcedUnsupervisedEnv, self).__init__() # Should be injected via information extracted from Knowledge Grap self.action_dim = relation_dim  # TODO: Ensure this is a solid default self.question_embedding_module_trainable = question_embedding_module_trainable
-        self.entity_dim = entity_dim
+        self.question_embedding_module = question_embedding_module
         self.knowledge_graph = knowledge_graph
-        self.relation_dim = relation_dim
-        self.batch_size = batch_size
+        self.reached_destination_threshold = reached_destination_threshold
         
-        self.replay_buffer = ReplayBuffer(entity_dim, relation_dim, replay_buffer_memory, batch_size)  
+        self.replay_buffer = replay_buffer
 
         # self.start_emb_func = {
         #     'centroid': self.get_centroid_embedding,
@@ -466,13 +465,12 @@ class ReinforcedUnsupervisedEnv(Environment):
         #     'relevant': self.get_relevant_embedding
         # }
 
+        print(f"nav_start_emb_type is {nav_start_emb_type}")
         assert nav_start_emb_type in ['centroid', 'random', 'relevant'], f"Invalid start_embedding_type: {nav_start_emb_type}"
         self.nav_start_emb_type = nav_start_emb_type
 
-        # TODO: Perhaps initialize Replay Buffer here with Stuff.   
-
     # TODO: ought only to be used for replenishing the replay buffer (so as to not have distributional shift)
-    def reset(self, initial_state_info: None = None) -> RUE_Observation:
+    def reset(self, initial_state_info: Optional[Any] = None) -> torch.Tensor:
         """
         Reset the environment
         Args:
@@ -484,62 +482,74 @@ class ReinforcedUnsupervisedEnv(Environment):
             raise NotImplementedError("Unsupervised currently has no impolementation support for relevant start embedding type.")
         init_emb = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, None)
 
-        return ReinforcedUnsupervisedEnv.RUE_Observation(init_emb.clone())
 
-    def step(self, action: RUE_Action) -> RUE_Observation:
-        assert isinstance(
-            self.current_position, torch.Tensor
-        ), f"invalid self.current_position, type: {type(self.current_position)}. Please make sure to run ITLKnowledgeGraph::rest() before running get_observations."
+        return init_emb.clone()
 
-        # Make sure action and current position are detached from computation graph
-        detached_actions = actions.detach()                 
-        detached_curpos = self.current_position.detach()   
-
-        assert isinstance(
-            self.current_questions_emb, torch.Tensor
-        ), f"self.current_questions_emb (type: {type(self.current_questions_emb)}) must be set via `reset` before calling this."
-
+    def step(self, cur_state: RUE_Observation, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ########################################
         # ANN mostly for debugging for now
         ########################################
-
         # ! Restraining the movement to the neighborhood
-        prev_position = self.current_position.clone() 
 
-        self.current_position = self.knowledge_graph.flexible_forward(
-            self.current_position, actions, 
+        current_position = self.knowledge_graph.flexible_forward(
+            cur_state.state, action
         )
 
         # TODO: We need to create a softer answer reward here
         # No gradients are calculated here
         with torch.no_grad():
-            diff = self.knowledge_graph.absolute_difference(self.answer_embeddings, self.current_position) 
+            answer_embeddings = get_embeddings_from_indices(self.knowledge_graph.entity_embeddings, cur_state.answer_id)
+            diff = self.knowledge_graph.absolute_difference(answer_embeddings, current_position) 
             
-            found_ans = torch.norm(diff, dim=-1, keepdim=True) < self.epsilon  
-            self.answer_found = torch.logical_or(self.answer_found, found_ans)
-            extrinsic_reward = found_ans.float()
+            answer_found = torch.norm(diff, dim=-1, keepdim=True) < self.reached_destination_threshold
+            assert isinstance(answer_found, torch.Tensor)
+            extrinsic_reward = answer_found.float()
 
 
         ########################################
         # Projections
         ########################################
         # ! Inspecting projections (gradients variance is too high from the start)
-        projected_state = torch.cat(
-            [self.q_projected, self.current_position], dim=-1 # query,
-        )
+        # projected_state = torch.cat(
+        #     [self.q_projected, self.current_position], dim=-1 # query,
+        # )
 
         # Corresponding indices is a list of indices of the matched embeddings (batch_size, topk=1)
-        observation = Observation(
-            state=projected_state,
-            kge_cur_pos=self.current_position, #.detach(), # TODO: Check if we need to detach this for reward calculation
-            kge_prev_pos=detached_curpos,
-            kge_action=detached_actions,
-        )
+        # observation = Observation(
+        #     state=current_position,
+        #     kge_cur_pos=current_position, #.detach(), # TODO: Check if we need to detach this for reward calculation
+        #     kge_prev_pos=detached_curpos,
+        #     kge_action=detached_actions,
+        # )
         
-        return observation, extrinsic_reward, self.answer_found
+        return current_position, extrinsic_reward, answer_found
 
-        meep = ReinforcedUnsupervisedEnv.RUE_Observation(torch.tensor([]))
-        return meep
+    def get_llm_embeddings(self, questions: Union[List[np.ndarray], List[List[int]]], device: torch.device) -> torch.Tensor:
+        """
+        Will take a list of list of token ids, pad them and then pass them to the embedding module to get single embeddings for each question
+        Args:
+            - questions (List[List[int]]): The tensor denoting the questions for this batch.
+        Return:
+            - questions_embeddings (torch.Tensor): The embeddings of the questions.
+        """
+        # Format the input for the legacy funciton inside
+        tensorized_questions = [
+            torch.tensor(q).to(torch.int32).to(device).view(1, -1) for q in questions
+        ]
+        # We should conver them to embeddinggs before sending them over
+
+        padding_value = self.question_embedding_module.config.pad_token_id # type:ignore
+        assert padding_value is not None
+        padded_tokens, attention_mask = ops.pad_and_cat(
+            tensorized_questions, padding_value=padding_value, padding_dim=1
+        )
+        attention_mask = attention_mask.to(device)
+        embedding_output = self.question_embedding_module(input_ids=padded_tokens, attention_mask=attention_mask)
+        last_hidden_state = embedding_output.last_hidden_state
+        # TODO: Figure out if we want to grab a single one of the embeddings or just aggregaate them through mean.
+        final_embedding = last_hidden_state.mean(dim=1)
+
+        return final_embedding
 
 
 # Eduin's code, not sure if it works

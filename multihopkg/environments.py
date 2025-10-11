@@ -15,6 +15,7 @@ class Observation:
     kge_prev_pos: torch.Tensor # KG embedding vector of the previous position
     kge_action: torch.Tensor # KG embedding vector of the action
 
+# TODO: Relabel this as `OnPolicyEnvironment` in the entire project. It is not compatible with `off-policy`
 class Environment(ABC):
 
     @abstractmethod
@@ -31,6 +32,30 @@ class Environment(ABC):
 
     @abstractmethod
     def step(self, action: Any) -> Any:
+        """
+        Args:
+            - action (torch.Tensor): The action to take
+        Returns:
+            - Observation (Any): The observation that comes from taking such action
+        """
+        pass
+
+
+class OffPolicyEnvironment(ABC):
+
+    @abstractmethod
+    def reset(self, initial_state_info: Any) -> Any:
+        """
+        Args:
+        Returns:
+            - position (torch.Tensor): Position in the graph
+            - state (torch.Tensor): State containing informatioon for decision making.
+        Both are meant to denote high abstraction so think about how to fit you are idea to them.
+        """
+        pass
+
+    @abstractmethod
+    def step(self, cur_state: Any, action: Any) -> Any:
         """
         Args:
             - action (torch.Tensor): The action to take

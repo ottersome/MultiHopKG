@@ -10,7 +10,7 @@ import shutil
 
 import logging
 from collections.abc import Mapping
-from typing import Any, Iterator, Union, List, Dict, Set
+from typing import Any, Iterator, Optional, Union, List, Dict, Set
 
 import numpy as np
 
@@ -1466,7 +1466,7 @@ class KGEModel(nn.Module):
         return self.relation_embedding
 
     # TODO: Delete this superfluous function
-    def get_starting_embedding(self, startType: str = 'centroid', ent_id: torch.Tensor = None)   -> torch.Tensor:
+    def get_starting_embedding(self, startType: str = 'centroid', ent_id: Optional[torch.Tensor] = None)   -> torch.Tensor:
         """
         Returns the starting point for the navigation.
             
