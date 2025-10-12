@@ -959,6 +959,24 @@ def shift_through_cache_data(lookup_path: str, filename_regex: re.Pattern[str]) 
     files.sort(key=lambda x: os.path.getctime(os.path.join(lookup_path, x)))
     return os.path.join(lookup_path, files[-1])
 
+def load_cached_pretraining_data(metadata_cache_path: str):
+    # Read the first line of the raw csv to count the number of columns
+    train_metadata = json.load(open(metadata_cache_path))
+    saved_paths: Dict[str, str] = train_metadata["saved_paths"]
+
+    train_df = pd.read_parquet(saved_paths["train"])
+    # TODO: Eventually use this to avoid data leakage
+    dev_df = pd.read_parquet(saved_paths["dev"])
+    test_df = pd.read_parquet(saved_paths["test"])
+
+    # At this point the parquet will import numpy arrays but the rest of our algorithm does not expect that 
+    # so we need to convert them to lists
+    train_df = train_df.map(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
+    dev_df = dev_df.map(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
+    test_df = test_df.map(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
+
+    return train_df, dev_df, test_df
+
 def load_qa_data(
     cached_metadata_path: str,
     raw_QAData_path,
@@ -975,44 +993,13 @@ def load_qa_data(
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
 
     # Set the name of our specific config suffix  for the cache
-    time_stamp = time.strftime("%m%d%Y_%H%M%S", time.localtime())
-    metadata_config_suffix = "_quesToken-{}_ansToken-{}_date-{}"
-    metadata_config_suffix_w_json = metadata_config_suffix + ".json"
-
-    final_config_name_pttrn = os.path.basename(cached_metadata_path).replace(".json", metadata_config_suffix_w_json)
-    final_config_name_regex = final_config_name_pttrn.format(".+", ".+", "\\d+_\\d+")
-    final_config_name = final_config_name_pttrn.format(question_tokenizer_name, answer_tokenizer_name, time_stamp)
-
     print(f"path looks like {os.path.dirname(cached_metadata_path)}")
-    print(f"final_config_name_regex: {final_config_name_regex}")
-    compiled_regex = re.compile(final_config_name_regex)
-    found_cache = shift_through_cache_data(lookup_path=os.path.dirname(cached_metadata_path), filename_regex=compiled_regex)
-    print(f"found_cache: {found_cache}")
-    if (found_cache is not None) and (not force_recompute):
-        computed_time = os.path.getctime(found_cache)
-        logger.info(
-            f"\033[93m Found latest cache for the QA data {found_cache}, computed on {computed_time}, will load it instead of working on {raw_QAData_path}. \033[0m"
-        )
-        # Read the first line of the raw csv to count the number of columns
-        train_metadata = json.load(open(found_cache))
-        saved_paths: Dict[str, str] = train_metadata["saved_paths"]
-
-        train_df = pd.read_parquet(saved_paths["train"])
-        # TODO: Eventually use this to avoid data leakage
-        dev_df = pd.read_parquet(saved_paths["dev"])
-        test_df = pd.read_parquet(saved_paths["test"])
-
-        # At this opint the parquet will import numpy arrays but the rest of our algorithm does not expect that 
-        # so we need to convert them to lists
-        train_df = train_df.map(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
-        dev_df = dev_df.map(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
-        test_df = test_df.map(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
-
-
-        # Ensure that we are not reading them integers as strings, but also not as floats
-        logger.info(
-            f"Loaded cached data from \033[93m\033[4m{json.dumps(cached_metadata_path,indent=4)} \033[0m"
-        )
+    # compiled_regex = re.compile(final_config_name_regex)
+    # latest_cache = shift_through_cache_data(lookup_path=os.path.dirname(cached_metadata_path), filename_regex=compiled_regex)
+    cache_exists = os.path.exists(cached_metadata_path)
+    if (cache_exists is not None) and (not force_recompute):
+        train_df, dev_df, test_df = load_cached_pretraining_data(cached_metadata_path)
+        train_metadata = json.load(open(os.path.join(cached_metadata_path)))
     else:
         ########################################
         # Actually compute the data.
@@ -1040,7 +1027,7 @@ def load_qa_data(
             df_split, train_metadata = ( # Includes shuffling
                 process_and_cache_unsuprvised_triviaqa_data(  # TOREM: Same here, might want to remove if not really used
                     raw_QAData_path,
-                    final_config_name,
+                    cached_metadata_path,
                     question_tokenizer,
                     answer_tokenzier,
                     entity2id,
