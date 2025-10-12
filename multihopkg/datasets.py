@@ -12,6 +12,7 @@ import numpy as np
 from collections import defaultdict
 from torch.utils.data import Dataset
 from transformers.models.bart import BartTokenizer
+from transformers.models.bert import BertModel, BertTokenizer
 
 from multihopkg.utils.data_structures import DataPartitions
 
@@ -473,6 +474,7 @@ class GraphEmbeddingDataset(Dataset):
             self.separator_token_id,
         )
         self.path = dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[2]].tolist()
+        self.bert_embed_answers = dataset.iloc[:, 3:].values.tolist()
         # Embeddings
         self.id2ent = id2ent
         self.id2rel = id2rel
@@ -500,7 +502,7 @@ class GraphEmbeddingDataset(Dataset):
     def __len__(self):
         return len(self.dataset)
 
-    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # All of these are ids
         qna_tokens = torch.tensor(self.ques_n_ans[idx], dtype=torch.long)
         ans_masks = torch.tensor(self.answer_masks[idx], dtype=torch.long)
@@ -518,6 +520,9 @@ class GraphEmbeddingDataset(Dataset):
         path_embedding[0::2] = entities_emb
         path_embedding[1::2] = relations_emb
 
+        # Bert answers
+        bert_embed_answers = torch.tensor(self.bert_embed_answers[idx])
+
         # Dump the question and answer througth the normal embedding
 
-        return qna_tokens.to(self.device), ans_masks.to(self.device), path_embedding.to(self.device)
+        return qna_tokens.to(self.device), ans_masks.to(self.device), path_embedding.to(self.device), bert_embed_answers.to(self.device)

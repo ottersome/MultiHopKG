@@ -4,16 +4,17 @@ import pandas as pd
 
 class DataPartitions:
 
-    ASSUMED_COLUMNS = ["enc_questions", "enc_answer", "triples_ints"]
+    ASSUMED_COLUMNS = ["enc_questions", "enc_answer", "triples_ints", "bert_ans_emb"]
     def __init__(self, train: pd.DataFrame, validation: pd.DataFrame, test: pd.DataFrame):
 
         # Ensure integrity of dataset
-        for ac in self.ASSUMED_COLUMNS:
+        for ac in self.ASSUMED_COLUMNS[:-1]:
             for ds in [train,validation, test]:
                 if ac not in ds.columns:
                     error_str = f"Expected column '{ac}' to be found in the dataset."\
                         f"But instead we get columns {ds.columns}"
                     raise ValueError(error_str)
+        # TODO: Check for BERT columns. I assume we would have to pass the amount of features expected as a constructor parameter.
 
         self._train = train
         self._validation = validation

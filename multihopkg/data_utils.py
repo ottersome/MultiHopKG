@@ -23,9 +23,12 @@ import logging
 import numpy as np
 import pandas as pd
 from rich import traceback
+import torch
 from torch.nn import Embedding as nn_Embedding
+from torch.nn.utils.rnn import pad_sequence
 from transformers import PreTrainedTokenizer, AutoTokenizer
 from sklearn.model_selection import train_test_split
+from transformers.modeling_utils import PreTrainedModel
 
 from multihopkg.utils.data_structures import Triplet_Str, DataPartitions
 from multihopkg.utils.setup import get_git_root
@@ -655,6 +658,8 @@ def process_and_cache_unsuprvised_triviaqa_data(
     answer_tokenizer: PreTrainedTokenizer,
     entity2id: Dict[str, int],
     relation2id: Dict[str, int],
+    bert_tokenizer: PreTrainedTokenizer,
+    bert_model: PreTrainedModel,
     override_split: bool = True,
 ) -> Tuple[DFSplit, Dict] :
     """
@@ -707,6 +712,20 @@ def process_and_cache_unsuprvised_triviaqa_data(
     dir_name = os.path.dirname(cached_toked_qatriples_metadata_path)
     os.makedirs(dir_name, exist_ok=True)
 
+    ## Prepare Bert tokens
+    bert_tokd_answers =  [torch.Tensor(bert_tokenizer.encode(x, add_special_tokens=False)) for x in answers]
+    # Pad it
+    bert_tokd_answers = pad_sequence(
+        bert_tokd_answers, batch_first=True, padding_value=bert_tokenizer.pad_token_id
+    )
+    device = next(bert_model.parameters()).device
+    bert_tokd_answers = torch.Tensor(bert_tokd_answers).to(torch.long).to(device)
+    attention_mask = (bert_tokd_answers != bert_tokenizer.pad_token_id).to(device)
+
+    with torch.no_grad():
+        bert_embed_answers = bert_model(bert_tokd_answers, attention_mask=attention_mask).pooler_output
+    pandas_bert_pooled_answers = pd.DataFrame(bert_embed_answers.detach().cpu().numpy())
+
     ## Prepare the language data (do encoding)
     questions = questions.map(lambda x: question_tokenizer.encode(x, add_special_tokens=True)) # type: ignore
     answers = answers.map(lambda x: answer_tokenizer.encode(x, add_special_tokens=False))
@@ -725,10 +744,9 @@ def process_and_cache_unsuprvised_triviaqa_data(
     cached_split_locations = {key : val.replace(repo_root + "/", "") for key,val in cached_split_locations.items()}
 
     # Start amalgamating the data into its final form
-    # TODO: test set
-    new_df = pd.concat([questions, answers, paths_int_idxs], axis=1)
+    new_df = pd.concat([questions, answers, paths_int_idxs, pandas_bert_pooled_answers], axis=1)
     new_df = new_df.sample(frac=1).reset_index(drop=True) # Shuffle before splitting by label
-    new_df.columns = DataPartitions.ASSUMED_COLUMNS
+    new_df.columns = DataPartitions.ASSUMED_COLUMNS[:-1] + [DataPartitions.ASSUMED_COLUMNS[-1] + f"_feat{feat_num}" for feat_num in range(pandas_bert_pooled_answers.shape[1])]
 
     # Check if splitLabel column has meaningful values to guide the split
     prespecified_splits_avail = all([ # Kinda hacky but less messy.
@@ -949,6 +967,8 @@ def load_qa_data(
     entity2id: Dict[str, int],
     relation2id: Dict[str, int], 
     logger: logging.Logger,
+    bert_tokenizer: PreTrainedTokenizer,
+    bert_model: PreTrainedModel,
     force_recompute: bool = False,
     override_split: bool = True,
     supervised: bool = True, 
@@ -1025,6 +1045,8 @@ def load_qa_data(
                     answer_tokenzier,
                     entity2id,
                     relation2id,
+                    bert_tokenizer=bert_tokenizer,
+                    bert_model=bert_model,
                     override_split=override_split,
                 )
             )

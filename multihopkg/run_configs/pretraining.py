@@ -35,15 +35,17 @@ def get_args() -> argparse.Namespace:
 
     # -------------------- General Data Parameters --------------------
     ap.add_argument("--path_mquake_data", type=str, default="./data/mquake/")
-    ap.add_argument("--path_cache_dir", type=str, default="./.cache/mquake/")
+    ap.add_argument("--path_cache_dir", type=str, default="./.cache/mquake_aligned/")
     ap.add_argument("--tvt_split", type=list, default=[0.8, 0.1, 0.1], help="Train-Valid-Test Splits")
     ap.add_argument("--path_graph_emb_data", type=str, default="./models/graph_embeddings/transE_mquake_dim500", help="Path to Entity Embeddings")
-    ap.add_argument("--outPath_save_model", type=str, default="./models/gtllm/")
+    ap.add_argument("--outPath_save_model", type=str, default="./models/gtllm_bertaligned/")
 
     # -------------------- Language Modeling Parameters --------------------
     # Generally speaking these two are the same.
     ap.add_argument("--hunchbart_base_llm_tokenizer", type=str, default="facebook/bart-base")
     ap.add_argument("--hunchbart_base_llm_model", type=str, default="facebook/bart-base")
+    ap.add_argument("--bert_base_llm_model", type=str, default="bert-base-uncased")
+    ap.add_argument("--bert_base_llm_tokenizer", type=str, default="bert-base-uncased")
     ap.add_argument("--baseline_lr", type=float, default=1e-3)
     ap.add_argument("--minimum_lr", type=float, default=1e-6)
 

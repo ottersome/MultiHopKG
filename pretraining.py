@@ -8,11 +8,13 @@ import numpy as np
 import torch
 from rich import traceback
 from torch import nn
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,  # type: ignore
 )
 from transformers.models.bart import BartTokenizer
+from transformers.models.bert import BertModel, BertTokenizer
 import wandb
 
 from multihopkg.datasets import GraphEmbeddingDataset
@@ -38,6 +40,7 @@ def collate_fn(batch, padding_value: int):
     qna: List[torch.Tensor] = list(next(batch_deconstructed))
     ans_masks: List[torch.Tensor] = list(next(batch_deconstructed))
     paths: List[torch.Tensor] = list(next(batch_deconstructed))
+    ans_bert_emb: List[torch.Tensor] = list(next(batch_deconstructed))
 
     qna_padded = torch.nn.utils.rnn.pad_sequence(
         qna, batch_first=True, padding_value=padding_value
@@ -48,8 +51,9 @@ def collate_fn(batch, padding_value: int):
     paths_padded = torch.nn.utils.rnn.pad_sequence(
         paths, batch_first=True, padding_value=padding_value
     )
+    ans_bert_emb_final_tensor = torch.stack(ans_bert_emb)
 
-    new_batch = (qna_padded, ans_masks_padded, paths_padded)
+    new_batch = (qna_padded, ans_masks_padded, paths_padded, ans_bert_emb_final_tensor)
 
     return new_batch
 
@@ -69,39 +73,47 @@ def validation_loop(
     assert isinstance(pad_token_id, int), "Expected the pad token to be an integer. Instead we get {pad_token_id}"
     loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
     validation_metrics: Dict[str, List[float]] = {
-        "loss" : [],
-        "cf-loss" : []
+        "valid/loss" : [],
+        "valid/cf-loss" : [],
+        "valid/alignment_loss_w_emb" : [],
+        "valid/alignment_loss_wo_emb" : []
     }
     model.eval()
     with torch.no_grad():
         for batch_idx, batch in enumerate(val_dataloader):
             # Turn of all backprop
-            qna_tokens, ans_masks, graph_embeddings = batch
+            qna_tokens, ans_masks, graph_embeddings, answer_bert_emb = batch
             # Now we will round-robin graph_embeddings to get a negative sample. 
             negative_graph_embeddings = torch.roll(graph_embeddings, shifts=1, dims=0)
 
-            padding_mask = qna_tokens == tokenizer.pad_token_id
+            padding_mask = qna_tokens != tokenizer.pad_token_id
 
             truth_answers = qna_tokens.clone()
             truth_answers[ans_masks == 0] = tokenizer.pad_token_id  # For the loss function.
             truth_answers = truth_answers[:, 1:].contiguous()
 
             # Compute the loss
-            answers_inf_softmax_w_emb = model(
+            answers_inf_softmax_w_emb, bert_alignment_inference_w_emb = model(
                 graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
             )
-            answers_inf_softmax_wo_emb = model(
+            answers_inf_softmax_wo_emb, bert_alignment_inference_wo_emb = model(
                 negative_graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
             )
             _, logits = answers_inf_softmax_w_emb.loss, answers_inf_softmax_w_emb.logits
             _, n_logits = answers_inf_softmax_wo_emb.loss, answers_inf_softmax_wo_emb.logits
 
+            # Computer Bert Alignment Loss
+            alignment_loss_w_emb = F.mse_loss(bert_alignment_inference_w_emb, answer_bert_emb)
+            alignment_loss_wo_emb = F.mse_loss(bert_alignment_inference_wo_emb, answer_bert_emb)
+            validation_metrics["valid/alignment_loss_w_emb"].append(alignment_loss_w_emb.item())
+            validation_metrics["valid/alignment_loss_wo_emb"].append(alignment_loss_wo_emb.item())
+
             # Loss Calculation
             loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
             n_loss = loss_fn(n_logits.view(-1, n_logits.shape[-1]), truth_answers.view(-1)).mean()
 
-            validation_metrics["loss"].append(loss.item())
-            validation_metrics["cf-loss"].append(n_loss.item())
+            validation_metrics["valid/loss"].append(loss.item())
+            validation_metrics["valid/cf-loss"].append(n_loss.item())
             if verbose and batch_idx == 0:
                 # Take logits and covert them into idxs:
                 qna_strs = tokenizer.batch_decode(qna_tokens)
@@ -136,7 +148,7 @@ def validation_loop(
 def train_loop(
     dataset_partitions: DataPartitions,
     word_tokenizer: BartTokenizer,
-    model: nn.Module,
+    bart_llm: nn.Module,
     entity_embeddings: nn.Embedding,
     relation_embeddings: nn.Embedding,
     # --- Training Parameters --- #
@@ -149,7 +161,7 @@ def train_loop(
     val_every_n_batches: int,
     verbose: bool,
 ) -> nn.Module:
-    device = next(model.parameters()).device
+    device = next(bart_llm.parameters()).device
     ########################################
     # Data Loading
     ########################################
@@ -170,7 +182,7 @@ def train_loop(
     logger.info(f"With a batch size of {batch_size} this will yield {len(train_dataloader)} batches")
 
     # Optimization parameters
-    optimizer = torch.optim.Adam(model.parameters(), lr=baseline_lr)
+    optimizer = torch.optim.Adam(bart_llm.parameters(), lr=baseline_lr)
     loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
 
     total_steps = epochs * len(train_dataloader)
@@ -189,7 +201,7 @@ def train_loop(
 
                 # Validation
                 if cur_num_batches % val_every_n_batches == 0:
-                    val_report = validation_loop(model, val_dataloader, word_tokenizer, verbose)
+                    val_report = validation_loop(bart_llm, val_dataloader, word_tokenizer, verbose)
                     validation_reports.append((
                         cur_num_batches,
                         val_report,
@@ -200,27 +212,36 @@ def train_loop(
                 cur_num_batches += 1
 
                 # Actual Training
-                qna_tokens, ans_masks, graph_embeddings = batch
+                qna_tokens, ans_masks, graph_embeddings, ans_bert_embeddings  = batch
                 truth_answers = qna_tokens.clone()
                 truth_answers[ans_masks == 0] = word_tokenizer.pad_token_id  # For the loss function.
                 truth_answers = truth_answers[:, 1:].contiguous()
+
                 # Compute the loss
                 optimizer.zero_grad()
                 # TODO: Watch out for offset*till
                 padding_mask = qna_tokens != word_tokenizer.pad_token_id
-                answers_inf_softmax = model(
+                answers_inf_softmax, bert_output = bart_llm(
                     graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
                 )
                 _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
 
-                loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
-                loss.backward()
+
+                # Graph Projector Backprop
+                gtllm_loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
+                bert_loss = F.mse_loss(bert_output, ans_bert_embeddings)
+                final_loss = gtllm_loss + bert_loss
+                final_loss.backward()
                 optimizer.step()
                 scheduler.step()
-                loss_reports.append(loss.item())
+                loss_reports.append(gtllm_loss.item())
 
                 if wandb_on:
-                    wandb.log({"loss_train": loss.item()})
+                    wandb.log({
+                        "loss_bart_train": gtllm_loss.item(),
+                        "loss_bert_train": bert_loss.item(),
+                        "final_loss_train": final_loss.item()
+                    })
 
                 # Check for changes
                 change_in_embeddings = torch.dist(ent_emb_backup, train_dataset.id2ent.weight).sum()
@@ -234,7 +255,7 @@ def train_loop(
                 time.sleep(0.1)
             progress.update(task_epoch, advance=1)
 
-    return model
+    return bart_llm
 
 def main():
     args = get_args()
@@ -268,6 +289,18 @@ def main():
     id2ent, ent2id = load_native_index(path_entities_dict)
     id2rel, rel2id = load_native_index(path_relations_dict)
     logger.info(f"Loaded a total of :\n\t-{len(id2ent)} entities\n\t-{len(id2rel)} relations")
+    
+    ########################################
+    # Load Bert
+    ########################################
+    # Bert Ground Truth For Alignment
+    bert_model = BertModel.from_pretrained(
+        args.bert_base_llm_model,
+    ).to(args.device)
+    bert_tokenizer = BertTokenizer.from_pretrained(
+        args.bert_base_llm_tokenizer
+    )
+    
 
     ########################################
     # Process the Dataset
@@ -286,6 +319,8 @@ def main():
         entity2id=ent2id,
         relation2id=rel2id,
         logger=logger,
+        bert_tokenizer=bert_tokenizer,
+        bert_model=bert_model,
         force_recompute=args.force_recompute_cache,
         supervised=False
     )
@@ -318,7 +353,7 @@ def main():
         pretrained_bart_model_name=args.hunchbart_base_llm_model,
         graph_embedding_dim=embeddings_size,
     ).to(args.device)
-    
+
     # Freeze the BART model, keep embedding_translator trainable
     hunch_llm.freeze_bart()
 

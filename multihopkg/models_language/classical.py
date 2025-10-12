@@ -1,12 +1,13 @@
 import torch
 import pdb
 import math
-from typing import Any, List, Mapping, Optional
+from typing import Any, List, Mapping, Optional, Tuple
 import os
 
 import numpy as np
 from torch import exp, nn
 from torch.nn import Embedding
+from transformers.models.bert import BertModel
 
 from multihopkg.logging import setup_logger
 from transformers import BartForConditionalGeneration, PreTrainedTokenizer
@@ -16,6 +17,7 @@ class HunchBart(nn.Module):
         self,
         pretrained_bart_model_name: str,
         graph_embedding_dim: int,
+        pooling="mean",
     ):
         super(HunchBart, self).__init__()
         self.bart = BartForConditionalGeneration.from_pretrained(pretrained_bart_model_name)
@@ -27,27 +29,43 @@ class HunchBart(nn.Module):
             nn.ReLU(),
             nn.Linear(self.bart_hidden_dim, self.bart_hidden_dim)
         )
+        
+        # Weird Idea but this is so it has a secondary output that tries to align with BERT
+        self.pooler = nn.Linear(self.bart.config.hidden_size, self.bart.config.hidden_size)
+        self.activation = nn.Tanh()
+        self.projection = nn.Linear(self.bart.config.hidden_size, self.bart.config.hidden_size)
 
     def forward(
         self,
         graph_embeddings: torch.Tensor,
-        decoder_input_ids: Optional[torch.Tensor] = None,
+        decoder_input_ids: Optional[torch.Tensor],
+        decoder_attention_mask: torch.Tensor,
         labels=None,
         *args,
         **kwargs
-    ):
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Pass graph embeddings through custom encoder
         # Pass the outputs to BART decoder
         translated_embeddings = self.embedding_translator(graph_embeddings)
         # translated_embeddings = graph_embeddings
 
-        outputs = self.bart(
+        bart_outputs = self.bart(
             inputs_embeds=translated_embeddings,
             decoder_input_ids=decoder_input_ids, #For teacher forcing. 
+            decoder_attention_mask=decoder_attention_mask,
+            output_hidden_states=True,
             *args,
             **kwargs
         )
-        return outputs
+        last_encoder_hidden_state = bart_outputs.decoder_hidden_states[-1]
+
+        # 2. Pooling to get a single vector
+        # TODO: Figure out the attention_mask
+        pooled = (last_encoder_hidden_state * decoder_attention_mask.unsqueeze(-1)).sum(1) / decoder_attention_mask.sum(1, keepdim=True)
+        pooled = self.activation(self.pooler(pooled))
+        bert_alignment_inference = self.projection(pooled)  # map to BERT space
+
+        return bart_outputs, bert_alignment_inference
 
     def freeze_bart(self):
         """
