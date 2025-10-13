@@ -496,14 +496,16 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         ########################################
         # ! Restraining the movement to the neighborhood
 
+        # TODO: ensure that cur_state's last place is used properly here to get a new state
+        # That is the correct dimension is reduced. 
         current_position = self.knowledge_graph.flexible_forward(
             cur_state.state, action
         )
 
-        # TODO: We need to create a softer answer reward here
+        # TODO: We need to double check this 'done' determinator
         # No gradients are calculated here
         with torch.no_grad():
-            answer_embeddings = get_embeddings_from_indices(self.knowledge_graph.entity_embeddings, cur_state.answer_id)
+            answer_embeddings = get_embeddings_from_indices(self.knowledge_graph.entity_embedding, cur_state.answer_id).to(current_position.device)
             diff = self.knowledge_graph.absolute_difference(answer_embeddings, current_position) 
             
             answer_found = torch.norm(diff, dim=-1, keepdim=True) < self.reached_destination_threshold

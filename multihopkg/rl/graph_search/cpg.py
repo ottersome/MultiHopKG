@@ -40,6 +40,7 @@ class ContinuousPolicyGradient(nn.Module):
         # Training hyperparameters
         self.beta = beta  # entropy regularization parameter
         self.gamma = gamma  # shrinking factor
+        self.observation_dim = dim_observation
 
         self.max_seq_length = max_path_length
         ########################################

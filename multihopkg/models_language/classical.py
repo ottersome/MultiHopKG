@@ -49,14 +49,7 @@ class HunchBart(nn.Module):
         translated_embeddings = self.embedding_translator(graph_embeddings)
         # translated_embeddings = graph_embeddings
 
-        bart_outputs = self.bart(
-            inputs_embeds=translated_embeddings,
-            decoder_input_ids=decoder_input_ids, #For teacher forcing. 
-            decoder_attention_mask=decoder_attention_mask,
-            output_hidden_states=True,
-            *args,
-            **kwargs
-        )
+        bart_outputs = self.bart( inputs_embeds=translated_embeddings, decoder_input_ids=decoder_input_ids, decoder_attention_mask=decoder_attention_mask, output_hidden_states=True, *args, **kwargs)
         last_encoder_hidden_state = bart_outputs.decoder_hidden_states[-1]
 
         # 2. Pooling to get a single vector

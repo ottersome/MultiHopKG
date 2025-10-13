@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Deque, Dict, List, Optional, Sequence, Tuple
 
 import torch
 
@@ -14,7 +14,7 @@ class Transition:
     reward: torch.Tensor
     next_state: torch.Tensor
     done: torch.Tensor
-    path_states: List[torch.Tensor]
+    path_states: torch.Tensor
     step_index: int
     env_reward: torch.Tensor
     llm_reward: torch.Tensor
@@ -28,13 +28,9 @@ class QuestionReplayBuffer:
     @dataclass
     class QuestionBuffer:
         transitions: Deque[Transition]
-        current_path: List[torch.Tensor] = field(default_factory=list)
         question_embedding: Optional[torch.Tensor] = None
         answer_embedding: Optional[torch.Tensor] = None
         answer_id: Optional[torch.Tensor] = None
-
-        def reset_path(self) -> None:
-            self.current_path = []
 
     def __init__(
         self,
@@ -117,21 +113,12 @@ class QuestionReplayBuffer:
         idx = self.resolve_question_idx(question_id)
         return len(self.replay_buffer[idx].transitions) > 0
 
-    def get_current_path(self, question_id: int) -> List[torch.Tensor]:
+    def get_last_transition(self, question_id: int) -> Optional[Transition]:
         idx = self.resolve_question_idx(question_id)
-        return list(self.replay_buffer[idx].current_path)
-
-    def set_current_path(
-        self, question_id: int, path_states: Iterable[torch.Tensor]
-    ) -> None:
-        idx = self.resolve_question_idx(question_id)
-        self.replay_buffer[idx].current_path = [
-            state.detach().cpu() for state in path_states
-        ]
-
-    def reset_current_path(self, question_id: int) -> None:
-        idx = self.resolve_question_idx(question_id)
-        self.replay_buffer[idx].reset_path()
+        buffer = self.replay_buffer[idx]
+        if not buffer.transitions:
+            return None
+        return buffer.transitions[-1]
 
     def get_question_embedding(self, question_id: int) -> torch.Tensor:
         idx = self.resolve_question_idx(question_id)
@@ -180,19 +167,20 @@ class QuestionReplayBuffer:
         zero_reward = torch.zeros(1, dtype=self._reward_dtype)
         zero_done = torch.zeros(1, dtype=torch.bool)
 
+        path_tensor = state_cpu.unsqueeze(0)
+
         reset_transition = Transition(
             state=state_cpu,
             action=zero_action,
             reward=zero_reward,
             next_state=state_cpu,
             done=zero_done,
-            path_states=[state_cpu],
+            path_states=path_tensor,
             step_index=0,
             env_reward=zero_reward,
             llm_reward=zero_reward,
         )
         self.add_transition(question_id, reset_transition)
-        self.set_current_path(question_id, [state_cpu])
 
     def iter_all(self) -> Iterable[Tuple[int, Transition]]:
         for internal_idx, question_buffer in enumerate(self.replay_buffer):

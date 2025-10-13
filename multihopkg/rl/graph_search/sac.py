@@ -13,6 +13,8 @@ from tqdm import tqdm
 
 import time
 
+from multihopkg.models_language.classical import DecoderLayer, PositionalEncoding
+
 def init_layer_uniform(layer: nn.Linear, init_w: float = 3e-3) -> nn.Linear:
     """Init uniform parameters on the single layer."""
     layer.weight.data.uniform_(-init_w, init_w)
@@ -98,6 +100,46 @@ class CriticQ(nn.Module):
 
         return value
 
+class GraphCriticQ(nn.Module):
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        encoder_num_layers: int,
+        encoder_num_heads: int,
+        enc_ff_dim: int,
+        enc_dropout: float,
+        dim_hidden: int,
+        max_seq_length: int, 
+    ):
+        """Initialize. You can design your own Q Critic architecture."""
+        super(GraphCriticQ, self).__init__()
+
+        # Transformer Stack
+        decoder_layers = nn.ModuleList(
+            [DecoderLayer(obs_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
+        )
+        positional_encoding_xattn_left = PositionalEncoding(obs_dim, max_seq_length)
+        self.graph_encoder = nn.Sequential(
+            positional_encoding_xattn_left,
+            nn.Dropout(enc_dropout),
+            decoder_layers
+        )
+
+        self.projection = nn.Linear(enc_ff_dim, dim_hidden)
+        self.out = init_layer_uniform(self.projection)
+
+    def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        """Forward method implementation."""
+        graph_output = self.graph_encoder(state)
+        x = torch.cat((graph_output, action), dim=-1)
+        # TODO: Check if our encoder has a pooled output we can use to do one final projection.
+
+        x = self.projection(F.relu(x))
+        value = self.out(x)
+
+        return value
+
 
 class CriticV(nn.Module):
     def __init__(self, in_dim: int, dim_hidden: int = 128):
@@ -116,6 +158,46 @@ class CriticV(nn.Module):
         value = self.out(x)
 
         return value
+
+class GraphCriticV(nn.Module):
+    def __init__(
+        self,
+        obs_dim: int,
+        encoder_num_layers: int,
+        encoder_num_heads: int,
+        enc_ff_dim: int,
+        enc_dropout: float,
+        dim_hidden: int ,
+        max_seq_length: int,
+    ):
+        """Initialize. You can design your own V Critic architecture."""
+        super(GraphCriticV, self).__init__()
+
+        decoder_layers = nn.ModuleList(
+            [DecoderLayer(obs_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
+        )
+        positional_encoding_xattn_left = PositionalEncoding(obs_dim, max_seq_length)
+        self.graph_encoder = nn.Sequential(
+            positional_encoding_xattn_left,
+            nn.Dropout(enc_dropout),
+            decoder_layers
+        )
+
+        self.hidden1 = nn.Linear(obs_dim, dim_hidden)
+        self.hidden2 = nn.Linear(dim_hidden, dim_hidden)
+        self.out = nn.Linear(dim_hidden, 1)
+        self.out = init_layer_uniform(self.out)
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        """Forward method implementation."""
+        graph_output = self.graph_encoder(state)
+
+        x = F.relu(self.hidden1(graph_output))
+        x = F.relu(self.hidden2(x))
+        value = self.out(x)
+
+        return value
+
     
 class ReplayBuffer:
     """A simple numpy replay buffer."""

@@ -9,15 +9,17 @@ Experiment Portal.
 
 import argparse
 import ast
+import copy
 import io
 import json
 import logging
 import os
+import random
 import sys
 import time
 import math
 from collections import Counter, defaultdict
-from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+from typing import Any, DefaultDict, Dict, List, Optional, Sequence, Tuple
 
 import debugpy
 import matplotlib.pyplot as plt
@@ -52,7 +54,7 @@ from multihopkg.logging import setup_logger
 from multihopkg.logs import torch_module_logging
 from multihopkg.models_language.classical import HunchBart, collate_token_ids_batch
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
-from multihopkg.rl.graph_search.sac import CriticQ, CriticV
+from multihopkg.rl.graph_search.sac import CriticQ, CriticV, GraphCriticQ, GraphCriticV
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment, ReinforcedUnsupervisedEnv
 from multihopkg.rl.utils import QuestionReplayBuffer, Transition
 from multihopkg.run_configs import rl_alpha
@@ -281,7 +283,7 @@ def batch_loop(
     - Rewards are computed from both the language model (`hunch_llm`) and the knowledge graph environment (KGE).
     - The policy gradient loss is calculated based on the rewards and log probabilities of actions.
 
-    This function is found within `train_multihokg` and calls upon `rollout`.
+    This function is found within `train_multihopkg` and calls upon `rollout`.
 
     Args:
         env (ITLGraphEnvironment):
@@ -645,6 +647,116 @@ def evaluate_training(
     # TODO: Implement this
 
 
+class QuestionCoverageSampler:
+    """Sample question ids uniformly while tracking coverage cycles."""
+
+    def __init__(self, question_ids: Sequence[int]) -> None:
+        if not question_ids:
+            raise ValueError("QuestionCoverageSampler requires at least one question id")
+        self._question_ids = list(question_ids)
+        self._rng = random.Random()
+        self._perm: List[int] = []
+        self._cursor: int = 0
+        self.cycles_completed: int = 0
+        self._needs_reshuffle: bool = False
+        self._reshuffle()
+
+    def _reshuffle(self) -> None:
+        self._perm = self._question_ids.copy()
+        self._rng.shuffle(self._perm)
+        self._cursor = 0
+        self._needs_reshuffle = False
+
+    def sample(self, batch_size: int) -> Tuple[List[int], int]:
+        """Return ``batch_size`` question ids and coverage cycles closed in this draw."""
+
+        if batch_size <= 0:
+            return [], 0
+
+        len_ids = len(self._question_ids)
+        sampled: List[int] = []
+        completed_cycles = 0
+
+        if self._needs_reshuffle:
+            self._reshuffle()
+
+        while len(sampled) < batch_size:
+            remaining = len_ids - self._cursor
+            take = min(batch_size - len(sampled), remaining)
+            sampled.extend(self._perm[self._cursor : self._cursor + take])
+            self._cursor += take
+
+            if self._cursor == len_ids:
+                completed_cycles += 1
+                self.cycles_completed += 1
+                if len(sampled) < batch_size:
+                    self._reshuffle()
+                else:
+                    self._needs_reshuffle = True
+
+        return sampled, completed_cycles
+
+    def progress(self) -> float:
+        """Fraction of unique questions touched in the current coverage sweep."""
+
+        return self._cursor / len(self._question_ids)
+
+
+def prepopulate_replay_buffer(
+    *,
+    env: ReinforcedUnsupervisedEnv,
+    actor: ContinuousPolicyGradient,
+    hunch_llm: nn.Module,
+    replay_buffer: QuestionReplayBuffer,
+    train_df: pd.DataFrame,
+    batch_size: int,
+    num_simulations_per_question: int,
+    max_env_steps: int,
+    pad_token_id: int,
+) -> Dict[str, float]:
+    """Fill the replay buffer with initial random transitions for every question."""
+
+    if num_simulations_per_question <= 0:
+        raise ValueError("num_simulations_per_question must be positive for prepopulation")
+
+    question_ids = train_df.index.tolist()
+    if not question_ids:
+        raise ValueError("Training dataframe must contain at least one question")
+
+    aggregated: DefaultDict[str, List[float]] = defaultdict(list)
+    total_transitions = 0
+
+    chunk_size = max(1, min(batch_size, len(question_ids)))
+    for start in tqdm(range(0, len(question_ids), chunk_size), desc="Prepopulating the buffer"):
+        chunk_ids = question_ids[start : start + chunk_size]
+        mini_batch = train_df.loc[chunk_ids]
+        question_counts = {int(qid): num_simulations_per_question for qid in chunk_ids}
+
+        metrics = gather_experience_steps(
+            env,
+            actor,
+            hunch_llm,
+            replay_buffer,
+            mini_batch=mini_batch,
+            num_steps=sum(question_counts.values()),
+            max_env_steps=max_env_steps,
+            pad_token_id=pad_token_id,
+            use_random_actions=True,
+            question_counts=question_counts,
+        )
+
+        total_transitions += sum(question_counts.values())
+        for key, value in metrics.items():
+            aggregated[key].append(value)
+
+    aggregated["prepopulate/num_questions"].append(float(len(question_ids)))
+    aggregated["prepopulate/num_transitions"].append(float(total_transitions))
+
+    return {
+        key: float(np.mean(values)) if values else 0.0
+        for key, values in aggregated.items()
+    }
+
 
 def train_multihopkg(
     epochs: int, 
@@ -668,6 +780,10 @@ def train_multihopkg(
     wandb_on: bool,
     num_update_steps: int,
     max_env_steps: int,
+    critic_q1: GraphCriticQ,
+    critic_q2: GraphCriticQ,
+    value_net: GraphCriticV,
+
 ):
     if answer_tokenizer.pad_token_id is None:
         raise ValueError(
@@ -675,15 +791,10 @@ def train_multihopkg(
         )
 
     device = next(nav_agent.parameters()).device
-    state_shape = (nav_agent.hidden1.in_features,)
     action_shape = (nav_agent.mu_layer.out_features,)
 
-    hidden_dim = nav_agent.hidden1.out_features
-    critic_q1 = CriticQ(state_shape[0] + action_shape[0], dim_hidden=hidden_dim).to(device)
-    critic_q2 = CriticQ(state_shape[0] + action_shape[0], dim_hidden=hidden_dim).to(device)
-    value_net = CriticV(in_dim=state_shape[0], dim_hidden=hidden_dim).to(device)
-    target_value_net = CriticV(in_dim=state_shape[0], dim_hidden=hidden_dim).to(device)
-    target_value_net.load_state_dict(value_net.state_dict())
+    # For moving average stabilization
+    target_value_net: GraphCriticV = copy.deepcopy(value_net)
 
     critic_optimizer = torch.optim.Adam(
         list(critic_q1.parameters()) + list(critic_q2.parameters()),
@@ -763,11 +874,47 @@ def train_multihopkg(
             "log_prob": log_probs.mean().item(),
         }
 
+    train_df = data_partitions.train
+    if not isinstance(train_df, pd.DataFrame):
+        raise ValueError("Training partition must be a pandas DataFrame")
+    if train_df.empty:
+        raise ValueError("Training partition is empty; nothing to optimise")
+
+    question_ids = train_df.index.tolist()
+    coverage_sampler = QuestionCoverageSampler(question_ids)
+
     num_updates_limit = max(1, num_update_steps)
     total_gradient_updates = 0
 
     local_time = time.localtime()
     timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+    writer = SummaryWriter(
+        log_dir=f"runs/rl/{env.knowledge_graph.model_name.lower()}/{timestamp}/"
+    )
+
+    prepopulate_metrics = prepopulate_replay_buffer(
+        env=env,
+        actor=nav_agent,
+        hunch_llm=hunch_llm,
+        replay_buffer=replay_buffer,
+        train_df=train_df,
+        batch_size=batch_size,
+        num_simulations_per_question=num_simulations_per_ques,
+        max_env_steps=max_env_steps,
+        pad_token_id=answer_tokenizer.pad_token_id, # type: ignore
+    )
+    if prepopulate_metrics:
+        logger.info(
+            "Prepopulated replay buffer with %.0f questions and %.0f transitions",
+            prepopulate_metrics.get("prepopulate/num_questions", 0.0),
+            prepopulate_metrics.get("prepopulate/num_transitions", 0.0),
+        )
+        if wandb_on:
+            wandb.log(prepopulate_metrics)
+        for metric_name, metric_value in prepopulate_metrics.items():
+            writer.add_scalar(metric_name, metric_value, 0)
+
+    collections_per_epoch = max(1, math.ceil(len(question_ids) / max(1, batch_size)))
 
     for epoch_id in tqdm(range(epochs), desc="Epoch"):
         nav_agent.train()
@@ -777,14 +924,23 @@ def train_multihopkg(
         value_net.train()
         target_value_net.eval()
 
-        for offset in tqdm(
-            range(0, len(data_partitions.train), batch_size),
-            desc="Collection",
-            leave=False,
-        ):
+        for _ in tqdm(range(collections_per_epoch), desc="Collection", leave=False):
             if total_gradient_updates >= num_updates_limit:
                 break
-            mini_batch = data_partitions.train[offset : offset + batch_size]
+
+            sampled_ids, cycles_finished = coverage_sampler.sample(batch_size)
+            if not sampled_ids:
+                continue
+            mini_batch = train_df.loc[sampled_ids]
+            if isinstance(mini_batch, pd.Series):
+                mini_batch = mini_batch.to_frame().T
+
+            question_counts = {
+                int(qid): num_simulations_per_ques for qid in sampled_ids
+            }
+            total_requested = sum(question_counts.values())
+            if total_requested <= 0:
+                continue
 
             buffer_metrics = gather_experience_steps(
                 env,
@@ -792,11 +948,18 @@ def train_multihopkg(
                 hunch_llm,
                 replay_buffer,
                 mini_batch=mini_batch,
-                num_steps=num_simulations_per_ques,
+                num_steps=total_requested,
                 max_env_steps=max_env_steps,
                 pad_token_id=answer_tokenizer.pad_token_id,
                 use_random_actions=(total_gradient_updates == 0),
+                question_counts=question_counts,
             )
+
+            buffer_metrics["coverage/progress"] = coverage_sampler.progress()
+            buffer_metrics["coverage/cycles_completed"] = float(
+                coverage_sampler.cycles_completed
+            )
+            buffer_metrics["coverage/cycles_finished"] = float(cycles_finished)
 
             if wandb_on:
                 wandb.log({f"collect/{k}": v for k, v in buffer_metrics.items()})
@@ -805,9 +968,6 @@ def train_multihopkg(
                     f"collect/{metric_name}", metric_value, total_gradient_updates
                 )
 
-            ########################################
-            # Training
-            ########################################
             while (
                 replay_buffer.is_ready(total_gradient_updates)
                 and total_gradient_updates < num_updates_limit
@@ -826,10 +986,11 @@ def train_multihopkg(
                     break
 
         logger.info(
-            "Epoch %d completed | replay_size=%d | gradient_updates=%d",
+            "Epoch %d completed | replay_size=%d | gradient_updates=%d | coverage_cycles=%d",
             epoch_id,
             len(replay_buffer),
             total_gradient_updates,
+            coverage_sampler.cycles_completed,
         )
 
         if total_gradient_updates >= num_updates_limit:
@@ -1157,29 +1318,240 @@ def calculate_llm_reward_autoregressive(
     return reward, logits
 
 
+@torch.no_grad()
 def calculate_llm_reward_supasoft(
     hunch_llm: nn.Module,
     obtained_state: torch.Tensor,
     answer_embedding: torch.Tensor,
+    question_tokens: torch.Tensor,
+    pad_token_id: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if obtained_state.dim() == 1:
-        obtained_state = obtained_state.unsqueeze(0)
-    if answer_embedding.dim() == 1:
-        answer_embedding = answer_embedding.unsqueeze(0)
+    if obtained_state.dim() == 2:
+        # We expect (batch_size, seq_length, graph_dimension)
+        _obtained_state = obtained_state.unsqueeze(0)
+    else: 
+        _obtained_state = obtained_state
 
-    with torch.no_grad():
-        _, bert_ans_embeddings = hunch_llm(
-            graph_embeddings=obtained_state,
-            decoder_input_ids=answer_embedding,
-        )
+    dec_attention_mask = question_tokens != pad_token_id
+    _, bert_ans_embeddings = hunch_llm(
+        graph_embeddings=_obtained_state,
+        decoder_input_ids=question_tokens,
+        decoder_attention_mask=dec_attention_mask,
+    )
 
     mse_loss = F.mse_loss(
-        bert_ans_embeddings,
+        bert_ans_embeddings.squeeze(),
         answer_embedding,
         reduction="none",
     ).mean(dim=-1)
     reward = -mse_loss
     return reward, bert_ans_embeddings
+
+@torch.no_grad()
+def gather_experience_steps(
+    env: ReinforcedUnsupervisedEnv,
+    actor: ContinuousPolicyGradient,
+    hunch_llm: nn.Module,
+    replay_buffer: QuestionReplayBuffer,
+    *,
+    mini_batch: pd.DataFrame,
+    num_steps: int,
+    max_env_steps: int,
+    pad_token_id: int,
+    question_counts: Dict[int, int],
+    use_random_actions: bool = False,
+) -> Dict[str, float]:
+    """Collect transitions for the provided mini-batch of questions."""
+
+    device = next(actor.parameters()).device
+    metrics: DefaultDict[str, List[float]] = defaultdict(list)
+    summary: Dict[str, float] = {}
+
+    if isinstance(mini_batch, pd.Series):
+        mini_batch = mini_batch.to_frame().T
+
+    question_ids: List[int] = mini_batch.index.tolist()
+    assert len(question_ids) > 0
+
+    question_count_map = {
+        int(qid): int(count)
+        for qid, count in question_counts.items()
+        if int(count) > 0
+    }
+    total_requested = sum(question_count_map.values())
+
+    if total_requested <= 0:
+        return {}
+
+    total_steps = total_requested
+
+    question_tokens = [
+        torch.as_tensor(seq, dtype=torch.long, device=device)
+        for seq in mini_batch["enc_questions"].values.tolist()
+    ]
+    path_sequences: List[List[int]] = mini_batch["triples_ints"].values.tolist()
+    answer_embeddings_raw = mini_batch.iloc[:, 3:].to_numpy()
+
+    answer_embeddings = [
+        torch.as_tensor(row, dtype=torch.float32, device=device)
+        for row in answer_embeddings_raw
+    ]
+
+    question_embeddings = env.get_llm_embeddings(question_tokens, device).detach()
+
+    question_data: Dict[int, Dict[str, torch.Tensor]] = {}
+    for idx, question_id in enumerate(question_ids):
+        question_embedding = question_embeddings[idx]
+        answer_embedding = answer_embeddings[idx]
+        path = path_sequences[idx]
+        if not path:
+            raise ValueError("Path sequence is empty; expected at least one entity id")
+        answer_entity_id = int(path[-1])
+        answer_id_tensor = torch.tensor([answer_entity_id], dtype=torch.long)
+
+        replay_buffer.ensure_question_metadata(
+            question_id,
+            question_embedding=question_embedding,
+            answer_embedding=answer_embedding,
+            answer_id=answer_id_tensor,
+        )
+
+        question_data[question_id] = {
+            "question_embedding": question_embedding.detach(),
+            "answer_embedding": answer_embedding.detach(),
+            "answer_id_tensor": answer_id_tensor.detach(),
+        }
+
+    action_dim = actor.mu_layer.out_features
+    total_transitions = 0
+    max_history = max(1, max_env_steps)
+
+    # Per Question Loop
+    for question_id, repetitions in tqdm(question_count_map.items(), f"Question maps with len: {len(question_count_map)}. "):
+        question_info = question_data[question_id]
+
+        if not replay_buffer.has_transitions(question_id):
+            init_state = env.reset(
+                question_info["question_embedding"].unsqueeze(0)
+            ).to(device)
+            if init_state.dim() == 2:
+                init_state = init_state.squeeze(0)
+            replay_buffer.add_reset_transition(question_id, init_state, action_dim)
+            metrics["init_resets"].append(1.0)
+
+        # Per Repetition Loop
+        for _ in range(repetitions):
+            last_transition = replay_buffer.get_last_transition(question_id)
+            need_reset = False
+            had_transition = last_transition is not None
+            if last_transition is None:
+                need_reset = True
+            else:
+                if last_transition.done.any():
+                    need_reset = True
+                elif last_transition.path_states.size(0) >= max_env_steps:
+                    need_reset = True
+
+            if need_reset:
+                init_state = env.reset(
+                    question_info["question_embedding"].unsqueeze(0)
+                ).to(device)
+                if init_state.dim() == 2:
+                    init_state = init_state.squeeze(0)
+                replay_buffer.add_reset_transition(question_id, init_state, action_dim)
+                if had_transition:
+                    metrics["path/forced_reset"].append(1.0)
+                last_transition = replay_buffer.get_last_transition(question_id)
+
+            assert last_transition is not None, "Replay buffer should contain a reset transition after initialization"
+
+            current_path_tensor = last_transition.path_states.to(device)
+            current_state = current_path_tensor
+            agent_input = current_state
+
+            if use_random_actions:
+                action = torch.empty(1, action_dim, device=device).uniform_(-1.0, 1.0)
+                log_prob = None
+                entropy = None
+            else:
+                action, log_prob, entropy, _, _ = actor(agent_input)
+
+            observation = ReinforcedUnsupervisedEnv.RUE_Observation(
+                state=current_state[-1,:], # Send the very last position # TODO: Ensure it is not an action or something wroong
+                answer_id=question_info["answer_id_tensor"],
+            )
+            next_state, env_reward, done_flags = env.step(observation, action)
+
+            next_state = next_state.to(device)
+            if next_state.dim() == 1:
+                next_state = next_state.unsqueeze(0)
+            env_reward = env_reward.to(device)
+            done_flags = done_flags.to(device)
+
+            llm_reward, _ = calculate_llm_reward_supasoft(
+                hunch_llm,
+                next_state,
+                question_info["answer_embedding"],
+                torch.LongTensor(mini_batch.loc[question_id,"enc_questions"]).view(1,-1).to(device),
+                pad_token_id,
+            )
+
+            env_reward_scalar = env_reward.view(-1)
+            llm_reward_scalar = llm_reward.view(-1)
+            total_reward = llm_reward_scalar #+ env_reward_scalar
+            done_scalar = done_flags.view(-1)
+
+            next_state_entity = next_state.squeeze(0)
+            new_path_states = torch.cat(
+                [current_path_tensor, action,next_state_entity.unsqueeze(0)], dim=0
+            )
+            path_length = new_path_states.size(0)
+            reached_max_horizon = path_length >= (max_env_steps * 2 -1 )
+            if reached_max_horizon:
+                done_scalar = torch.ones_like(done_scalar, dtype=torch.bool)
+                metrics["path/max_steps_reached"].append(1.0)
+
+            trimmed_path_tensor = new_path_states[-max_history:].detach().cpu()
+            transition = Transition(
+                state=agent_input.squeeze(0).detach().cpu(),
+                action=action.squeeze(0).detach().cpu(),
+                reward=total_reward.detach().cpu(),
+                next_state=next_state_entity.detach().cpu(),
+                done=done_scalar.detach().cpu(),
+                path_states=trimmed_path_tensor,
+                step_index=path_length - 1,
+                env_reward=env_reward_scalar.detach().cpu(),
+                llm_reward=llm_reward_scalar.detach().cpu(),
+                log_prob=log_prob.detach().cpu() if log_prob is not None else None,
+                entropy=entropy.detach().cpu() if entropy is not None else None,
+            )
+            replay_buffer.add_transition(question_id, transition)
+
+            metrics["reward/env_mean"].append(env_reward_scalar.mean().item())
+            metrics["reward/llm_mean"].append(llm_reward_scalar.mean().item())
+            metrics["reward/total_mean"].append(total_reward.mean().item())
+            metrics["done_ratio"].append(done_scalar.float().mean().item())
+            metrics["path/length_mean"].append(float(path_length))
+
+            if log_prob is not None:
+                metrics["policy/logprob_mean"].append(log_prob.mean().item())
+            if entropy is not None:
+                metrics["policy/entropy_mean"].append(entropy.mean().item())
+
+            total_transitions += 1
+
+    summary.update({
+        metric: float(sum(values) / len(values))
+        for metric, values in metrics.items()
+        if values
+    })
+    summary["num_transitions"] = float(total_transitions)
+    summary["num_questions_sampled"] = float(len(question_count_map))
+    summary["used_random_actions"] = float(use_random_actions)
+    summary["total_requested_steps"] = float(total_steps)
+
+    return summary
+
 
 @torch.no_grad()
 def collect_transitions_per_question(
@@ -1400,178 +1772,6 @@ def collect_transitions_per_question(
     return transitions, transitions_extras, summary
 
 
-@torch.no_grad()
-def gather_experience_steps(
-    env: ReinforcedUnsupervisedEnv,
-    actor: ContinuousPolicyGradient,
-    hunch_llm: nn.Module,
-    replay_buffer: QuestionReplayBuffer,
-    *,
-    mini_batch: pd.DataFrame,
-    num_steps: int,
-    max_env_steps: int,
-    pad_token_id: int,
-    use_random_actions: bool = False,
-) -> Dict[str, float]:
-    """Collect ``num_steps`` transitions by sampling questions with replacement."""
-
-    device = next(actor.parameters()).device
-    metrics: DefaultDict[str, List[float]] = defaultdict(list)
-    summary: Dict[str, float] = {}
-
-    question_ids: List[int] = mini_batch.index.tolist()
-
-    question_tokens = [
-        torch.as_tensor(seq, dtype=torch.long, device=device)
-        for seq in mini_batch["enc_questions"].values.tolist()
-    ]
-    path_sequences: List[List[int]] = mini_batch["triples_ints"].values.tolist()
-    answer_embeddings_raw = mini_batch.iloc[:, 3:].to_numpy()
-
-    answer_embeddings = [
-        torch.as_tensor(row, dtype=torch.float32, device=device)
-        for row in answer_embeddings_raw
-    ]
-
-    question_embeddings = env.get_llm_embeddings(question_tokens, device).detach()
-
-    question_data: Dict[int, Dict[str, torch.Tensor]] = {}
-    for idx, question_id in enumerate(question_ids):
-        question_embedding = question_embeddings[idx]
-        answer_embedding = answer_embeddings[idx]
-        path = path_sequences[idx]
-        if not path:
-            raise ValueError("Path sequence is empty; expected at least one entity id")
-        answer_entity_id = int(path[-1])
-        answer_id_tensor = torch.tensor([answer_entity_id], device=device, dtype=torch.long)
-
-        replay_buffer.ensure_question_metadata(
-            question_id,
-            question_embedding=question_embedding,
-            answer_embedding=answer_embedding,
-            answer_id=answer_id_tensor,
-        )
-
-        question_data[question_id] = {
-            "question_embedding": question_embedding.detach(),
-            "answer_embedding": answer_embedding.detach(),
-            "answer_id_tensor": answer_id_tensor.detach(),
-        }
-
-    sampled_indices = torch.randint(0, len(question_ids), (num_steps,), device=torch.device("cpu"))
-    sampled_question_ids = [question_ids[i] for i in sampled_indices.tolist()]
-    question_counts = Counter(sampled_question_ids)
-
-    action_dim = actor.mu_layer.out_features
-    total_transitions = 0
-    max_history = max(1, max_env_steps)
-
-    for question_id, repetitions in question_counts.items():
-        question_info = question_data[question_id]
-
-        if not replay_buffer.has_transitions(question_id):
-            init_state = env.reset(
-                question_info["question_embedding"].unsqueeze(0)
-            ).to(device)
-            if init_state.dim() == 2:
-                init_state = init_state.squeeze(0)
-            replay_buffer.add_reset_transition(question_id, init_state, action_dim)
-            metrics["init_resets"].append(1.0)
-
-        for _ in range(repetitions):
-            current_path_cpu = replay_buffer.get_current_path(question_id)
-            if not current_path_cpu:
-                init_state = env.reset(
-                    question_info["question_embedding"].unsqueeze(0)
-                ).to(device)
-                if init_state.dim() == 2:
-                    init_state = init_state.squeeze(0)
-                replay_buffer.set_current_path(question_id, [init_state])
-                current_path_cpu = [init_state.detach().cpu()]
-
-            current_path = [state.to(device) for state in current_path_cpu]
-            current_state = current_path[-1]
-            agent_input = current_state.unsqueeze(0)
-
-            if use_random_actions:
-                action = torch.empty(1, action_dim, device=device).uniform_(-1.0, 1.0)
-                log_prob = None
-                entropy = None
-            else:
-                action, log_prob, entropy, _, _ = actor(agent_input)
-
-            observation = ReinforcedUnsupervisedEnv.RUE_Observation(
-                state=current_state.unsqueeze(0),
-                answer_id=question_info["answer_id_tensor"],
-            )
-            next_state, env_reward, done_flags = env.step(observation, action)
-
-            next_state = next_state.to(device)
-            if next_state.dim() == 1:
-                next_state = next_state.unsqueeze(0)
-            env_reward = env_reward.to(device)
-            done_flags = done_flags.to(device)
-
-            llm_reward, _ = calculate_llm_reward_supasoft(
-                hunch_llm,
-                next_state,
-                question_info["answer_embedding"],
-            )
-
-            env_reward_scalar = env_reward.view(-1)
-            llm_reward_scalar = llm_reward.view(-1)
-            total_reward = env_reward_scalar + llm_reward_scalar
-            done_scalar = done_flags.view(-1)
-
-            next_state_entity = next_state.squeeze(0)
-            new_path_states = current_path + [next_state_entity]
-
-            transition = Transition(
-                state=agent_input.squeeze(0).detach().cpu(),
-                action=action.squeeze(0).detach().cpu(),
-                reward=total_reward.detach().cpu(),
-                next_state=next_state_entity.detach().cpu(),
-                done=done_scalar.detach().cpu(),
-                path_states=[state.detach().cpu() for state in new_path_states],
-                step_index=len(new_path_states) - 1,
-                env_reward=env_reward_scalar.detach().cpu(),
-                llm_reward=llm_reward_scalar.detach().cpu(),
-                log_prob=log_prob.detach().cpu() if log_prob is not None else None,
-                entropy=entropy.detach().cpu() if entropy is not None else None,
-            )
-            replay_buffer.add_transition(question_id, transition)
-
-            trimmed_path = new_path_states[-max_history:]
-            if done_scalar.any():
-                replay_buffer.reset_current_path(question_id)
-            else:
-                replay_buffer.set_current_path(question_id, trimmed_path)
-
-            metrics["reward/env_mean"].append(env_reward_scalar.mean().item())
-            metrics["reward/llm_mean"].append(llm_reward_scalar.mean().item())
-            metrics["reward/total_mean"].append(total_reward.mean().item())
-            metrics["done_ratio"].append(done_scalar.float().mean().item())
-            metrics["path/length_mean"].append(float(len(new_path_states)))
-
-            if log_prob is not None:
-                metrics["policy/logprob_mean"].append(log_prob.mean().item())
-            if entropy is not None:
-                metrics["policy/entropy_mean"].append(entropy.mean().item())
-
-            total_transitions += 1
-
-    summary.update({
-        metric: float(sum(values) / len(values))
-        for metric, values in metrics.items()
-        if values
-    })
-    summary["num_transitions"] = float(total_transitions)
-    summary["num_questions_sampled"] = float(len(question_counts))
-    summary["used_random_actions"] = float(use_random_actions)
-
-    return summary
-
-
 def main():
     # By default we run the config
     # Process data will determine by itself if there is any data to process
@@ -1603,9 +1803,9 @@ def main():
     pretrained_gtllm_metadata = torch.load(args.pretrained_gtllm_path, weights_only=False)
 
     logger.info("Loaded Pretrained Model Metadata, the data preview 如下所示: ")
-    for k,v in pretrained_gtllm_metadata.items():
+    # for k,v in pretrained_gtllm_metadata.items():
         # Check if V is an item that can be converted to a string
-        logger.info(f"The key {k} has value {v}")
+        # logger.info(f"The key {k} has value {v}")
 
     logger.info(f"The keys inside of pretrained_model_metadata are {pretrained_gtllm_metadata.keys()}")
 
@@ -1687,7 +1887,6 @@ def main():
     # At this point we assume that `pretraining` has run so a cache is waiting for us
     # You should not recalcualte the cache anyways, it is very dependent on how pretraining determined the cache
     # Talk to @ottersome if you need more info
-    raw_qadata_path = os.path.join(qna_data_path, "mquake_qna_ds.csv")
     train_df, dev_df, test_df = data_utils.load_cached_pretraining_data(args.pretraining_metadata_cache_path)
 
     data_partitions = DataPartitions(
@@ -1813,6 +2012,36 @@ def main():
     if args.visualize:
         args.verbose = True
 
+    critic_q1 = GraphCriticQ(
+        obs_dim=dim_observation,
+        action_dim=dim_relation,
+        encoder_num_layers=args.num_enc_layers,
+        encoder_num_heads=args.num_enc_heads,
+        enc_ff_dim=args.enc_ff_dim,
+        enc_dropout=args.enc_dropout,
+        dim_hidden=args.critic_q_hiddim,
+        max_seq_length=args.max_env_steps * 2 - 1
+    ).to(args.device)
+    critic_q2 = GraphCriticQ(
+        obs_dim=dim_observation,
+        action_dim=dim_relation,
+        encoder_num_layers=args.num_enc_layers,
+        encoder_num_heads=args.num_enc_heads,
+        enc_ff_dim=args.enc_ff_dim,
+        enc_dropout=args.enc_dropout,
+        dim_hidden=args.critic_q_hiddim,
+        max_seq_length=args.max_env_steps * 2 - 1
+    ).to(args.device)
+    value_net = GraphCriticV(
+        obs_dim=dim_observation,
+        encoder_num_layers=args.num_enc_layers,
+        encoder_num_heads=args.num_enc_heads,
+        enc_ff_dim=args.enc_ff_dim,
+        enc_dropout=args.enc_dropout,
+        dim_hidden=args.critic_v_hiddim,
+        max_seq_length=args.max_env_steps * 2 - 1
+    ).to(args.device)
+
     train_multihopkg(
         epochs=args.epochs,
         batch_size=args.batch_size,
@@ -1834,7 +2063,10 @@ def main():
         num_simulations_per_ques=args.experiences_per_question,
         wandb_on=args.wandb,
         num_update_steps=args.num_update_steps,
-        max_env_steps = args.max_env_steps
+        max_env_steps = args.max_env_steps,
+        critic_q1=critic_q1,
+        critic_q2=critic_q2,
+        value_net=value_net
     )
     logger.info("Done with everything. Exiting...")
 
