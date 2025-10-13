@@ -1,153 +1,274 @@
+from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Deque, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 
 
+@dataclass
+class Transition:
+    state: torch.Tensor
+    action: torch.Tensor
+    reward: torch.Tensor
+    next_state: torch.Tensor
+    done: torch.Tensor
+    path_states: List[torch.Tensor]
+    step_index: int
+    env_reward: torch.Tensor
+    llm_reward: torch.Tensor
+    log_prob: Optional[torch.Tensor] = None
+    entropy: Optional[torch.Tensor] = None
+
+
 class QuestionReplayBuffer:
-    """Torch-based replay buffer tailored for SAC-style training."""
+    """Replay buffer that keeps per-question sub-buffers."""
 
     @dataclass
     class QuestionBuffer:
-        states: List[List[torch.Tensor]]
-        steps_no: torch.Tensor
-        actions: torch.Tensor
-        rewards: torch.Tensor
-        next_states: torch.Tensor
-        dones: torch.Tensor
+        transitions: Deque[Transition]
+        current_path: List[torch.Tensor] = field(default_factory=list)
+        question_embedding: Optional[torch.Tensor] = None
+        answer_embedding: Optional[torch.Tensor] = None
+        answer_id: Optional[torch.Tensor] = None
+
+        def reset_path(self) -> None:
+            self.current_path = []
 
     def __init__(
         self,
         num_questions: int,
         state_shape: int,
         action_shape: int,
-        experiences_per_question: int, 
+        experiences_per_question: int,
         batch_size: int,
         *,
+        question_ids: Sequence[int],
         warmup_size: int = 0,
         min_update_steps: int = 0,
         dtype: torch.dtype = torch.float32,
         reward_dtype: torch.dtype = torch.float32,
     ) -> None:
-
+        self.num_questions = num_questions
         self.batch_size = batch_size
         self.warmup_size = warmup_size
         self.min_update_steps = min_update_steps
         self.experiences_per_question = experiences_per_question
-
         self._state_shape = state_shape
         self._action_shape = action_shape
+        self._dtype = dtype
+        self._reward_dtype = reward_dtype
 
-        self.replay_buffer: List[QuestionReplayBuffer.QuestionBuffer] = []
-        for i in range(num_questions):
-            storage_shape = (experiences_per_question, state_shape)
-            action_storage_shape = (experiences_per_question, action_shape)
+        assert len(question_ids) == num_questions, "question_ids must match num_questions"
+        self._question_ids = list(question_ids)
+        self._question_id_to_idx = {
+            question_id: idx for idx, question_id in enumerate(self._question_ids)
+        }
 
-            self.replay_buffer.append(
-                QuestionReplayBuffer.QuestionBuffer(
-                    states = [[]] * storage_shape[0],
-                    steps_no = torch.zeros(storage_shape, dtype=dtype), # Should just keep track of how many steps before this till reset. Debugging for now. 
-                    next_states = torch.zeros(storage_shape, dtype=dtype),
-                    actions = torch.zeros(action_storage_shape, dtype=dtype),
-                    rewards = torch.zeros((experiences_per_question,), dtype=reward_dtype),
-                    dones = torch.zeros((experiences_per_question,), dtype=torch.bool),
-            ))
+        self.capacity = num_questions * experiences_per_question
+        self._total_size = 0
 
 
-        self._extras: Dict[str, List[Any]] = {}
+        self._prepopulate(num_questions, experiences_per_question)
 
-        self._ptr = 0
-        self._size = 0
+    def _prepopulate(self, num_questions, experiences_per_question):
+        self.replay_buffer: List[QuestionReplayBuffer.QuestionBuffer] = [
+            QuestionReplayBuffer.QuestionBuffer(
+                transitions=deque(maxlen=experiences_per_question)
+            )
+            for _ in range(num_questions)
+        ]
 
     def __len__(self) -> int:
-        return self._size
+        return self._total_size
 
     @property
     def is_full(self) -> bool:
-        return self._size == self.capacity
-
-    @property
-    def state_shape(self) -> Tuple[int, ...]:
-        return self._state_shape
-
-    @property
-    def action_shape(self) -> Tuple[int, ...]:
-        return self._action_shape
+        return self._total_size >= self.capacity
 
     def is_ready(self, num_updates_done: int) -> bool:
-        """Return True when it's OK to start (or continue) optimization."""
-        return (
-            self._size >= self.warmup_size
-            and num_updates_done >= self.min_update_steps
-        )
+        if self._total_size < max(self.warmup_size, self.batch_size):
+            return False
+        return num_updates_done >= self.min_update_steps
 
-    def _allocate_extra_if_needed(self, key: str) -> None:
-        if key not in self._extras:
-            self._extras[key] = [None] * self.capacity
+    def resolve_question_idx(self, question_id: int) -> int:
+        return self._question_id_to_idx[question_id]
 
-    def add_batch(
+
+    def ensure_question_metadata(
         self,
-        question_idx: int,
+        question_id: int,
         *,
-        states: List[torch.Tensor], # For now we assume its a list of positions and actions on the graph. To be later consumed and processed by the decoder in the agent.
-        steps_no: torch.Tensor,
-        actions: torch.Tensor,
-        rewards: torch.Tensor,
-        next_states: torch.Tensor,
-        dones: torch.Tensor,
-        #extras: Optional[Mapping[str, Any]] = None,
+        question_embedding: torch.Tensor,
+        answer_embedding: torch.Tensor,
+        answer_id: torch.Tensor,
     ) -> None:
-        """Store a batch of transitions (expects tensors shaped [B, ...])."""
-        # TODO: its a bit too hardcoded  to grab from the first element.
-        batch_size = states[0].shape[0]
-        if batch_size == 0:
-            return
+        idx = self.resolve_question_idx(question_id)
+        buffer = self.replay_buffer[idx]
+        if buffer.question_embedding is None:
+            buffer.question_embedding = question_embedding.detach().cpu()
+        if buffer.answer_embedding is None:
+            buffer.answer_embedding = answer_embedding.detach().cpu()
+        if buffer.answer_id is None:
+            buffer.answer_id = answer_id.detach().cpu().to(torch.long)
 
-        indices = (torch.arange(batch_size, dtype=torch.long) + self._ptr) % self.experiences_per_question
+    def has_transitions(self, question_id: int) -> bool:
+        idx = self.resolve_question_idx(question_id)
+        return len(self.replay_buffer[idx].transitions) > 0
 
-        self.replay_buffer[question_idx].states[indices] = [ state.detach().cpu() for state in states]
-        self.replay_buffer[question_idx].steps_no[indices] = steps_no.detach().cpu()
-        self.replay_buffer[question_idx].actions[indices] = actions.detach().cpu()
-        rewards_cpu = rewards[question_idx].detach().cpu().view(batch_size, -1)
-        if rewards_cpu.shape[1] != 1:
-            raise ValueError("rewards must be of shape [batch] or [batch, 1]")
-        self.replay_buffer[question_idx].rewards[indices] = rewards_cpu.squeeze(-1)
-        self.replay_buffer[question_idx].next_states[indices] = next_states[question_idx].detach().cpu()
-        dones_cpu = dones[question_idx].detach().cpu().view(batch_size, -1)
-        if dones_cpu.shape[1] != 1:
-            raise ValueError("dones must be of shape [batch] or [batch, 1]")
-        self.replay_buffer[question_idx].dones[indices] = dones_cpu.squeeze(-1).to(torch.bool)
+    def get_current_path(self, question_id: int) -> List[torch.Tensor]:
+        idx = self.resolve_question_idx(question_id)
+        return list(self.replay_buffer[idx].current_path)
 
-        self._ptr = (self._ptr + batch_size) % self.experiences_per_question
-        self._size = min(self._size + batch_size, self.experiences_per_question)
+    def set_current_path(
+        self, question_id: int, path_states: Iterable[torch.Tensor]
+    ) -> None:
+        idx = self.resolve_question_idx(question_id)
+        self.replay_buffer[idx].current_path = [
+            state.detach().cpu() for state in path_states
+        ]
 
-    def sample(self, device: torch.device) -> Dict[str, torch.Tensor]:
-        """Sample a random batch and move tensors onto the target device."""
-        if self._size < self.batch_size:
+    def reset_current_path(self, question_id: int) -> None:
+        idx = self.resolve_question_idx(question_id)
+        self.replay_buffer[idx].reset_path()
+
+    def get_question_embedding(self, question_id: int) -> torch.Tensor:
+        idx = self.resolve_question_idx(question_id)
+        embedding = self.replay_buffer[idx].question_embedding
+        if embedding is None:
+            raise RuntimeError(
+                f"Question {question_id} does not have an associated embedding"
+            )
+        return embedding
+
+    def get_answer_embedding(self, question_id: int) -> torch.Tensor:
+        idx = self.resolve_question_idx(question_id)
+        embedding = self.replay_buffer[idx].answer_embedding
+        if embedding is None:
+            raise RuntimeError(
+                f"Question {question_id} does not have an associated answer embedding"
+            )
+        return embedding
+
+    def get_answer_id(self, question_id: int) -> torch.Tensor:
+        idx = self.resolve_question_idx(question_id)
+        answer_id = self.replay_buffer[idx].answer_id
+        if answer_id is None:
+            raise RuntimeError(
+                f"Question {question_id} does not have an associated answer id"
+            )
+        return answer_id
+
+    def add_transition(self, question_id: int, transition: Transition) -> None:
+        idx = self.resolve_question_idx(question_id)
+        buffer = self.replay_buffer[idx]
+
+        prev_len = len(buffer.transitions)
+        buffer.transitions.append(transition)
+        new_len = len(buffer.transitions)
+        self._total_size += new_len - prev_len
+
+    def add_reset_transition(
+        self,
+        question_id: int,
+        state: torch.Tensor,
+        action_dim: int,
+    ) -> None:
+        state_cpu = state.detach().cpu()
+        zero_action = torch.zeros(action_dim, dtype=self._dtype)
+        zero_reward = torch.zeros(1, dtype=self._reward_dtype)
+        zero_done = torch.zeros(1, dtype=torch.bool)
+
+        reset_transition = Transition(
+            state=state_cpu,
+            action=zero_action,
+            reward=zero_reward,
+            next_state=state_cpu,
+            done=zero_done,
+            path_states=[state_cpu],
+            step_index=0,
+            env_reward=zero_reward,
+            llm_reward=zero_reward,
+        )
+        self.add_transition(question_id, reset_transition)
+        self.set_current_path(question_id, [state_cpu])
+
+    def iter_all(self) -> Iterable[Tuple[int, Transition]]:
+        for internal_idx, question_buffer in enumerate(self.replay_buffer):
+            question_id = self._question_ids[internal_idx]
+            for transition in question_buffer.transitions:
+                yield question_id, transition
+
+    def sample(self, device: torch.device, batch_size: Optional[int] = None) -> Dict[str, torch.Tensor]:
+        if batch_size is None:
+            batch_size = self.batch_size
+
+        all_transitions: List[Tuple[int, Transition]] = list(self.iter_all())
+        if len(all_transitions) < batch_size:
             raise ValueError(
                 "Cannot sample from replay buffer before it holds at least one batch"
             )
 
-        idx = torch.randint(0, self._size, (self.batch_size,))
+        perm = torch.randperm(len(all_transitions))[:batch_size]
+
+        states = []
+        actions = []
+        rewards = []
+        next_states = []
+        dones = []
+        env_rewards = []
+        llm_rewards = []
+        log_probs: List[torch.Tensor] = []
+        entropies: List[torch.Tensor] = []
+        question_embeddings = []
+        question_ids: List[int] = []
+        path_states: List[List[torch.Tensor]] = []
+        step_indices: List[int] = []
+
+        for idx in perm.tolist():
+            question_id, transition = all_transitions[idx]
+            states.append(transition.state)
+            actions.append(transition.action)
+            rewards.append(transition.reward)
+            next_states.append(transition.next_state)
+            dones.append(transition.done)
+            env_rewards.append(transition.env_reward)
+            llm_rewards.append(transition.llm_reward)
+            path_states.append(transition.path_states)
+            step_indices.append(transition.step_index)
+            question_embeddings.append(self.get_question_embedding(question_id))
+            question_ids.append(question_id)
+
+            if transition.log_prob is not None:
+                log_probs.append(transition.log_prob)
+            if transition.entropy is not None:
+                entropies.append(transition.entropy)
 
         batch = {
-            "states": self.states[idx].to(device),
-            "actions": self.actions[idx].to(device),
-            "rewards": self.rewards[idx].unsqueeze(-1).to(device),
-            "next_states": self.next_states[idx].to(device),
-            "dones": self.dones[idx].unsqueeze(-1).to(device),
+            "states": torch.stack(states).to(device),
+            "actions": torch.stack(actions).to(device),
+            "rewards": torch.stack(rewards).to(device),
+            "next_states": torch.stack(next_states).to(device),
+            "dones": torch.stack(dones).to(device),
         }
 
-        if self._extras:
-            extras_batch: Dict[str, Any] = {}
-            for key, values in self._extras.items():
-                gathered = [values[i] for i in idx.tolist()]
-                first_item = gathered[0]
-                if isinstance(first_item, torch.Tensor):
-                    extras_batch[key] = torch.stack(gathered).to(device)
-                else:
-                    extras_batch[key] = gathered
-            batch["extras"] = extras_batch
+        extras: Dict[str, torch.Tensor] = {
+            "env_reward": torch.stack(env_rewards).to(device),
+            "llm_reward": torch.stack(llm_rewards).to(device),
+            "question_embedding": torch.stack(question_embeddings).to(device),
+            "question_id": torch.tensor(question_ids, dtype=torch.long, device=device),
+            "step_index": torch.tensor(step_indices, dtype=torch.long, device=device),
+        }
+
+        if log_probs:
+            extras["log_prob"] = torch.stack(log_probs).to(device)
+        if entropies:
+            extras["entropy"] = torch.stack(entropies).to(device)
+
+        batch["extras"] = {
+            **extras,
+            "path_states": path_states,
+        }
 
         return batch
