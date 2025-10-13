@@ -10,7 +10,7 @@ class QuestionReplayBuffer:
 
     @dataclass
     class QuestionBuffer:
-        states: torch.Tensor
+        states: List[List[torch.Tensor]]
         steps_no: torch.Tensor
         actions: torch.Tensor
         rewards: torch.Tensor
@@ -46,7 +46,7 @@ class QuestionReplayBuffer:
 
             self.replay_buffer.append(
                 QuestionReplayBuffer.QuestionBuffer(
-                    states = torch.zeros(storage_shape, dtype=dtype),
+                    states = [[]] * storage_shape[0],
                     steps_no = torch.zeros(storage_shape, dtype=dtype), # Should just keep track of how many steps before this till reset. Debugging for now. 
                     next_states = torch.zeros(storage_shape, dtype=dtype),
                     actions = torch.zeros(action_storage_shape, dtype=dtype),
@@ -90,30 +90,15 @@ class QuestionReplayBuffer:
         self,
         question_idx: int,
         *,
-        states: torch.Tensor,
+        states: List[torch.Tensor], # For now we assume its a list of positions and actions on the graph. To be later consumed and processed by the decoder in the agent.
         steps_no: torch.Tensor,
         actions: torch.Tensor,
         rewards: torch.Tensor,
         next_states: torch.Tensor,
         dones: torch.Tensor,
-        extras: Optional[Mapping[str, Any]] = None,
+        #extras: Optional[Mapping[str, Any]] = None,
     ) -> None:
         """Store a batch of transitions (expects tensors shaped [B, ...])."""
-        
-        # TODO: Potentially remove them. A bit redundant to check for this
-        # if states.shape[1:] != self._state_shape:
-        #     raise ValueError(
-        #         f"states has shape {states.shape[1:]}, expected {self._state_shape}"
-        #     )
-        # if actions.shape[1:] != self._action_shape:
-        #     raise ValueError(
-        #         f"actions has shape {actions.shape[1:]}, expected {self._action_shape}"
-        #     )
-        # if next_states.shape[1:] != self._state_shape:
-        #     raise ValueError(
-        #         f"next_states has shape {next_states.shape[1:]}, expected {self._state_shape}"
-        #     )
-
         # TODO: its a bit too hardcoded  to grab from the first element.
         batch_size = states[0].shape[0]
         if batch_size == 0:
@@ -121,7 +106,7 @@ class QuestionReplayBuffer:
 
         indices = (torch.arange(batch_size, dtype=torch.long) + self._ptr) % self.experiences_per_question
 
-        self.replay_buffer[question_idx].states[indices] = states.detach().cpu()
+        self.replay_buffer[question_idx].states[indices] = [ state.detach().cpu() for state in states]
         self.replay_buffer[question_idx].steps_no[indices] = steps_no.detach().cpu()
         self.replay_buffer[question_idx].actions[indices] = actions.detach().cpu()
         rewards_cpu = rewards[question_idx].detach().cpu().view(batch_size, -1)
@@ -134,33 +119,6 @@ class QuestionReplayBuffer:
             raise ValueError("dones must be of shape [batch] or [batch, 1]")
         self.replay_buffer[question_idx].dones[indices] = dones_cpu.squeeze(-1).to(torch.bool)
 
-        # TODO: Add the extras later
-        # if extras:
-        #     for key, value in extras.items():
-        #         self._allocate_extra_if_needed(key)
-        #         value_list = self._extras[key]
-        #
-        #         if isinstance(value, torch.Tensor):
-        #             value = value.detach().cpu()
-        #         elif isinstance(value, (list, tuple)):
-        #             value = list(value)
-        #
-        #         if isinstance(value, torch.Tensor):
-        #             # Split tensor along batch dimension
-        #             for slot, item in zip(indices.tolist(), value):
-        #                 value_list[slot] = item
-        #         elif isinstance(value, list):
-        #             if len(value) != batch_size:
-        #                 raise ValueError(
-        #                     f"Extra field '{key}' must have length {batch_size}, got {len(value)}"
-        #                 )
-        #             for slot, item in zip(indices.tolist(), value):
-        #                 value_list[slot] = item
-        #         else:
-        #             raise TypeError(
-        #                 "Extras must be torch.Tensor or list-like batch;"
-        #                 f" got type {type(value)} for key '{key}'"
-        #             )
         self._ptr = (self._ptr + batch_size) % self.experiences_per_question
         self._size = min(self._size + batch_size, self.experiences_per_question)
 

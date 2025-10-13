@@ -1,5 +1,6 @@
 from numpy import common_type
 from torch._C import _cuda_tunableop_set_max_tuning_duration
+from multihopkg.models_language.classical import DecoderLayer, PositionalEncoding
 from multihopkg.utils.ops import int_fill_var_cuda, var_cuda, zeros_var_cuda
 from multihopkg.utils import ops
 import torch
@@ -25,8 +26,12 @@ class ContinuousPolicyGradient(nn.Module):
         beta: float,
         gamma: float,
         dim_action: int,
-        dim_hidden: int,
+        enc_ff_dim: int,
         dim_observation: int,
+        max_path_length: int,
+        encoder_num_layers: int, 
+        encoder_num_heads: int,
+        encoder_dropout: float,
         log_std_min: float = -20,
         log_std_max: float = 2,
     ):
@@ -36,11 +41,17 @@ class ContinuousPolicyGradient(nn.Module):
         self.beta = beta  # entropy regularization parameter
         self.gamma = gamma  # shrinking factor
 
+        self.max_seq_length = max_path_length
         ########################################
         # Torch Modules
         ########################################
-        self.hidden1, self.hidden2, self.mu_layer, self.sigma_layer = self._define_modules(
-            input_dim=dim_observation, observation_dim=dim_action, hidden_dim=dim_hidden
+        self.graph_encoder, self.mu_layer, self.sigma_layer = self._define_modules(
+            encoder_num_layers=encoder_num_layers,
+            obs_dim=dim_observation,
+            encoder_num_heads=encoder_num_heads,
+            enc_ff_dim=enc_ff_dim,
+            enc_dropout=encoder_dropout,
+            action_dim=dim_action
         )
 
         self.log_std_min = log_std_min
@@ -61,8 +72,9 @@ class ContinuousPolicyGradient(nn.Module):
         args
             observations: torch.Tensor. Shape: (batch_len, path_encoder_dim)
         """
-        projections = F.relu(self.hidden1(observations))
-        projections = F.relu(self.hidden2(projections))
+
+        # TODO: We need a mask as input 
+        projections = self.graph_encoder(observations)
 
         mu = self.mu_layer(projections).tanh()
 
@@ -90,20 +102,40 @@ class ContinuousPolicyGradient(nn.Module):
 
         return actions, log_probs, entropy, mu, sigma
 
+    def _define_modules(
+        self,
+        encoder_num_layers: int,
+        obs_dim: int,
+        encoder_num_heads: int,
+        enc_ff_dim: int,
+        enc_dropout: float,
+        action_dim: int,
+    ):
 
-    def _define_modules(self, input_dim:int, observation_dim: int, hidden_dim: int):
-
-        hidden1 = nn.Linear(input_dim, hidden_dim)
-        hidden2 = nn.Linear(hidden_dim, hidden_dim)
+        # TOREM: legacy
+        # hidden1 = nn.Linear(input_dim, hidden_dim)
+        # hidden2 = nn.Linear(hidden_dim, hidden_dim)
         
-        mu_layer = nn.Linear(hidden_dim, observation_dim)
-        sigma_layer = nn.Linear(hidden_dim, observation_dim)
+        # Transformer Stack
+        decoder_layers = nn.ModuleList(
+            [DecoderLayer(obs_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
+        )
+        positional_encoding_xattn_left = PositionalEncoding(obs_dim, self.max_seq_length)
+        graph_encoder = nn.Sequential(
+            positional_encoding_xattn_left,
+            nn.Dropout(enc_dropout),
+            decoder_layers
+        )
+        
+        # AutoEncoder Stack
+        mu_layer = nn.Linear(enc_ff_dim, action_dim)
+        sigma_layer = nn.Linear(enc_ff_dim, action_dim)
 
         # Custom initialization
         mu_layer = init_layer_uniform(mu_layer)
         sigma_layer = init_layer_uniform(sigma_layer)
 
-        return hidden1, hidden2, mu_layer, sigma_layer
+        return graph_encoder, mu_layer, sigma_layer
 
     def _reparemeteriztion(self, dist, action):
         return dist.log_prob(action).sum(dim=-1)

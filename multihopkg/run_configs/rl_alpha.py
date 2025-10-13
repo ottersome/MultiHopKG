@@ -19,13 +19,22 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--track_gradients', '-g', action='store_true', help='Track and log gradients during training')
     ap.add_argument('--preferred_config', type=str, default="configs/rl_config.yaml", help="Path to YAML configuration file (default: configs/my_config.yaml). " \
                         "If not empty, overrides the respective command line arguments.")
+
+    # Buffer
     ap.add_argument('--replay_buffer_memory_per_question', type=int, default=25000, help="Max number of steps that the replay buffer can hold.")
     ap.add_argument('--replay_min_usable_size', type=int, default=10000, help="Minium number of transitions necessary in the Replay Buffer deemed sufficient to train the model.")
+
+    # Environment
     ap.add_argument('--max_env_steps', type=int, default=8, help="Maximum number of steps to collect from an initial configuration")
     # TODO: Empirically determine this value.
     ap.add_argument('--reached_destination_threshold', type=float, default=0.001, help="Threshold used to determine whethere or not we have reached the destination.")
     ap.add_argument('--experiences_per_question', type=int, default=100, help="How many experiences to collect per question in the replay buffer.")
     ap.add_argument('--num_simulations_per_ques', type=int, default=100, help="How many experiences to collect per question in the replay buffer.")
+
+    # Agent
+    ap.add_argument('--num_enc_layers', type=int, default=3, help="How many layers for the agent's graph encoder.")
+    ap.add_argument('--num_enc_heads', type=int, default=4, help="How many heads for the agent's graph encoder.")
+    ap.add_argument('--enc_dropout', type=int, default=4, help="Dropout Rate for the agents encoder")
 
     # Learning Hyperparameters
     ap.add_argument('--learning_rate', type=float, default=0.00001, help='Learning rate for optimizer (default: 1e-5)')
@@ -60,14 +69,15 @@ def get_args() -> argparse.Namespace:
     # Datasets & File Paths
     # QA Dataset
     ap.add_argument('--raw_QAData_path', type=str, default="./data/mquake/mquake_qna_ds.csv", help="Path to the raw QA CSV dataset (default: FreebaseQA)")
-    ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/mquake/mquake_clean.json", help="Path to cached tokenized QA metadata JSON file")
+    ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/mquake_aligned/mquake.json", help="Path to cached tokenized QA metadata JSON file")
     ap.add_argument('--force_data_prepro', '-f', action="store_true", help="Force re-processing of QA data, even if cache exists")
     ap.add_argument('--use_kge_question_embedding', '-kq', action="store_true", help="Use entity and relation embedding as the questions instead of textual question. Only valid for single-hop task. (default: False)")
     #TODO: Add the override_split option here
 
     # GTLLm Parameters
-    ap.add_argument('--pretrained_gtllm_path', default="models/gtllm/flagship.pt", type=str)
+    ap.add_argument('--pretrained_gtllm_path', default="models/gtllm_bert_aligned/flagship.pt", type=str)
     ap.add_argument('--frozen_llm_weights', action="store_true", default="If true, it will freeze HunchBart llm weights")
+    ap.add_argument('--pretraining_metadata_cache_path', default=".cache/mquake_aligned/mquake.json", type=str)
     
     # Navigation Agent Settings
     ap.add_argument('--nav_start_emb_type', type=str, default="centroid", help="Initial navigation point: 'centroid', 'random', or 'relevant'")

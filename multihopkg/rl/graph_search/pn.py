@@ -14,6 +14,7 @@ import pandas
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 
 from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
 from multihopkg.rl.utils import QuestionReplayBuffer
@@ -470,20 +471,24 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         self.nav_start_emb_type = nav_start_emb_type
 
     # TODO: ought only to be used for replenishing the replay buffer (so as to not have distributional shift)
-    def reset(self, initial_state_info: Optional[Any] = None) -> torch.Tensor:
+    def reset(self, initial_state_info: torch.Tensor) -> torch.Tensor:
         """
         Reset the environment
         Args:
             - initial_state_info: None for now, not used
         """
+        num_questions = initial_state_info.shape[0]
 
-        # For now we are passing noe
+        # For now we dont allow relevant entries
         if self.nav_start_emb_type == 'relevant':
             raise NotImplementedError("Unsupervised currently has no impolementation support for relevant start embedding type.")
-        init_emb = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, None)
+
+        initial_states = []
+        for i in range(num_questions):
+            initial_states.append(self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, None))
 
 
-        return init_emb.clone()
+        return torch.stack(initial_states)
 
     def step(self, cur_state: RUE_Observation, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ########################################
@@ -524,7 +529,7 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         
         return current_position, extrinsic_reward, answer_found
 
-    def get_llm_embeddings(self, questions: Union[List[np.ndarray], List[List[int]]], device: torch.device) -> torch.Tensor:
+    def get_llm_embeddings(self, questions: List[torch.Tensor], device: torch.device) -> torch.Tensor:
         """
         Will take a list of list of token ids, pad them and then pass them to the embedding module to get single embeddings for each question
         Args:
@@ -532,21 +537,18 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         Return:
             - questions_embeddings (torch.Tensor): The embeddings of the questions.
         """
-        # Format the input for the legacy funciton inside
-        tensorized_questions = [
-            torch.tensor(q).to(torch.int32).to(device).view(1, -1) for q in questions
-        ]
-        # We should conver them to embeddinggs before sending them over
+        # Format the input for the legacy function inside
+        # We should convert them to embeddings before sending them over
 
         padding_value = self.question_embedding_module.config.pad_token_id # type:ignore
-        assert padding_value is not None
-        padded_tokens, attention_mask = ops.pad_and_cat(
-            tensorized_questions, padding_value=padding_value, padding_dim=1
-        )
-        attention_mask = attention_mask.to(device)
-        embedding_output = self.question_embedding_module(input_ids=padded_tokens, attention_mask=attention_mask)
+        padded_tokens = pad_sequence(
+            questions, batch_first=True, padding_value=padding_value) # type: ignore
+        attention_mask = (padded_tokens != padding_value).to(device)
+        with torch.no_grad():
+            embedding_output = self.question_embedding_module(input_ids=padded_tokens, attention_mask=attention_mask)
+
         last_hidden_state = embedding_output.last_hidden_state
-        # TODO: Figure out if we want to grab a single one of the embeddings or just aggregaate them through mean.
+        # TODO: Check that this is actually necessary. Last_hidden state ought to be enough. Perhaps embedding_output ought to have its own pooled state
         final_embedding = last_hidden_state.mean(dim=1)
 
         return final_embedding

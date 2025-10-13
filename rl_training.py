@@ -1115,7 +1115,7 @@ def initialize_path(questions: torch.Tensor):
 
 
 # TODO: Move function to a separate file
-def calculate_llm_reward(
+def calculate_llm_reward_autoregressive(
     hunch_llm: nn.Module,
     obtained_state: torch.Tensor,
     answers_ids: torch.Tensor,
@@ -1155,6 +1155,17 @@ def calculate_llm_reward(
     return reward, logits
 
 
+def calculate_llm_reward_supasoft(
+    hunch_llm: nn.Module, obtained_state: torch.Tensor, answer_embedding: torch.Tensor
+):
+    with torch.no_grad():
+        _, bert_ans_embeddings = hunch_llm(
+            graph_embeddings=obtained_state, decoder_input_ids=answer_embedding, 
+        )
+    mse_loss = F.mse_loss(bert_ans_embeddings, answer_embedding)
+    reward = -mse_loss
+    return reward
+
 @torch.no_grad()
 def collect_transitions_per_question(
     env: ReinforcedUnsupervisedEnv,
@@ -1162,39 +1173,62 @@ def collect_transitions_per_question(
     hunch_llm: nn.Module,
     *,
     num_simulations: int,
-    question_embedding: torch.Tensor,
-    answer_token_ids: torch.Tensor,
-    answer_pad_mask: torch.Tensor,
+    question_embeddings: torch.Tensor,
+    answer_bert_embeddings: torch.Tensor,
     path: List[int],
-    action_overrides: Optional[torch.Tensor] = None,
     max_env_steps: int,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, float]]:
-    """Roll each question through the environment and return transitions for replay."""
+    """Roll a single question through the environment and return transitions for replay."""
 
-    device = question_embedding.device
-    batch_size = question_embedding.size(0)
+    assert (
+        question_embeddings.dim() == 1
+    ), "collect_transitions_per_question() only takes a single question at a time. You are sending a 2d tensor."
+    assert (
+        answer_bert_embeddings.dim() == 1
+    ), "collect_transitions_per_question() only takes a single answer at a time. You are sending a 2d tensor."
+
+    ########################################
+    # Input Processing
+    ########################################
+
+    device = question_embeddings.device
+    action_dim = actor.mu_layer.out_features
 
     path_answer_id = torch.Tensor(path[-1]).to(torch.long).to(device)
 
-    # Pre-compute masks for token-level rewards (drop BOS token)
-    token_mask = answer_pad_mask[:, 1:].to(device)
-    token_mask_float = token_mask.float()
-    token_counts = token_mask_float.sum(dim=1).clamp(min=1.0)
-
-    observation = env.reset(question_embedding).to(device) # Our current approach doesnt provide any info to reseting the environment
-    # Now we concatenate
-    observation = torch.cat((observation, question_embedding), dim=-1)
-
     # Tile questions and answers.
-    ques_n_start_cat = question_embedding.shape[1]
-    question_embedding = question_embedding.repeat(ques_n_start_cat, 1)
-    path_answer_id = path_answer_id.repeat(num_simulations, 1)
+    question_embeddings = question_embeddings.view(1,-1).repeat(num_simulations, 1)
+    answer_embeddings = answer_bert_embeddings
+    path_answer_id = path_answer_id.view(1,-1).repeat(num_simulations, 1)
 
-    prev_state = observation
-    if prev_state.dim() < 2:
-        prev_state = prev_state.unsqueeze(0)
+    # Normalize any provided action overrides to [steps, batch, action_dim]
+    # TODO: Look into this, if we want to enforce an overriding action. For now we comment it out
+    # overrides_tensor: Optional[torch.Tensor]
+    # overrides_tensor = None
+    # if action_overrides is not None:
+    #     if action_overrides.dim() == 2:
+    #         expected_shape = (num_simulations, action_dim)
+    #         if tuple(action_overrides.shape) != expected_shape:
+    #             raise ValueError(
+    #                 "action_overrides must have shape "
+    #                 f"{expected_shape}, got {tuple(action_overrides.shape)}"
+    #             )
+    #             #TODO: This is weird. I cannto think of a reason we would want to squeeze this out.
+    #         overrides_tensor = action_overrides.unsqueeze(0).to(device)
+    #     else:
+    #         raise ValueError("action_overrides must be rank 2 or 3")
+
+
+    observations = env.reset(question_embeddings).to(device) # Our current approach doesnt provide any info to reseting the environment
+    observations = torch.cat((observations, question_embeddings), dim=-1)
+
+    ########################################
+    # Some Data Prepping
+    ########################################
+    prev_state = observations
+    # if prev_state.dim() < 2:
+    #     prev_state = prev_state.unsqueeze(0)
     state_shape = prev_state.shape[1:]
-    action_dim = actor.mu_layer.out_features
     action_shape: Tuple[int, ...] = (action_dim,)
 
     metrics: DefaultDict[str, List[float]] = defaultdict(list)
@@ -1211,76 +1245,61 @@ def collect_transitions_per_question(
     extra_entropy: List[torch.Tensor] = []
     extra_logprob: List[torch.Tensor] = []
 
-    # Normalize any provided action overrides to [steps, batch, action_dim]
-    overrides_tensor: Optional[torch.Tensor]
-    overrides_tensor = None
-    if action_overrides is not None:
-        action_overrides = action_overrides.to(device)
-        if action_overrides.dim() == 2:
-            expected_shape = (batch_size, action_dim)
-            if tuple(action_overrides.shape) != expected_shape:
-                raise ValueError(
-                    "action_overrides must have shape "
-                    f"{expected_shape}, got {tuple(action_overrides.shape)}"
-                )
-            overrides_tensor = action_overrides.unsqueeze(0)
-        elif action_overrides.dim() == 3:
-            if (
-                action_overrides.shape[1] != batch_size
-                or action_overrides.shape[2] != action_dim
-            ):
-                raise ValueError(
-                    "action_overrides with step dimension must have shape"
-                    f" [steps, {batch_size}, {action_dim}], got"
-                    f" {tuple(action_overrides.shape)}"
-                )
-            overrides_tensor = action_overrides
-        else:
-            raise ValueError("action_overrides must be rank 2 or 3")
-
-    active_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
+    active_mask = torch.ones(num_simulations, dtype=torch.bool, device=device)
     steps_taken = 0
 
+    ########################################
+    # Start Collecting Experience
+    ########################################
     for step_idx in range(max_env_steps):
         if not active_mask.any():
             break
 
-        if overrides_tensor is not None:
-            override_index = min(step_idx, overrides_tensor.shape[0] - 1)
-            actions = overrides_tensor[override_index]
-            log_prob = None
-            entropy = None
-        else:
-            actions, log_prob, entropy, _, _ = actor(prev_state)
+        # TODO: unsure if I want overrides here.
+        # if overrides_tensor is not None:
+        #     override_index = min(step_idx, overrides_tensor.shape[0] - 1)
+        #     actions = overrides_tensor[override_index]
+        #     log_prob = None
+        #     entropy = None
+        # else:
+        #     actions, log_prob, entropy, _, _ = actor(prev_state)
 
-        if actions.dim() == 1:
-            actions = actions.unsqueeze(-1)
 
+        ########################################
+        # Take Action, Step in Environment
+        ########################################
+        actions, log_prob, entropy, _, _ = actor(prev_state)
+
+        # TODO: Ensure the active_mask mechanism is working properly, or even necessary.
         if not active_mask.all():
             actions = actions.clone()
             actions[~active_mask] = 0
-
         step_observation = ReinforcedUnsupervisedEnv.RUE_Observation(
             state=prev_state, answer_id=path_answer_id
         )
+
         next_observation, extrinsic_reward, done_flags = env.step(step_observation, actions)
         next_state = next_observation
 
         if next_state.dim() < 2:
             next_state = next_state.unsqueeze(0)
 
-        llm_input = (
-            next_state.unsqueeze(1)
-            if next_state.dim() == 2
-            else next_state
-        )
-        llm_reward_tokens, _ = calculate_llm_reward(
+        ########################################
+        # Calculate Reward
+        ########################################
+        # llm_input = next_state.unsqueeze(1) if next_state.dim() == 2 else next_state
+        # llm_reward_tokens, _ = calculate_llm_reward_supasoft(
+        llm_scalar_reward, _ = calculate_llm_reward_supasoft(
             hunch_llm,
-            llm_input,
-            answer_token_ids,
+            next_state,
+            answer_bert_embeddings,
         )
-        llm_scalar_reward = (llm_reward_tokens * token_mask_float).sum(dim=1) / token_counts
+        # llm_scalar_reward = (llm_reward_tokens * token_mask_float).sum(dim=1) / token_counts
 
+
+        ########################################
+        # Record Results
+        ########################################
         extrinsic_scalar = extrinsic_reward.squeeze(-1)
         total_reward = extrinsic_scalar + llm_scalar_reward
 
@@ -1318,7 +1337,7 @@ def collect_transitions_per_question(
         active_mask = active_mask & (~done_flags.squeeze(-1))
         prev_state = next_state
         # TODO: This feels a bit forced, think about it. Perhaps project it if you want to stick with it.
-        prev_state = torch.cat((prev_state, question_embedding), dim=-1)
+        prev_state = torch.cat((prev_state, question_embeddings), dim=-1)
         steps_taken += 1
 
     # Edge Case: For when we really didnt capture anything
@@ -1385,29 +1404,19 @@ def populate_replay_buffer(
 
     # TODO: Check the typing on this. Ideally I would like to just dump them as a tensor rather than a dataframe. Perhaps a dataclass or smeth
     question_tokens = [
-        ensure_list_of_ints(seq)
-        for seq in mini_batch["enc_questions"].tolist()
+        torch.LongTensor(seq).to(device)
+        for seq in mini_batch["enc_questions"].values.tolist()
     ]
     answer_sequences = [
-        np.array(ensure_list_of_ints(seq), dtype=np.int64)
-        for seq in mini_batch["enc_answer"].tolist()
+        torch.LongTensor(seq).to(device)
+        for seq in mini_batch["enc_answer"].values.tolist()
     ]
-    path_sequences = [
-        ensure_list_of_ints(path)
-        for path in mini_batch["triples_ints"].tolist()
+    path_sequences = mini_batch["triples_ints"].values.tolist()
+    # NOTE: Need to be careful about this. If we add an extra column to the right we need to change this
+    answers_bert_embeddings = [
+        torch.Tensor(seq)
+        for seq in mini_batch.iloc[:,3:].values.tolist()
     ]
-    #
-    # query_entity_ids: List[int] = []
-    # query_relation_ids: List[int] = []
-    # answer_entity_ids: List[int] = []
-    # for path in path_sequences:
-    #     if len(path) < 3:
-    #         raise ValueError(
-    #             "Each path in 'triples_ints' must include at least an entity, relation, and terminal entity"
-    #         )
-    #     query_entity_ids.append(int(path[0]))
-    #     answer_entity_ids.append(int(path[-1]))
-    #     query_relation_ids.append(int(path[1]))
     
     # TODO: Remove this if we dont really find it useful
     # if env.use_kge_question_embedding:
@@ -1420,11 +1429,12 @@ def populate_replay_buffer(
         # question_embeddings = env.get_llm_embeddings(question_tokens, device)
 
     question_embeddings = env.get_llm_embeddings(question_tokens, device)
+    # TODO: I Will likely have to unroll some dimensions here 🔼
 
     # answer_token_ids = collate_token_ids_batch(answer_sequences, pad_token_id).to(torch.int64)
     # answer_token_ids = answer_token_ids.to(device)
-    answer_token_ids = answer_sequences.to(torch.int64).to(device)
-    answer_pad_mask = answer_token_ids.ne(pad_token_id)
+    # answer_token_ids = answer_sequences.to(torch.int64).to(device)
+    # answer_pad_mask = answer_token_ids.ne(pad_token_id)
 
     batch_size = question_embeddings.size(0)
 
@@ -1447,11 +1457,9 @@ def populate_replay_buffer(
             actor,
             hunch_llm,
             num_simulations=num_simulations_per_ques,
-            question_embedding=question_embeddings[batchelem_idx,:],
-            answer_token_ids=answer_token_ids[batchelem_idx, :],
-            answer_pad_mask=answer_pad_mask[batchelem_idx, :],
+            question_embeddings=question_embeddings[batchelem_idx,:],
+            answer_bert_embeddings=answers_bert_embeddings[batchelem_idx],
             path=path_sequences[batchelem_idx],
-            action_overrides=action_overrides,
             max_env_steps=max_env_steps,
         )
 
@@ -1465,7 +1473,7 @@ def populate_replay_buffer(
                 rewards=transitions["rewards"],
                 next_states=transitions["next_states"],
                 dones=transitions["dones"],
-                extras=transitions_extras,
+                #extras=transitions_extras,
             )
 
         metrics["used_random_actions"] = float(use_random_actions)
@@ -1584,19 +1592,12 @@ def main():
     id2ent, ent2id, id2rel, rel2id = data_utils.load_dictionaries(qna_data_path)
 
     # Load the QA Dataset
-    # TODO: We can load QA dataset from cache here
+    # At this point we assume that `pretraining` has run so a cache is waiting for us
+    # You should not recalcualte the cache anyways, it is very dependent on how pretraining determined the cache
+    # Talk to @ottersome if you need more info
     raw_qadata_path = os.path.join(qna_data_path, "mquake_qna_ds.csv")
-    train_df, dev_df, test_df, _ = data_utils.load_qa_data(
-        cached_metadata_path=args.cached_QAMetaData_path,
-        raw_QAData_path=raw_qadata_path,
-        question_tokenizer_name=gtllm_tokenizer_name,
-        answer_tokenizer_name=gtllm_tokenizer_name,
-        entity2id=ent2id,
-        relation2id=rel2id,
-        logger=logger,
-        force_recompute=args.force_data_prepro,
-        supervised=False,
-    )
+    train_df, dev_df, test_df = data_utils.load_cached_pretraining_data(args.pretraining_metadata_cache_path)
+
     data_partitions = DataPartitions(
         train_df, dev_df, test_df
     )
@@ -1678,12 +1679,20 @@ def main():
 
     # TODO: Reorganize the parameters lol
     logger.info(":: Setting up the navigation agent")
+    assert dim_entity == dim_relation, "Entity and action dimensions must be the same"
+    dim_observation = dim_entity
     nav_agent = ContinuousPolicyGradient(
         beta=args.beta,
         gamma=args.rl_gamma,
         dim_action=dim_relation,
-        dim_hidden=args.rnn_hidden,
-        dim_observation=2 * dim_entity + dim_entity,  # observation will be into history
+        enc_ff_dim=args.enc_ff_dim,
+        dim_observation=dim_observation,
+        max_path_length=args.max_env_steps * 2 -1, # We have to account for actions too
+        encoder_num_layers=args.num_enc_layers,
+        encoder_num_heads=args.num_enc_heads,
+        encoder_dropout=args.enc_dropout,
+        log_std_min=args.log_std_min,
+        log_std_max=args.log_std_max,
     ).to(args.device)
 
     # ======================================
@@ -1741,4 +1750,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main(),
+    main()
