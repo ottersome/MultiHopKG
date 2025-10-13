@@ -1403,6 +1403,7 @@ def gather_experience_steps(
     for idx, question_id in enumerate(question_ids):
         question_embedding = question_embeddings[idx]
         answer_embedding = answer_embeddings[idx]
+        encoded_question = question_tokens[idx]
         path = path_sequences[idx]
         if not path:
             raise ValueError("Path sequence is empty; expected at least one entity id")
@@ -1418,13 +1419,35 @@ def gather_experience_steps(
 
         question_data[question_id] = {
             "question_embedding": question_embedding.detach(),
+            "question_embedding_batch": question_embedding.detach().unsqueeze(0),
             "answer_embedding": answer_embedding.detach(),
             "answer_id_tensor": answer_id_tensor.detach(),
+            "question_tokens": encoded_question.detach(),
+            "question_tokens_batch": encoded_question.detach().unsqueeze(0),
         }
 
     action_dim = actor.mu_layer.out_features
     total_transitions = 0
     max_history = max(1, max_env_steps)
+
+    # Batch initialize any questions missing a reset transition.
+    questions_needing_init = [
+        qid for qid in question_ids if not replay_buffer.has_transitions(qid)
+    ]
+    if questions_needing_init:
+        init_tensor = torch.cat(
+            [question_data[qid]["question_embedding_batch"] for qid in questions_needing_init],
+            dim=0,
+        ).to(device)
+        init_states = env.reset(init_tensor).to(device)
+        if init_states.dim() == 1:
+            init_states = init_states.unsqueeze(0)
+        for idx, question_id in enumerate(questions_needing_init):
+            init_state = init_states[idx]
+            if init_state.dim() == 2:
+                init_state = init_state.squeeze(0)
+            replay_buffer.add_reset_transition(question_id, init_state, action_dim)
+            metrics["init_resets"].append(1.0)
 
     # Per Question Loop
     for question_id, repetitions in tqdm(question_count_map.items(), f"Question maps with len: {len(question_count_map)}. "):
@@ -1432,7 +1455,7 @@ def gather_experience_steps(
 
         if not replay_buffer.has_transitions(question_id):
             init_state = env.reset(
-                question_info["question_embedding"].unsqueeze(0)
+                question_info["question_embedding_batch"]
             ).to(device)
             if init_state.dim() == 2:
                 init_state = init_state.squeeze(0)
@@ -1454,7 +1477,7 @@ def gather_experience_steps(
 
             if need_reset:
                 init_state = env.reset(
-                    question_info["question_embedding"].unsqueeze(0)
+                    question_info["question_embedding_batch"]
                 ).to(device)
                 if init_state.dim() == 2:
                     init_state = init_state.squeeze(0)
@@ -1492,7 +1515,7 @@ def gather_experience_steps(
                 hunch_llm,
                 next_state,
                 question_info["answer_embedding"],
-                torch.LongTensor(mini_batch.loc[question_id,"enc_questions"]).view(1,-1).to(device),
+                question_info["question_tokens_batch"],
                 pad_token_id,
             )
 
