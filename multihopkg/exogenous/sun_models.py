@@ -271,6 +271,13 @@ class KGEModel(nn.Module):
 
     #-----------------------------------------------------------------------
     'Forward Function'
+    def recalculate_entity_centroid(self):
+        if isinstance(self.entity_embedding, nn.Parameter):
+            self.centroid = torch.mean(self.entity_embedding.data, dim=0)
+        elif isinstance(self.entity_embedding, nn.Embedding):
+            self.centroid = torch.mean(self.entity_embedding.weight.data, dim=0)
+
+        print('meep')
         
     def forward(self, sample, mode='single'):
         '''
@@ -1506,7 +1513,7 @@ def get_embeddings_from_indices(embeddings: Union[nn.Embedding, nn.Parameter], i
     else:
         raise TypeError("Embeddings must be either nn.Parameter or nn.Embedding")
 
-def calculate_entity_centroid(embeddings: Union[nn.Embedding, nn.Parameter]):
+def calculate_entity_centroid(embeddings: Union[nn.Embedding, nn.Parameter]) -> torch.Tensor:
     if isinstance(embeddings, nn.Parameter):
         entity_centroid = torch.mean(embeddings.data, dim=0)
     elif isinstance(embeddings, nn.Embedding):

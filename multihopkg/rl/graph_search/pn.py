@@ -447,14 +447,14 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
 
     def __init__(
         self,
-        question_embedding_module: nn.Module,
+        bert_question_embedding_module: nn.Module,
         knowledge_graph: KGEModel,
         nav_start_emb_type: str,
         reached_destination_threshold: float,
-        replay_buffer: QuestionReplayBuffer
+        replay_buffer: QuestionReplayBuffer,
     ):
         super(ReinforcedUnsupervisedEnv, self).__init__() # Should be injected via information extracted from Knowledge Grap self.action_dim = relation_dim  # TODO: Ensure this is a solid default self.question_embedding_module_trainable = question_embedding_module_trainable
-        self.question_embedding_module = question_embedding_module
+        self.bert_question_embedding_module = bert_question_embedding_module
         self.knowledge_graph = knowledge_graph
         self.reached_destination_threshold = reached_destination_threshold
         
@@ -483,12 +483,9 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         if self.nav_start_emb_type == 'relevant':
             raise NotImplementedError("Unsupervised currently has no impolementation support for relevant start embedding type.")
 
-        initial_states = []
-        for i in range(num_questions):
-            initial_states.append(self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, None))
+        initial_state = self.knowledge_graph.get_starting_embedding(self.nav_start_emb_type, None)
 
-
-        return torch.stack(initial_states)
+        return initial_state.view(1,-1).repeat(num_questions,1)
 
     def step(self, cur_state: RUE_Observation, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ########################################
@@ -505,13 +502,12 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         # TODO: We need to double check this 'done' determinator
         # No gradients are calculated here
         with torch.no_grad():
-            answer_embeddings = get_embeddings_from_indices(self.knowledge_graph.entity_embedding, cur_state.answer_id).to(current_position.device)
+            answer_embeddings = get_embeddings_from_indices(self.knowledge_graph.entity_embedding, cur_state.answer_id)
             diff = self.knowledge_graph.absolute_difference(answer_embeddings, current_position) 
             
             answer_found = torch.norm(diff, dim=-1, keepdim=True) < self.reached_destination_threshold
             assert isinstance(answer_found, torch.Tensor)
             extrinsic_reward = answer_found.float()
-
 
         ########################################
         # Projections
@@ -531,7 +527,7 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         
         return current_position, extrinsic_reward, answer_found
 
-    def get_llm_embeddings(self, questions: List[torch.Tensor], device: torch.device) -> torch.Tensor:
+    def get_llm_embeddings(self, questions_tokens: torch.Tensor) -> torch.Tensor:
         """
         Will take a list of list of token ids, pad them and then pass them to the embedding module to get single embeddings for each question
         Args:
@@ -542,12 +538,10 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         # Format the input for the legacy function inside
         # We should convert them to embeddings before sending them over
 
-        padding_value = self.question_embedding_module.config.pad_token_id # type:ignore
-        padded_tokens = pad_sequence(
-            questions, batch_first=True, padding_value=padding_value) # type: ignore
-        attention_mask = (padded_tokens != padding_value).to(device)
+        padding_value = self.bert_question_embedding_module.config.pad_token_id # type:ignore
+        attention_mask = (questions_tokens != padding_value)
         with torch.no_grad():
-            embedding_output = self.question_embedding_module(input_ids=padded_tokens, attention_mask=attention_mask)
+            embedding_output = self.bert_question_embedding_module(input_ids=questions_tokens, attention_mask=attention_mask)
 
         last_hidden_state = embedding_output.last_hidden_state
         # TODO: Check that this is actually necessary. Last_hidden state ought to be enough. Perhaps embedding_output ought to have its own pooled state

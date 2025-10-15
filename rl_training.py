@@ -702,7 +702,7 @@ class QuestionCoverageSampler:
         return self._cursor / len(self._question_ids)
 
 
-def prepopulate_replay_buffer(
+def _prepopulate_replay_buffer(
     *,
     env: ReinforcedUnsupervisedEnv,
     actor: ContinuousPolicyGradient,
@@ -756,6 +756,82 @@ def prepopulate_replay_buffer(
         key: float(np.mean(values)) if values else 0.0
         for key, values in aggregated.items()
     }
+
+
+def prepopulate_replay_buffer(
+    *,
+    env: ReinforcedUnsupervisedEnv,
+    actor: ContinuousPolicyGradient,
+    hunch_llm: nn.Module,
+    replay_buffer: QuestionReplayBuffer,
+    train_df: pd.DataFrame,
+    batch_size: int,
+    num_simulations_per_question: int, # Simulations ~= Transitions  
+    max_env_steps: int,
+    pad_token_id: int,
+) -> Dict[str, float]:
+
+    BATCH_SIZE=8 # TODO: Parameteriz elater
+    device = next(actor.parameters()).device
+    # Lets Initiate sub buffers for each question
+
+    for i in range(0, len(train_df), BATCH_SIZE):
+        mini_batch = train_df.iloc[i : i + BATCH_SIZE]
+
+        # Get questions ready for batch bart processing
+        questions = [torch.Tensor(ques).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
+        padded_questions_tokens = torch.nn.utils.rnn.pad_sequence(
+            questions, batch_first=True, padding_value=pad_token_id
+        ).to(device)
+        padded_questions_tokens = padded_questions_tokens.view(-1,1,padded_questions_tokens.shape[-1])
+        padded_questions_tokens = padded_questions_tokens.repeat(1,num_simulations_per_question,1).squeeze(1)
+        padded_token_len = padded_questions_tokens.shape[-1]
+        questions_embeddings = env.get_llm_embeddings(padded_questions_tokens.view(-1, padded_token_len))
+
+        # Answers Graph Embeddings
+        paths = mini_batch.loc[:, "triples_ints"]
+        answer_graphemb_idxs = torch.LongTensor([path[-1] for path in paths]).to(device) # TODO: see if we can remove device
+        answer_graphemb_idxs = answer_graphemb_idxs.unsqueeze(1).repeat(1,num_simulations_per_question).view(-1).to(device)
+
+        # Answer Bert Heuristic
+        answer_bert_heuristics = torch.Tensor(mini_batch.iloc[:, 3:].values.tolist())
+        answer_bert_heuristics = (
+            answer_bert_heuristics.view(-1, 1, answer_bert_heuristics.shape[-1])
+            .repeat(1, num_simulations_per_question, 1)
+            .squeeze(1)
+        ).to(device)
+
+        #.... reset
+        init_states = env.reset(questions_embeddings)
+
+        #.... Action
+
+        # Initially we use random actions
+        action = torch.empty(init_states.shape).uniform_(-1.0, 1.0).to(device)
+        log_prob = None
+        entropy = None
+
+        # ... Environment step
+        observation = ReinforcedUnsupervisedEnv.RUE_Observation(
+            state=init_states,
+            answer_id=answer_graphemb_idxs
+        )
+        
+        # TODO: Either get LLM reward inside of this function or remove this one.
+        next_state, extrinsic_reward, done, = env.step(observation, action)
+
+        # Calculate Main Reward (Yeah, outside the environment for now)
+        bert_emb_dim = answer_bert_heuristics.shape[-1]
+        llm_reward, _ = calculate_llm_reward_supasoft(
+            hunch_llm,
+            next_state.unsqueeze(1),
+            answer_bert_heuristics.view(-1, bert_emb_dim),
+            padded_questions_tokens.view(-1, padded_questions_tokens.shape[-1]),
+            pad_token_id,
+        )
+
+        print("Done")
+
 
 
 def train_multihopkg(
@@ -1326,21 +1402,16 @@ def calculate_llm_reward_supasoft(
     question_tokens: torch.Tensor,
     pad_token_id: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if obtained_state.dim() == 2:
-        # We expect (batch_size, seq_length, graph_dimension)
-        _obtained_state = obtained_state.unsqueeze(0)
-    else: 
-        _obtained_state = obtained_state
 
     dec_attention_mask = question_tokens != pad_token_id
     _, bert_ans_embeddings = hunch_llm(
-        graph_embeddings=_obtained_state,
+        graph_embeddings=obtained_state,
         decoder_input_ids=question_tokens,
         decoder_attention_mask=dec_attention_mask,
     )
 
     mse_loss = F.mse_loss(
-        bert_ans_embeddings.squeeze(),
+        bert_ans_embeddings,
         answer_embedding,
         reduction="none",
     ).mean(dim=-1)
@@ -1456,7 +1527,7 @@ def gather_experience_steps(
         if not replay_buffer.has_transitions(question_id):
             init_state = env.reset(
                 question_info["question_embedding_batch"]
-            ).to(device)
+            )
             if init_state.dim() == 2:
                 init_state = init_state.squeeze(0)
             replay_buffer.add_reset_transition(question_id, init_state, action_dim)
@@ -1478,7 +1549,7 @@ def gather_experience_steps(
             if need_reset:
                 init_state = env.reset(
                     question_info["question_embedding_batch"]
-                ).to(device)
+                )
                 if init_state.dim() == 2:
                     init_state = init_state.squeeze(0)
                 replay_buffer.add_reset_transition(question_id, init_state, action_dim)
@@ -1488,7 +1559,7 @@ def gather_experience_steps(
 
             assert last_transition is not None, "Replay buffer should contain a reset transition after initialization"
 
-            current_path_tensor = last_transition.path_states.to(device)
+            current_path_tensor = last_transition.path_states
             current_state = current_path_tensor
             agent_input = current_state
 
@@ -1882,7 +1953,9 @@ def main():
         relation_embedding=relation_embeddings,
         gamma=ge_gamma,
         state_dict=checkpoint["model_state_dict"],
-    )
+    ).to(args.device)
+    # For good use:
+    kge_model.recalculate_entity_centroid() # Just so we can keep it in the same device
 
     logger.info(f"Loaded KGE Model with the following parameters:"
                 f"\n\t- Graph Model Geometry: {ge_geom}"
@@ -1985,12 +2058,15 @@ def main():
     )
 
     env = ReinforcedUnsupervisedEnv(
-        question_embedding_module=question_embedding_module,
+        bert_question_embedding_module=question_embedding_module,
         knowledge_graph=kge_model,
         nav_start_emb_type=args.nav_start_emb_type,
         reached_destination_threshold=args.reached_destination_threshold,
         replay_buffer=question_replay_buffer,
     )
+
+    meep = torch.rand(10, 100).to(args.device)
+    init_states = env.reset(meep)
 
     # TODO: Reorganize the parameters lol
     logger.info(":: Setting up the navigation agent")
