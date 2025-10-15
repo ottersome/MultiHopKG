@@ -8,30 +8,30 @@ import pandas as pd
 import torch
 
 
-@dataclass
-class Transition:
-    state: torch.Tensor
-    action: torch.Tensor
-    reward: torch.Tensor
-    next_state: torch.Tensor
-    done: torch.Tensor
-    path_states: torch.Tensor
-    step_index: int
-    env_reward: torch.Tensor
-    llm_reward: torch.Tensor
-    log_prob: Optional[torch.Tensor] = None
-    entropy: Optional[torch.Tensor] = None
-
+# @dataclass
+# class Transition:
+#     state: torch.Tensor
+#     action: torch.Tensor
+#     reward: torch.Tensor
+#     next_state: torch.Tensor
+#     done: torch.Tensor
+#     path_states: torch.Tensor
+#     step_index: int
+#     env_reward: torch.Tensor
+#     llm_reward: torch.Tensor
+#     log_prob: Optional[torch.Tensor] = None
+#     entropy: Optional[torch.Tensor] = None
+#
 
 class QuestionReplayBuffer:
     """Replay buffer that keeps per-question sub-buffers."""
 
-    @dataclass
-    class QuestionBuffer:
-        transitions: Deque[Transition]
-        question_embedding: Optional[torch.Tensor] = None
-        answer_embedding: Optional[torch.Tensor] = None
-        answer_id: Optional[torch.Tensor] = None
+    # @dataclass
+    # class QuestionBuffer:
+    #     transitions: Deque[Transition]
+    #     question_embedding: Optional[torch.Tensor] = None
+    #     answer_embedding: Optional[torch.Tensor] = None
+    #     answer_id: Optional[torch.Tensor] = None
 
     def __init__(
         self,
@@ -40,6 +40,7 @@ class QuestionReplayBuffer:
         action_shape: int,
         experiences_per_question: int,
         batch_size: int,
+        max_env_steps: int, 
         *,
         question_ids: Sequence[int],
         warmup_size: int = 0,
@@ -50,6 +51,7 @@ class QuestionReplayBuffer:
         self.num_questions = num_questions
         self.batch_size = batch_size
         self.warmup_size = warmup_size
+        self.max_env_steps = max_env_steps
         self.min_update_steps = min_update_steps
         self.experiences_per_question = experiences_per_question
         self._state_shape = state_shape
@@ -66,19 +68,84 @@ class QuestionReplayBuffer:
         self.capacity = num_questions * experiences_per_question
         self._total_size = 0
 
+        ########################################
+        # Allocate Memory
+        ########################################
+        self.write_ptr = torch.zeros(self.num_questions, dtype=torch.long)
 
-        self._prepopulate(num_questions, experiences_per_question)
+        self.cur_states = torch.zeros((self.num_questions, self.experiences_per_question, self._action_shape))
+        self.actions = torch.zeros((self.num_questions, self.experiences_per_question, self._action_shape))
+        self.rewards = torch.zeros((self.num_questions, self.experiences_per_question))
+        self.next_states = torch.zeros((self.num_questions, self.experiences_per_question, self._action_shape))
+        self.done = torch.zeros((self.num_questions, self.experiences_per_question), dtype=torch.bool)
+        self.path_states = torch.zeros(
+            (self.num_questions , self.experiences_per_question, self.max_env_steps * 2 - 1, self._action_shape)
+        )
+        self.log_prob = torch.zeros((self.num_questions, self.experiences_per_question))
+        self.entropy = torch.zeros((self.num_questions, self.experiences_per_question))
 
-    def _prepopulate(self, num_questions, experiences_per_question):
-        self.replay_buffer: List[QuestionReplayBuffer.QuestionBuffer] = [
-            QuestionReplayBuffer.QuestionBuffer(
-                transitions=deque(maxlen=experiences_per_question)
-            )
-            for _ in range(num_questions)
-        ]
+        # self._prepopulate(num_questions, experiences_per_question)
+
+
+    # def _prepopulate(self, num_questions, experiences_per_question):
+    #     self.replay_buffer: List[QuestionReplayBuffer.QuestionBuffer] = [
+    #         QuestionReplayBuffer.QuestionBuffer(
+    #             transitions=deque(maxlen=experiences_per_question)
+    #         )
+    #         for _ in range(num_questions)
+    #     ]
+
+    def add_question_experiences(
+        self,
+        # qids: torch.LongTensor,              # [E]
+        question_n_exp_idxs: torch.Tensor,
+        cur_states: torch.Tensor,            # [E, A]
+        actions: torch.Tensor,               # [E, A]
+        rewards: torch.Tensor,               # [E,]
+        next_states: torch.Tensor,           # [E, A]
+        dones: torch.Tensor,                 # [E]
+        path_states: torch.Tensor,           # [E, T, A]
+        log_probs: torch.Tensor,             # [E]
+        entropies: torch.Tensor,             # [E]
+        # Where E indexes experience, T indexes path length, and A is action/state shape
+    ):
+        """
+        Performs a round-robin write into the replay buffer for multiple questions at once.
+        """
+        device = self.cur_states.device
+        num_exp, dim_state  = cur_states.shape
+        cap = self.experiences_per_question
+
+        qids, qids_count = torch.unique(question_n_exp_idxs, return_counts=True)
+        start = self.write_ptr[qids] # [E]
+        start_tiled = self.write_ptr[question_n_exp_idxs] # [E]
+        arange_N = torch.concat([
+            torch.arange(qid_count, device=device)      # [N]
+            for qid_count in qids_count
+        ]) 
+        exp_ids = start_tiled + arange_N % cap
+        # idxs = (start[:, None] + arange_N[None, :]) % cap  # [B, N]
+        #
+        # # Expand qids for broadcasting
+        # q_expand = qids[:, None].expand(B, N)
+
+        # Write into buffer (parallelized)
+        self.cur_states[question_n_exp_idxs, exp_ids] = cur_states.to(device)
+        self.actions[question_n_exp_idxs, exp_ids] = actions.to(device)
+        self.rewards[question_n_exp_idxs, exp_ids] = rewards.to(device)
+        self.next_states[question_n_exp_idxs, exp_ids] = next_states.to(device)
+        self.done[question_n_exp_idxs, exp_ids] = dones.to(device)
+        self.path_states[question_n_exp_idxs, exp_ids] = path_states.to(device)
+        self.log_prob[question_n_exp_idxs, exp_ids] = log_probs.to(device)
+        self.entropy[question_n_exp_idxs, exp_ids] = entropies.to(device)
+
+        # Advance write pointer
+        self.write_ptr[qids] = (start + qids_count) % cap
 
     def __len__(self) -> int:
         return self._total_size
+
+
 
     @property
     def is_full(self) -> bool:

@@ -56,7 +56,7 @@ from multihopkg.models_language.classical import HunchBart, collate_token_ids_ba
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
 from multihopkg.rl.graph_search.sac import CriticQ, CriticV, GraphCriticQ, GraphCriticV
 from multihopkg.rl.graph_search.pn import ITLGraphEnvironment, ReinforcedUnsupervisedEnv
-from multihopkg.rl.utils import QuestionReplayBuffer, Transition
+from multihopkg.rl.utils import QuestionReplayBuffer
 from multihopkg.run_configs import rl_alpha
 from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
 from multihopkg.utils.convenience import tensor_normalization
@@ -67,6 +67,9 @@ from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
 
 traceback.install()
 wandb_run = None
+
+PATH_PADDING_VALUE = 1
+BART_PADDING_VALUE = 1 # TODO:  Need to remove hardcoding on this later
 
 
 def initialize_model_directory(args, random_seed=None):
@@ -758,6 +761,7 @@ def _prepopulate_replay_buffer(
     }
 
 
+@torch.no_grad()
 def prepopulate_replay_buffer(
     *,
     env: ReinforcedUnsupervisedEnv,
@@ -769,20 +773,23 @@ def prepopulate_replay_buffer(
     num_simulations_per_question: int, # Simulations ~= Transitions  
     max_env_steps: int,
     pad_token_id: int,
-) -> Dict[str, float]:
+) -> QuestionReplayBuffer:
 
-    BATCH_SIZE=8 # TODO: Parameteriz elater
-    device = next(actor.parameters()).device
+    actor.eval()
+    hunch_llm.eval()
+    BATCH_SIZE=64 # TODO: Parameterize later
+    gpu_device = next(actor.parameters()).device
+    cpu_device = replay_buffer.cur_states.device
     # Lets Initiate sub buffers for each question
 
-    for i in range(0, len(train_df), BATCH_SIZE):
+    for i in tqdm(range(0, len(train_df), BATCH_SIZE), f"Populating the replay buffer"):
         mini_batch = train_df.iloc[i : i + BATCH_SIZE]
 
         # Get questions ready for batch bart processing
         questions = [torch.Tensor(ques).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
         padded_questions_tokens = torch.nn.utils.rnn.pad_sequence(
             questions, batch_first=True, padding_value=pad_token_id
-        ).to(device)
+        ).to(gpu_device)
         padded_questions_tokens = padded_questions_tokens.view(-1,1,padded_questions_tokens.shape[-1])
         padded_questions_tokens = padded_questions_tokens.repeat(1,num_simulations_per_question,1).squeeze(1)
         padded_token_len = padded_questions_tokens.shape[-1]
@@ -790,8 +797,8 @@ def prepopulate_replay_buffer(
 
         # Answers Graph Embeddings
         paths = mini_batch.loc[:, "triples_ints"]
-        answer_graphemb_idxs = torch.LongTensor([path[-1] for path in paths]).to(device) # TODO: see if we can remove device
-        answer_graphemb_idxs = answer_graphemb_idxs.unsqueeze(1).repeat(1,num_simulations_per_question).view(-1).to(device)
+        answer_graphemb_idxs = torch.LongTensor([path[-1] for path in paths]).to(gpu_device) # TODO: see if we can remove device
+        answer_graphemb_idxs = answer_graphemb_idxs.unsqueeze(1).repeat(1,num_simulations_per_question).view(-1).to(gpu_device)
 
         # Answer Bert Heuristic
         answer_bert_heuristics = torch.Tensor(mini_batch.iloc[:, 3:].values.tolist())
@@ -799,7 +806,7 @@ def prepopulate_replay_buffer(
             answer_bert_heuristics.view(-1, 1, answer_bert_heuristics.shape[-1])
             .repeat(1, num_simulations_per_question, 1)
             .squeeze(1)
-        ).to(device)
+        ).to(gpu_device)
 
         #.... reset
         init_states = env.reset(questions_embeddings)
@@ -807,7 +814,7 @@ def prepopulate_replay_buffer(
         #.... Action
 
         # Initially we use random actions
-        action = torch.empty(init_states.shape).uniform_(-1.0, 1.0).to(device)
+        action = torch.empty(init_states.shape).uniform_(-1.0, 1.0).to(gpu_device)
         log_prob = None
         entropy = None
 
@@ -829,8 +836,32 @@ def prepopulate_replay_buffer(
             padded_questions_tokens.view(-1, padded_questions_tokens.shape[-1]),
             pad_token_id,
         )
+        init_states = init_states.detach().to(cpu_device)
+        padded_path = torch.full([init_states.shape[0], max_env_steps*2 - 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float)
+        padded_path[:,0,:] = init_states
+        ########################################
+        # Fill out Replay Buffer 
+        ########################################
+        action_dim = action.shape[-1]
+        state_dim = init_states.shape[-1]
+        question_n_exp_idxs = torch.Tensor(mini_batch.index).to(torch.long).unsqueeze(1).repeat(1, num_simulations_per_question).view(-1)
+        replay_buffer.add_question_experiences(
+            question_n_exp_idxs=question_n_exp_idxs,
+            cur_states=init_states.view(-1, state_dim),
+            actions=action.view(-1, action_dim).detach().to(cpu_device),
+            rewards=llm_reward.detach().to(cpu_device),
+            next_states=next_state.view(-1, state_dim).detach().to(cpu_device),
+            dones=torch.zeros((BATCH_SIZE * num_simulations_per_question), dtype=torch.bool),
+            path_states = padded_path.view(BATCH_SIZE * num_simulations_per_question, -1, padded_path.shape[-1]),
+            log_probs = torch.ones_like(llm_reward, dtype=torch.float), # TODO: make sure we handle this place holder value properly later
+            entropies = torch.full_like(llm_reward, -1.0)
+        )
+        del questions_embeddings, answer_graphemb_idxs, answer_bert_heuristics, init_states, next_state, llm_reward, action, padded_path
+        torch.cuda.empty_cache()
+    actor.train()
+    # hunch_llm does not really need to be trained here.
 
-        print("Done")
+    return replay_buffer
 
 
 
@@ -1404,8 +1435,11 @@ def calculate_llm_reward_supasoft(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
 
     dec_attention_mask = question_tokens != pad_token_id
+    # TODO: Inspect this when you get the whole thing running to discard it as problem ( in case you are having problems)
+    paths_attention_mask = ~(obtained_state == BART_PADDING_VALUE).all(dim=-1)
     _, bert_ans_embeddings = hunch_llm(
         graph_embeddings=obtained_state,
+        encoder_attention_mask=paths_attention_mask,
         decoder_input_ids=question_tokens,
         decoder_attention_mask=dec_attention_mask,
     )
@@ -2054,6 +2088,7 @@ def main():
         action_shape=dim_relation,
         experiences_per_question=args.experiences_per_question,
         batch_size=args.batch_size,
+        max_env_steps=args.max_env_steps,
         question_ids=train_df.index.tolist(),
     )
 

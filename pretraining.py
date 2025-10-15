@@ -52,8 +52,9 @@ def collate_fn(batch, padding_value: int):
         paths, batch_first=True, padding_value=padding_value
     )
     ans_bert_emb_final_tensor = torch.stack(ans_bert_emb)
+    paths_attention_mask = ~(paths_padded == padding_value).all(dim=-1)
 
-    new_batch = (qna_padded, ans_masks_padded, paths_padded, ans_bert_emb_final_tensor)
+    new_batch = (qna_padded, ans_masks_padded, paths_padded, paths_attention_mask, ans_bert_emb_final_tensor)
 
     return new_batch
 
@@ -82,7 +83,7 @@ def validation_loop(
     with torch.no_grad():
         for batch_idx, batch in enumerate(val_dataloader):
             # Turn of all backprop
-            qna_tokens, ans_masks, graph_embeddings, answer_bert_emb = batch
+            qna_tokens, ans_masks, graph_embeddings, graphemb_attn_mask, answer_bert_emb = batch
             # Now we will round-robin graph_embeddings to get a negative sample. 
             negative_graph_embeddings = torch.roll(graph_embeddings, shifts=1, dims=0)
 
@@ -94,10 +95,10 @@ def validation_loop(
 
             # Compute the loss
             answers_inf_softmax_w_emb, bert_alignment_inference_w_emb = model(
-                graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
+                graph_embeddings, graphemb_attn_mask, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
             )
             answers_inf_softmax_wo_emb, bert_alignment_inference_wo_emb = model(
-                negative_graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
+                negative_graph_embeddings, graphemb_attn_mask, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
             )
             _, logits = answers_inf_softmax_w_emb.loss, answers_inf_softmax_w_emb.logits
             _, n_logits = answers_inf_softmax_wo_emb.loss, answers_inf_softmax_wo_emb.logits
@@ -212,7 +213,7 @@ def train_loop(
                 cur_num_batches += 1
 
                 # Actual Training
-                qna_tokens, ans_masks, graph_embeddings, ans_bert_embeddings  = batch
+                qna_tokens, ans_masks, graph_embeddings, graphemb_attention_mask, ans_bert_embeddings = batch
                 truth_answers = qna_tokens.clone()
                 truth_answers[ans_masks == 0] = word_tokenizer.pad_token_id  # For the loss function.
                 truth_answers = truth_answers[:, 1:].contiguous()
@@ -222,7 +223,10 @@ def train_loop(
                 # TODO: Watch out for offset*till
                 padding_mask = qna_tokens != word_tokenizer.pad_token_id
                 answers_inf_softmax, bert_output = bart_llm(
-                    graph_embeddings, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
+                    graph_embeddings, 
+                    graphemb_attention_mask,
+                    qna_tokens[:,:-1],
+                    decoder_attention_mask=padding_mask[:,:-1]
                 )
                 _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
 
