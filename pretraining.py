@@ -152,6 +152,7 @@ def train_loop(
     bart_llm: nn.Module,
     entity_embeddings: nn.Embedding,
     relation_embeddings: nn.Embedding,
+    bert_emb_size: int,
     # --- Training Parameters --- #
     batch_size: int,
     epochs: int,
@@ -168,10 +169,10 @@ def train_loop(
     ########################################
     pad_token_id = word_tokenizer.pad_token_id
     assert isinstance(pad_token_id, int), "Expected the pad token to be an integer. Instead we get {pad_token_id}"
-    train_dataset = GraphEmbeddingDataset(dataset_partitions.train, entity_embeddings, relation_embeddings, word_tokenizer, device)
+    train_dataset = GraphEmbeddingDataset(dataset_partitions.train, entity_embeddings, relation_embeddings, word_tokenizer, bert_emb_size,device)
     train_dataloader = DataLoader(train_dataset, batch_size, collate_fn=collate_wrapper(pad_token_id))
     # Validation
-    val_dataset = GraphEmbeddingDataset(dataset_partitions.validation, entity_embeddings, relation_embeddings, word_tokenizer, device)
+    val_dataset = GraphEmbeddingDataset(dataset_partitions.validation, entity_embeddings, relation_embeddings, word_tokenizer, bert_emb_size, device)
     val_dataloader = DataLoader(val_dataset, batch_size, collate_fn=collate_wrapper(pad_token_id))
 
     # DEBUG:: to check if the embeddings are being changed.
@@ -304,6 +305,7 @@ def main():
     bert_tokenizer = BertTokenizer.from_pretrained(
         args.bert_base_llm_tokenizer
     )
+    bert_emb_size = bert_model.config.hidden_size
     
 
     ########################################
@@ -368,6 +370,7 @@ def main():
         hunch_llm,
         entity_embeddings,
         relation_embeddings,
+        bert_emb_size,
         args.batch_size,
         args.epochs,
         args.baseline_lr,
