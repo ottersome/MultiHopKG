@@ -145,8 +145,6 @@ class QuestionReplayBuffer:
     def __len__(self) -> int:
         return self._total_size
 
-
-
     @property
     def is_full(self) -> bool:
         return self._total_size >= self.capacity

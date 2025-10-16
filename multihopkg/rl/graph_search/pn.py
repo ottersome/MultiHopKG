@@ -451,15 +451,12 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         knowledge_graph: KGEModel,
         nav_start_emb_type: str,
         reached_destination_threshold: float,
-        replay_buffer: QuestionReplayBuffer,
     ):
         super(ReinforcedUnsupervisedEnv, self).__init__() # Should be injected via information extracted from Knowledge Grap self.action_dim = relation_dim  # TODO: Ensure this is a solid default self.question_embedding_module_trainable = question_embedding_module_trainable
         self.bert_question_embedding_module = bert_question_embedding_module
         self.knowledge_graph = knowledge_graph
         self.reached_destination_threshold = reached_destination_threshold
         
-        self.replay_buffer = replay_buffer
-
         # self.start_emb_func = {
         #     'centroid': self.get_centroid_embedding,
         #     'random': self.get_random_embedding,

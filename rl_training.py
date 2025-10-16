@@ -13,7 +13,9 @@ import copy
 import io
 import json
 import logging
+from ntpath import exists
 import os
+import pickle
 import random
 import sys
 import time
@@ -769,7 +771,6 @@ def prepopulate_replay_buffer(
     hunch_llm: nn.Module,
     replay_buffer: QuestionReplayBuffer,
     train_df: pd.DataFrame,
-    batch_size: int,
     num_simulations_per_question: int, # Simulations ~= Transitions  
     max_env_steps: int,
     pad_token_id: int,
@@ -784,6 +785,7 @@ def prepopulate_replay_buffer(
 
     for i in tqdm(range(0, len(train_df), BATCH_SIZE), f"Populating the replay buffer"):
         mini_batch = train_df.iloc[i : i + BATCH_SIZE]
+        _inner_batch_size = len(mini_batch)
 
         # Get questions ready for batch bart processing
         questions = [torch.Tensor(ques).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
@@ -851,8 +853,8 @@ def prepopulate_replay_buffer(
             actions=action.view(-1, action_dim).detach().to(cpu_device),
             rewards=llm_reward.detach().to(cpu_device),
             next_states=next_state.view(-1, state_dim).detach().to(cpu_device),
-            dones=torch.zeros((BATCH_SIZE * num_simulations_per_question), dtype=torch.bool),
-            path_states = padded_path.view(BATCH_SIZE * num_simulations_per_question, -1, padded_path.shape[-1]),
+            dones=torch.zeros((_inner_batch_size * num_simulations_per_question), dtype=torch.bool),
+            path_states = padded_path.view(_inner_batch_size * num_simulations_per_question, -1, padded_path.shape[-1]),
             log_probs = torch.ones_like(llm_reward, dtype=torch.float), # TODO: make sure we handle this place holder value properly later
             entropies = torch.full_like(llm_reward, -1.0)
         )
@@ -999,27 +1001,6 @@ def train_multihopkg(
         log_dir=f"runs/rl/{env.knowledge_graph.model_name.lower()}/{timestamp}/"
     )
 
-    prepopulate_metrics = prepopulate_replay_buffer(
-        env=env,
-        actor=nav_agent,
-        hunch_llm=hunch_llm,
-        replay_buffer=replay_buffer,
-        train_df=train_df,
-        batch_size=batch_size,
-        num_simulations_per_question=num_simulations_per_ques,
-        max_env_steps=max_env_steps,
-        pad_token_id=answer_tokenizer.pad_token_id, # type: ignore
-    )
-    if prepopulate_metrics:
-        logger.info(
-            "Prepopulated replay buffer with %.0f questions and %.0f transitions",
-            prepopulate_metrics.get("prepopulate/num_questions", 0.0),
-            prepopulate_metrics.get("prepopulate/num_transitions", 0.0),
-        )
-        if wandb_on:
-            wandb.log(prepopulate_metrics)
-        for metric_name, metric_value in prepopulate_metrics.items():
-            writer.add_scalar(metric_name, metric_value, 0)
 
     collections_per_epoch = max(1, math.ceil(len(question_ids) / max(1, batch_size)))
 
@@ -2082,22 +2063,11 @@ def main():
     # for param in question_embedding_module.parameters():
     #     param.requires_grad = False
 
-    question_replay_buffer = QuestionReplayBuffer(
-        num_questions = len(train_df), # TODO: check this is correct
-        state_shape=dim_entity,
-        action_shape=dim_relation,
-        experiences_per_question=args.experiences_per_question,
-        batch_size=args.batch_size,
-        max_env_steps=args.max_env_steps,
-        question_ids=train_df.index.tolist(),
-    )
-
     env = ReinforcedUnsupervisedEnv(
         bert_question_embedding_module=question_embedding_module,
         knowledge_graph=kge_model,
         nav_start_emb_type=args.nav_start_emb_type,
         reached_destination_threshold=args.reached_destination_threshold,
-        replay_buffer=question_replay_buffer,
     )
 
     meep = torch.rand(10, 100).to(args.device)
@@ -2120,6 +2090,39 @@ def main():
         log_std_min=args.log_std_min,
         log_std_max=args.log_std_max,
     ).to(args.device)
+
+
+    if os.path.exists(args.replay_buffer_cache_path):
+        logger.info(f"Found replay buffer cache. Will be using it now: {args.replay_buffer_cache_path}")
+        with open(args.replay_buffer_cache_path, 'rb') as f: 
+            replay_buffer = pickle.load(f)
+            assert isinstance(replay_buffer, QuestionReplayBuffer)
+            # TODO: Ensure it matches the args like experiences_per_question and so on
+    else:
+        logger.info(f"Did not find replay buffer cache. Will be creating it now: {args.replay_buffer_cache_path}")
+        os.makedirs(os.path.dirname(args.replay_buffer_cache_path), exist_ok=True)
+        replay_buffer = QuestionReplayBuffer(
+            num_questions = len(train_df), # TODO: check this is correct
+            state_shape=dim_entity,
+            action_shape=dim_relation,
+            experiences_per_question=args.experiences_per_question,
+            batch_size=args.batch_size,
+            max_env_steps=args.max_env_steps,
+            question_ids=train_df.index.tolist(),
+        )
+        replay_buffer = prepopulate_replay_buffer(
+            env=env,
+            actor=nav_agent,
+            hunch_llm=hunch_llm,
+            replay_buffer=replay_buffer,
+            train_df=train_df,
+            num_simulations_per_question=args.experiences_per_question,
+            max_env_steps=args.max_env_steps,
+            pad_token_id=gtllm_tokenizer.pad_token_id, # type: ignore
+        )
+        with open(args.replay_buffer_cache_path,'wb') as f:
+            pickle.dump(replay_buffer, f)
+        logger.info(f"Replay buffer cache written to: {args.replay_buffer_cache_path}")
 
     # ======================================
     # Visualizaing nav_agent models using Netron
@@ -2185,7 +2188,7 @@ def main():
         learning_rate=args.learning_rate,
         env=env,
         data_partitions=data_partitions,
-        replay_buffer=question_replay_buffer,
+        replay_buffer=replay_buffer,
         dev_df=dev_df,
         mbatches_b4_eval=args.batches_b4_eval,
         verbose=args.verbose,
