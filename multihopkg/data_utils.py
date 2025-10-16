@@ -12,6 +12,7 @@ from functools import cmp_to_key
 import json
 import os
 import pdb
+import math
 import pickle
 from datetime import datetime
 import time
@@ -690,6 +691,7 @@ def process_and_cache_unsuprvised_triviaqa_data(
     assert (
         len(csv_df.columns) > 2
     ), "The CSV file should have at least 2 columns. One triplet and one QA pair"
+    BERT_BATCH_SIZE = 128
     
     questions = csv_df["question"]
     answers = csv_df["answer"]
@@ -708,23 +710,36 @@ def process_and_cache_unsuprvised_triviaqa_data(
     del _paths_int_idxs
 
     # Ensure directory exists
-    print(f"Kamikaze: {cached_toked_qatriples_metadata_path}")
     dir_name = os.path.dirname(cached_toked_qatriples_metadata_path)
     os.makedirs(dir_name, exist_ok=True)
 
     ## Prepare Bert tokens
     bert_tokd_answers =  [torch.Tensor(bert_tokenizer.encode(x, add_special_tokens=False)) for x in answers]
+    bert_tokd_questions =  [torch.Tensor(bert_tokenizer.encode(x, add_special_tokens=False)) for x in questions]
     # Pad it
-    bert_tokd_answers = pad_sequence(
-        bert_tokd_answers, batch_first=True, padding_value=bert_tokenizer.pad_token_id
-    )
+    assert isinstance(bert_tokenizer.pad_token_id, int)
+    bert_tokd_answers   = pad_sequence(bert_tokd_answers, batch_first=True, padding_value=bert_tokenizer.pad_token_id)
+    bert_tokd_questions = pad_sequence(bert_tokd_questions, batch_first=True, padding_value=bert_tokenizer.pad_token_id)
     device = next(bert_model.parameters()).device
-    bert_tokd_answers = torch.Tensor(bert_tokd_answers).to(torch.long).to(device)
-    attention_mask = (bert_tokd_answers != bert_tokenizer.pad_token_id).to(device)
+    bert_tokd_answers   = torch.Tensor(bert_tokd_answers).to(torch.long).to(device)
+    bert_tokd_questions= torch.Tensor(bert_tokd_questions).to(torch.long).to(device)
+    ans_attention_mask  = (bert_tokd_answers != bert_tokenizer.pad_token_id).to(device)
+    ques_attention_mask = (bert_tokd_questions != bert_tokenizer.pad_token_id).to(device)
+    bert_dim = bert_model.config.hidden_size
 
+    quest_emb_list = []
     with torch.no_grad():
-        bert_embed_answers = bert_model(bert_tokd_answers, attention_mask=attention_mask).pooler_output
+        bert_embed_answers      = bert_model(bert_tokd_answers, attention_mask=ans_attention_mask).pooler_output
+        for i in range(math.ceil(len(bert_tokd_questions) / BERT_BATCH_SIZE)):
+            start = i * BERT_BATCH_SIZE
+            end = min(start + BERT_BATCH_SIZE, len(bert_tokd_questions))
+            question_batch = bert_tokd_questions[start:end, :]
+            attention_mask_batch = ques_attention_mask[start:end, :]
+            quest_emb_list.append(bert_model(question_batch, attention_mask=attention_mask_batch).pooler_output)
+        bert_embed_questions = torch.cat(quest_emb_list, dim=0)
+
     pandas_bert_pooled_answers = pd.DataFrame(bert_embed_answers.detach().cpu().numpy())
+    pandas_bert_pooled_questions = pd.DataFrame(bert_embed_questions.detach().cpu().numpy())
 
     ## Prepare the language data (do encoding)
     questions = questions.map(lambda x: question_tokenizer.encode(x, add_special_tokens=True)) # type: ignore
@@ -744,9 +759,11 @@ def process_and_cache_unsuprvised_triviaqa_data(
     cached_split_locations = {key : val.replace(repo_root + "/", "") for key,val in cached_split_locations.items()}
 
     # Start amalgamating the data into its final form
-    new_df = pd.concat([questions, answers, paths_int_idxs, pandas_bert_pooled_answers], axis=1)
+    new_df = pd.concat([questions, answers, paths_int_idxs, pandas_bert_pooled_answers, pandas_bert_pooled_questions], axis=1)
     new_df = new_df.sample(frac=1).reset_index(drop=True) # Shuffle before splitting by label
-    new_df.columns = DataPartitions.ASSUMED_COLUMNS[:-1] + [DataPartitions.ASSUMED_COLUMNS[-1] + f"_feat{feat_num}" for feat_num in range(pandas_bert_pooled_answers.shape[1])]
+    new_df.columns = DataPartitions.ASSUMED_COLUMNS[:-2] \
+        + [DataPartitions.ASSUMED_COLUMNS[-2] + f"_feat{feat_num}" for feat_num in range(pandas_bert_pooled_answers.shape[1])] \
+        + [DataPartitions.ASSUMED_COLUMNS[-1] + f"_feat{feat_num}" for feat_num in range(pandas_bert_pooled_answers.shape[1])]
 
     # Check if splitLabel column has meaningful values to guide the split
     prespecified_splits_avail = all([ # Kinda hacky but less messy.
@@ -779,6 +796,8 @@ def process_and_cache_unsuprvised_triviaqa_data(
         "question_tokenizer": question_tokenizer.name_or_path,
         "answer_tokenizer": answer_tokenizer.name_or_path,
         "columns": ["questions", "answers", "path"],
+        "ans_cols": [3, 3 + bert_dim],
+        "ques_cols": [3 + bert_dim, 3 + bert_dim * 2],
         "0-index_column": True, # TODO: Don't know what that means. 
         "date_processed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "saved_paths": cached_split_locations,
@@ -998,6 +1017,7 @@ def load_qa_data(
     # latest_cache = shift_through_cache_data(lookup_path=os.path.dirname(cached_metadata_path), filename_regex=compiled_regex)
     cache_exists = os.path.exists(cached_metadata_path)
     if (cache_exists is not None) and (not force_recompute):
+        logger.info(f"Found cache at {cached_metadata_path}. Loading it now.")
         train_df, dev_df, test_df = load_cached_pretraining_data(cached_metadata_path)
         train_metadata = json.load(open(os.path.join(cached_metadata_path)))
     else:
