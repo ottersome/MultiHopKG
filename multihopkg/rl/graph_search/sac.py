@@ -103,7 +103,7 @@ class CriticQ(nn.Module):
 class GraphCriticQ(nn.Module):
     def __init__(
         self,
-        obs_dim: int,
+        graph_obs_dim: int,
         action_dim: int,
         encoder_num_layers: int,
         encoder_num_heads: int,
@@ -111,31 +111,40 @@ class GraphCriticQ(nn.Module):
         enc_dropout: float,
         dim_hidden: int,
         max_seq_length: int, 
+        ques_emb_dim: int,
     ):
         """Initialize. You can design your own Q Critic architecture."""
         super(GraphCriticQ, self).__init__()
 
         # Transformer Stack
         decoder_layers = nn.ModuleList(
-            [DecoderLayer(obs_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
+            [DecoderLayer(graph_obs_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
         )
-        positional_encoding_xattn_left = PositionalEncoding(obs_dim, max_seq_length)
+        positional_encoding_xattn_left = PositionalEncoding(graph_obs_dim, max_seq_length)
         self.graph_encoder = nn.Sequential(
             positional_encoding_xattn_left,
             nn.Dropout(enc_dropout),
             decoder_layers
         )
+        self.graph_ques_proj = nn.Linear(graph_obs_dim, dim_hidden)
+        self.graph_ques_proj = init_layer_uniform(self.graph_ques_proj)
 
-        self.projection = nn.Linear(enc_ff_dim, dim_hidden)
-        self.out = init_layer_uniform(self.projection)
+        self.hidden1 = nn.Linear(action_dim + graph_obs_dim + dim_hidden, dim_hidden)
+        self.hidden2 = nn.Linear(dim_hidden, dim_hidden)
+        self.out = nn.Linear(dim_hidden, 1)
+        self.out = init_layer_uniform(self.out)
 
-    def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+    def forward(self, graph_state: torch.Tensor, action: torch.Tensor, context_quest_bert_emb: torch.Tensor) -> torch.Tensor:
         """Forward method implementation."""
-        graph_output = self.graph_encoder(state)
-        x = torch.cat((graph_output, action), dim=-1)
+        # TODO: add graph masking to this encoder.
+        graph_output = self.graph_encoder(graph_state)
+        x = torch.cat((graph_output, action, context_quest_bert_emb), dim=-1)
         # TODO: Check if our encoder has a pooled output we can use to do one final projection.
+        x = F.relu(self.graph_ques_proj(x))
 
-        x = self.projection(F.relu(x))
+        x = torch.cat((graph_state, action), dim=-1)
+        x = F.relu(self.hidden1(x))
+        x = F.relu(self.hidden2(x))
         value = self.out(x)
 
         return value
@@ -169,6 +178,7 @@ class GraphCriticV(nn.Module):
         enc_dropout: float,
         dim_hidden: int ,
         max_seq_length: int,
+        ques_emb_dim: int,
     ):
         """Initialize. You can design your own V Critic architecture."""
         super(GraphCriticV, self).__init__()
@@ -183,15 +193,21 @@ class GraphCriticV(nn.Module):
             decoder_layers
         )
 
-        self.hidden1 = nn.Linear(obs_dim, dim_hidden)
+        self.graph_ques_proj = nn.Linear(ques_emb_dim + obs_dim, dim_hidden)
+        self.graph_ques_proj = init_layer_uniform(self.graph_ques_proj)
+
+        # TODO: I don't know if 2 is necessary here we can think about something better later
+        self.hidden1 = nn.Linear(dim_hidden * 2, dim_hidden)
         self.hidden2 = nn.Linear(dim_hidden, dim_hidden)
         self.out = nn.Linear(dim_hidden, 1)
         self.out = init_layer_uniform(self.out)
 
-    def forward(self, state: torch.Tensor) -> torch.Tensor:
+    def forward(self, graph_state: torch.Tensor, context_quest_bert_emb: torch.Tensor) -> torch.Tensor:
         """Forward method implementation."""
-        graph_output = self.graph_encoder(state)
+        graph_output = self.graph_encoder(graph_state)
+        cat_input = torch.cat((graph_output, context_quest_bert_emb), dim=-1)
 
+        x = F.relu(self.graph_ques_proj(cat_input))
         x = F.relu(self.hidden1(graph_output))
         x = F.relu(self.hidden2(x))
         value = self.out(x)

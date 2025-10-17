@@ -456,9 +456,11 @@ class GraphEmbeddingDataset(Dataset):
         id2ent: nn.Embedding,
         id2rel: nn.Embedding,
         word_tokenizer: BartTokenizer,
+        bert_embed_size: int,
         device: Device,
     ):
         self.dataset: pd.DataFrame = dataset
+        self.bert_embed_size = bert_embed_size
         sep_token = word_tokenizer.sep_token
         assert isinstance(sep_token, str), "Expected the separator token to be a string. e.g. </s>"
         self.separator_token_id = word_tokenizer.convert_tokens_to_ids([sep_token])
@@ -474,7 +476,8 @@ class GraphEmbeddingDataset(Dataset):
             self.separator_token_id,
         )
         self.path = dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[2]].tolist()
-        self.bert_embed_answers = dataset.iloc[:, 3:].values.tolist()
+        self.bert_embed_answers = dataset.iloc[:, 3:3+self.bert_embed_size].values.tolist()
+        # self.bert_embed_questions = dataset.iloc[:, 3+self.bert_embed_size : ].values.tolist() # Not really necessary in pretranining.py. 
         # Embeddings
         self.id2ent = id2ent
         self.id2rel = id2rel

@@ -95,10 +95,6 @@ def initial_setup() -> (
     return args, logger
 
 
-def prep_questions(questions: List[torch.Tensor], model: BertModel):
-    embedded_questions = model(questions)
-    return embedded_questions
-
 
 def batch_loop_dev(
     env: ITLGraphEnvironment,
@@ -701,66 +697,11 @@ class QuestionCoverageSampler:
 
         return sampled, completed_cycles
 
-    def progress(self) -> float:
+    def get_progress(self) -> float:
         """Fraction of unique questions touched in the current coverage sweep."""
 
         return self._cursor / len(self._question_ids)
 
-
-def _prepopulate_replay_buffer(
-    *,
-    env: ReinforcedUnsupervisedEnv,
-    actor: ContinuousPolicyGradient,
-    hunch_llm: nn.Module,
-    replay_buffer: QuestionReplayBuffer,
-    train_df: pd.DataFrame,
-    batch_size: int,
-    num_simulations_per_question: int,
-    max_env_steps: int,
-    pad_token_id: int,
-) -> Dict[str, float]:
-    """Fill the replay buffer with initial random transitions for every question."""
-
-    if num_simulations_per_question <= 0:
-        raise ValueError("num_simulations_per_question must be positive for prepopulation")
-
-    question_ids = train_df.index.tolist()
-    if not question_ids:
-        raise ValueError("Training dataframe must contain at least one question")
-
-    aggregated: DefaultDict[str, List[float]] = defaultdict(list)
-    total_transitions = 0
-
-    chunk_size = max(1, min(batch_size, len(question_ids)))
-    for start in tqdm(range(0, len(question_ids), chunk_size), desc="Prepopulating the buffer"):
-        chunk_ids = question_ids[start : start + chunk_size]
-        mini_batch = train_df.loc[chunk_ids]
-        question_counts = {int(qid): num_simulations_per_question for qid in chunk_ids}
-
-        metrics = gather_experience_steps(
-            env,
-            actor,
-            hunch_llm,
-            replay_buffer,
-            mini_batch=mini_batch,
-            num_steps=sum(question_counts.values()),
-            max_env_steps=max_env_steps,
-            pad_token_id=pad_token_id,
-            use_random_actions=True,
-            question_counts=question_counts,
-        )
-
-        total_transitions += sum(question_counts.values())
-        for key, value in metrics.items():
-            aggregated[key].append(value)
-
-    aggregated["prepopulate/num_questions"].append(float(len(question_ids)))
-    aggregated["prepopulate/num_transitions"].append(float(total_transitions))
-
-    return {
-        key: float(np.mean(values)) if values else 0.0
-        for key, values in aggregated.items()
-    }
 
 
 @torch.no_grad()
@@ -787,7 +728,7 @@ def prepopulate_replay_buffer(
         mini_batch = train_df.iloc[i : i + BATCH_SIZE]
         _inner_batch_size = len(mini_batch)
 
-        # Get questions ready for batch bart processing
+        # Get questions ready for batch Bart processing
         questions = [torch.Tensor(ques).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
         padded_questions_tokens = torch.nn.utils.rnn.pad_sequence(
             questions, batch_first=True, padding_value=pad_token_id
@@ -795,15 +736,26 @@ def prepopulate_replay_buffer(
         padded_questions_tokens = padded_questions_tokens.view(-1,1,padded_questions_tokens.shape[-1])
         padded_questions_tokens = padded_questions_tokens.repeat(1,num_simulations_per_question,1).squeeze(1)
         padded_token_len = padded_questions_tokens.shape[-1]
-        questions_embeddings = env.get_llm_embeddings(padded_questions_tokens.view(-1, padded_token_len))
+        old_bert_quest_embs = env.get_llm_embeddings(padded_questions_tokens.view(-1, padded_token_len))
 
         # Answers Graph Embeddings
         paths = mini_batch.loc[:, "triples_ints"]
         answer_graphemb_idxs = torch.LongTensor([path[-1] for path in paths]).to(gpu_device) # TODO: see if we can remove device
         answer_graphemb_idxs = answer_graphemb_idxs.unsqueeze(1).repeat(1,num_simulations_per_question).view(-1).to(gpu_device)
 
+        bert_emb_dim = replay_buffer.get_question_bert_emb_dim()
+
+        # Question Bert Embedding
+        bert_quest_emb = torch.Tensor(mini_batch.iloc[:, 3 + bert_emb_dim:].values.tolist())
+        bert_quest_emb = (
+            bert_quest_emb.view(-1, 1, bert_quest_emb.shape[-1])
+            .repeat(1, num_simulations_per_question, 1)
+            .view(-1,bert_emb_dim)
+        ).to(gpu_device)
+
+
         # Answer Bert Heuristic
-        answer_bert_heuristics = torch.Tensor(mini_batch.iloc[:, 3:].values.tolist())
+        answer_bert_heuristics = torch.Tensor(mini_batch.iloc[:, 3: 3 + bert_emb_dim].values.tolist())
         answer_bert_heuristics = (
             answer_bert_heuristics.view(-1, 1, answer_bert_heuristics.shape[-1])
             .repeat(1, num_simulations_per_question, 1)
@@ -811,7 +763,7 @@ def prepopulate_replay_buffer(
         ).to(gpu_device)
 
         #.... reset
-        init_states = env.reset(questions_embeddings)
+        init_states = env.reset(bert_quest_emb)
 
         #.... Action
 
@@ -847,9 +799,10 @@ def prepopulate_replay_buffer(
         action_dim = action.shape[-1]
         state_dim = init_states.shape[-1]
         question_n_exp_idxs = torch.Tensor(mini_batch.index).to(torch.long).unsqueeze(1).repeat(1, num_simulations_per_question).view(-1)
-        replay_buffer.add_question_experiences(
+        replay_buffer.add_transitions(
             question_n_exp_idxs=question_n_exp_idxs,
-            cur_states=init_states.view(-1, state_dim),
+            quest_bert_emb=bert_quest_emb,
+            cur_states=init_states.view(-1, state_dim), # TODO: we might want to remove this since we already have path_states
             actions=action.view(-1, action_dim).detach().to(cpu_device),
             rewards=llm_reward.detach().to(cpu_device),
             next_states=next_state.view(-1, state_dim).detach().to(cpu_device),
@@ -858,7 +811,7 @@ def prepopulate_replay_buffer(
             log_probs = torch.ones_like(llm_reward, dtype=torch.float), # TODO: make sure we handle this place holder value properly later
             entropies = torch.full_like(llm_reward, -1.0)
         )
-        del questions_embeddings, answer_graphemb_idxs, answer_bert_heuristics, init_states, next_state, llm_reward, action, padded_path
+        del bert_quest_emb, answer_graphemb_idxs, answer_bert_heuristics, init_states, next_state, llm_reward, action, padded_path
         torch.cuda.empty_cache()
     actor.train()
     # hunch_llm does not really need to be trained here.
@@ -888,7 +841,7 @@ def train_multihopkg(
     num_simulations_per_ques: int,
     wandb_on: bool,
     num_update_steps: int,
-    max_env_steps: int,
+    update_batch_size: int,
     critic_q1: GraphCriticQ,
     critic_q2: GraphCriticQ,
     value_net: GraphCriticV,
@@ -899,6 +852,9 @@ def train_multihopkg(
             "Answer tokenizer must expose a pad token id before replay can be constructed"
         )
 
+    ########################################
+    # Common Tools and Optimizer Setup
+    ########################################
     device = next(nav_agent.parameters()).device
     action_shape = (nav_agent.mu_layer.out_features,)
 
@@ -920,19 +876,23 @@ def train_multihopkg(
     tau = 0.005
     gamma = nav_agent.gamma
 
+    ########################################
+    # Helper Functions Setup
+    ########################################
     def soft_update(source: nn.Module, target: nn.Module, tau: float) -> None:
         for target_param, param in zip(target.parameters(), source.parameters()):
             target_param.data.mul_(1.0 - tau)
             target_param.data.add_(tau * param.data)
 
-    def sac_update_step(batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+    def sac_update_step(
+        bert_quest_emb: torch.Tensor,
+        states: torch.Tensor,
+        actions: torch.Tensor,
+        rewards: torch.Tensor,
+        next_states: torch.Tensor,
+        dones: torch.Tensor,
+    ) -> Dict[str, float]:
         nonlocal log_alpha
-
-        states = batch["states"].to(device)
-        actions = batch["actions"].to(device)
-        rewards = batch["rewards"].to(device)
-        next_states = batch["next_states"].to(device)
-        dones = batch["dones"].to(device).float()
 
         alpha = log_alpha.exp()
 
@@ -940,8 +900,8 @@ def train_multihopkg(
             target_values = target_value_net(next_states)
             q_target = rewards + (1.0 - dones) * gamma * target_values
 
-        q1_pred = critic_q1(states, actions)
-        q2_pred = critic_q2(states, actions)
+        q1_pred = critic_q1(states, actions, bert_quest_emb)
+        q2_pred = critic_q2(states, actions, bert_quest_emb)
         critic_loss = F.mse_loss(q1_pred, q_target) + F.mse_loss(q2_pred, q_target)
 
         critic_optimizer.zero_grad()
@@ -949,12 +909,12 @@ def train_multihopkg(
         critic_optimizer.step()
 
         policy_actions, log_probs, entropy, _, _ = nav_agent(states)
-        q1_pi = critic_q1(states, policy_actions)
-        q2_pi = critic_q2(states, policy_actions)
+        q1_pi = critic_q1(states, policy_actions, bert_quest_emb)
+        q2_pi = critic_q2(states, policy_actions, bert_quest_emb)
         min_q_pi = torch.min(q1_pi, q2_pi)
 
         value_target = (min_q_pi - alpha * log_probs.unsqueeze(-1)).detach()
-        value_pred = value_net(states)
+        value_pred = value_net(states, bert_quest_emb)
         value_loss = F.mse_loss(value_pred, value_target)
 
         value_optimizer.zero_grad()
@@ -983,13 +943,7 @@ def train_multihopkg(
             "log_prob": log_probs.mean().item(),
         }
 
-    train_df = data_partitions.train
-    if not isinstance(train_df, pd.DataFrame):
-        raise ValueError("Training partition must be a pandas DataFrame")
-    if train_df.empty:
-        raise ValueError("Training partition is empty; nothing to optimise")
-
-    question_ids = train_df.index.tolist()
+    question_ids = replay_buffer.qet_question_ids()
     coverage_sampler = QuestionCoverageSampler(question_ids)
 
     num_updates_limit = max(1, num_update_steps)
@@ -1001,8 +955,7 @@ def train_multihopkg(
         log_dir=f"runs/rl/{env.knowledge_graph.model_name.lower()}/{timestamp}/"
     )
 
-
-    collections_per_epoch = max(1, math.ceil(len(question_ids) / max(1, batch_size)))
+    collections_per_epoch = math.ceil(len(question_ids) / batch_size)
 
     for epoch_id in tqdm(range(epochs), desc="Epoch"):
         nav_agent.train()
@@ -1013,55 +966,29 @@ def train_multihopkg(
         target_value_net.eval()
 
         for _ in tqdm(range(collections_per_epoch), desc="Collection", leave=False):
-            if total_gradient_updates >= num_updates_limit:
-                break
+            # Sample Questions Ids that we will experience
 
-            sampled_ids, cycles_finished = coverage_sampler.sample(batch_size)
-            if not sampled_ids:
-                continue
-            mini_batch = train_df.loc[sampled_ids]
-            if isinstance(mini_batch, pd.Series):
-                mini_batch = mini_batch.to_frame().T
-
-            question_counts = {
-                int(qid): num_simulations_per_ques for qid in sampled_ids
-            }
-            total_requested = sum(question_counts.values())
-            if total_requested <= 0:
-                continue
-
-            buffer_metrics = gather_experience_steps(
-                env,
-                nav_agent,
-                hunch_llm,
-                replay_buffer,
-                mini_batch=mini_batch,
-                num_steps=total_requested,
-                max_env_steps=max_env_steps,
-                pad_token_id=answer_tokenizer.pad_token_id,
-                use_random_actions=(total_gradient_updates == 0),
-                question_counts=question_counts,
-            )
-
-            buffer_metrics["coverage/progress"] = coverage_sampler.progress()
-            buffer_metrics["coverage/cycles_completed"] = float(
-                coverage_sampler.cycles_completed
-            )
-            buffer_metrics["coverage/cycles_finished"] = float(cycles_finished)
-
-            if wandb_on:
-                wandb.log({f"collect/{k}": v for k, v in buffer_metrics.items()})
-            for metric_name, metric_value in buffer_metrics.items():
-                writer.add_scalar(
-                    f"collect/{metric_name}", metric_value, total_gradient_updates
-                )
-
+            ########################################
+            # Training/Updates
+            ########################################
             while (
-                replay_buffer.is_ready(total_gradient_updates)
-                and total_gradient_updates < num_updates_limit
+                # replay_buffer.is_ready(total_gradient_updates) and
+                total_gradient_updates < num_updates_limit
             ):
-                sampled_batch = replay_buffer.sample(device)
-                update_metrics = sac_update_step(sampled_batch)
+                sampled_ids, _ = coverage_sampler.sample(batch_size)
+                question_counts = {
+                    int(qid): num_simulations_per_ques for qid in sampled_ids
+                }
+                _, bert_quest_emb, actions, rewards, next_states, dones, path_states, _, _ = replay_buffer.sample_transitions(question_counts)
+
+                update_metrics = sac_update_step(
+                    bert_quest_emb,
+                    path_states,
+                    actions,
+                    rewards,
+                    next_states,
+                    dones,
+                )
                 if wandb_on:
                     wandb.log({f"train/{k}": v for k, v in update_metrics.items()})
                 for metric_name, metric_value in update_metrics.items():
@@ -1072,6 +999,11 @@ def train_multihopkg(
 
                 if total_gradient_updates >= num_updates_limit:
                     break
+
+            ########################################
+            # Rehydrate the Replay Buffer
+            ########################################
+            # TODO: Rehydrate the replay buffer
 
         logger.info(
             "Epoch %d completed | replay_size=%d | gradient_updates=%d | coverage_cycles=%d",
@@ -1084,285 +1016,6 @@ def train_multihopkg(
         if total_gradient_updates >= num_updates_limit:
             logger.info("Reached gradient update budget; stopping training loop early.")
             break
-
-    writer.close()
-    return
-
-    # TODO: Get the rollout working
-
-    # Print Model Parameters + Perhaps some more information
-    if verbose:
-        print(
-            "--------------------------\n"
-            "Model Parameters\n"
-            "--------------------------"
-        )
-        for name, param in nav_agent.named_parameters():
-            print(name, param.numel(), "requires_grad={}".format(param.requires_grad))
-
-        for name, param in env.named_parameters():
-            if param.requires_grad:
-                print(
-                    name, param.numel(), "requires_grad={}".format(param.requires_grad)
-                )
-
-    local_time = time.localtime()
-    timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
-    writer = SummaryWriter(
-        log_dir=f"runs/mlm/{env.knowledge_graph.model_name.lower()}/{timestamp}/"
-    )
-
-    named_param_map = {
-        param: name
-        for name, param in (
-            list(nav_agent.named_parameters())
-            + list(env.named_parameters())
-            + list(hunch_llm.named_parameters())
-        )
-    }
-    optimizer = torch.optim.Adam(  # type: ignore
-        filter(
-            lambda p: p.requires_grad,
-            list(env.concat_projector.parameters())
-            + list(nav_agent.parameters())
-            + list(hunch_llm.embedding_translator.parameters()),
-        ),
-        lr=learning_rate,
-    )
-
-    modules_to_log: List[nn.Module] = [nav_agent]
-
-    # Variable to pass for logging
-    batch_count = 0
-    bos_token_id = answer_tokenizer.bos_token_id
-    eos_token_id = answer_tokenizer.eos_token_id
-    pad_token_id = answer_tokenizer.pad_token_id
-    if bos_token_id is None or eos_token_id is None or pad_token_id is None:
-        raise ValueError(
-            "Assumptions Wrong. The answer_tokenize must have a bos_token_id, eos_token_id and pad_token_id"
-        )
-
-    # Replacement for the hooks
-    if track_gradients:
-        grad_logger = torch_module_logging.ModuleSupervisor(
-            {"navigation_agent": nav_agent, "hunch_llm": hunch_llm}
-        )
-
-    ########################################
-    # Epoch Loop
-    ########################################
-    for epoch_id in tqdm(range(epochs), desc="Epoch"):
-
-        logger.info("Epoch {}".format(epoch_id))
-        # TODO: Perhaps evaluate the epochs?
-
-        # Set in training mode
-        nav_agent.train()
-
-        ##############################
-        # Batch Loop
-        ##############################
-        # TODO: update the parameters.
-        for sample_offset_idx in tqdm(
-            range(0, len(train_data), batch_size), desc="Training Batches", leave=False
-        ):
-            mini_batch = train_data[sample_offset_idx : sample_offset_idx + batch_size]
-
-            assert isinstance(
-                mini_batch, pd.DataFrame
-            )  # For the lsp to give me a break
-
-            ########################################
-            # Evaluation
-            ########################################
-            "For debugging purposes, comment back in if needed"
-            # if batch_count % mbatches_b4_eval == 0:
-            #     evaluate_training(
-            #         env,
-            #         dev_df,
-            #         nav_agent,
-            #         hunch_llm,
-            #         steps_in_episode,
-            #         batch_size_dev,
-            #         batch_count,
-            #         verbose,
-            #         visualize,
-            #         writer,
-            #         question_tokenizer,
-            #         answer_tokenizer,
-            #         wandb_on,
-            #         iteration = epoch_id * (len(train_data) // batch_size // mbatches_b4_eval) + (batch_count // mbatches_b4_eval),
-            #         timestamp = timestamp,
-            #     )
-
-            ########################################
-            # Training
-            ########################################
-            "Forward pass"
-
-            optimizer.zero_grad()
-            pg_loss, _ = batch_loop(
-                env,
-                mini_batch,
-                nav_agent,
-                hunch_llm,
-                steps_in_episode,
-                bos_token_id,
-                eos_token_id,
-                pad_token_id,
-            )
-
-            if torch.isnan(pg_loss).any():
-                logger.error("NaN detected in the loss. Aborting training.")
-
-            # Logg the mean, std, min, max of the rewards
-            reinforce_terms_mean = pg_loss.mean()
-            reinforce_terms_mean_item = reinforce_terms_mean.item()
-            reinforce_terms_std_item = pg_loss.std().item()
-            reinforce_terms_min_item = pg_loss.min().item()
-            reinforce_terms_max_item = pg_loss.max().item()
-            logger.debug(
-                f"Reinforce terms mean: {reinforce_terms_mean_item}, std: {reinforce_terms_std_item}, min: {reinforce_terms_min_item}, max: {reinforce_terms_max_item}"
-            )
-
-            # TODO: Uncomment and try: (but comment out the normalization in batch_loop and bacth_loop_dev)
-            # pg_loss = tensor_normalization(pg_loss)
-
-            # ---------------------------------
-            "Backward pass"
-            logger.debug("Bout to go backwords")
-            reinforce_terms_mean.backward()
-
-            # ---------------------------------
-            "Gradient Tracking"
-
-            if sample_offset_idx == 0:
-
-                # Ask for the DAG to be dumped
-                if track_gradients:
-                    grad_logger.dump_visual_dag(destination_path=f"./figures/grads/dag_{epoch_id:02d}.png", figsize=(10, 100))  # type: ignore
-
-            if torch.all(nav_agent.mu_layer.weight.grad == 0):
-                logger.warning("Gradients are zero for mu_layer!")
-
-            # Inspecting vanishing gradient
-            if sample_offset_idx % num_batches_till_eval == 0 and verbose:
-                # Retrieve named parameters from the optimizer
-                named_params = [
-                    (named_param_map[param], param)
-                    for group in optimizer.param_groups
-                    for param in group["params"]
-                ]
-
-                # Wandb hisotram of modules
-                histograms = histogram_all_modules(modules_to_log, num_buckets=20)
-                # Report the histograms to wandb
-                if wandb_on:
-                    for name, histogram in histograms.items():
-                        wandb.log(
-                            {
-                                f"{name}/Histogram": wandb.Histogram(
-                                    np_histogram=histogram
-                                )
-                            }
-                        )
-
-                # Iterate and calculate gradients as needed
-                for name, param in named_params:
-                    if (
-                        param.requires_grad
-                        and ("bias" not in name)
-                        and (param.grad is not None)
-                    ):
-                        if name == "weight":
-                            name = "concat_projector.weight"
-                        grads = param.grad.detach().cpu()
-                        weights = param.detach().cpu()
-
-                        dist_tracker.write_dist_parameters(
-                            grads, name, "Gradient", writer, epoch_id
-                        )
-                        dist_tracker.write_dist_parameters(
-                            weights, name, "Weights", writer, epoch_id
-                        )
-
-                        if wandb_on:
-                            wandb.log(
-                                {
-                                    f"{name}/Gradient": wandb.Histogram(
-                                        grads.numpy().flatten()
-                                    )
-                                }
-                            )
-                            wandb.log(
-                                {
-                                    f"{name}/Weights": wandb.Histogram(
-                                        weights.numpy().flatten()
-                                    )
-                                }
-                            )
-                        elif visualize:
-                            dist_tracker.write_dist_histogram(
-                                grads.numpy().flatten(),
-                                name,
-                                "g",
-                                "Gradient Histogram",
-                                "Grad Value",
-                                "Frequency",
-                                writer,
-                                epoch_id,
-                            )
-                            dist_tracker.write_dist_histogram(
-                                weights.numpy().flatten(),
-                                name,
-                                "b",
-                                "Weights Histogram",
-                                "Weight Value",
-                                "Frequency",
-                                writer,
-                                epoch_id,
-                            )
-
-            if wandb_on:
-                loss_item = pg_loss.mean().item()
-                logger.info(f"Submitting train/pg_loss: {loss_item} to wandb")
-                wandb.log({"train/pg_loss": loss_item})
-
-            # ---------------------------------
-            "Optimizer step"
-
-            optimizer.step()
-
-            batch_count += 1
-
-        "Evaluate at the end of the epoch"
-        evaluate_training(
-            env,
-            dev_df,
-            nav_agent,
-            hunch_llm,
-            steps_in_episode,
-            batch_size_dev,
-            batch_count,
-            verbose,
-            visualize,
-            writer,
-            question_tokenizer,
-            answer_tokenizer,
-            wandb_on,
-            iteration=epoch_id * (len(train_data) // batch_size // mbatches_b4_eval)
-            + (batch_count // mbatches_b4_eval),
-            timestamp=timestamp,
-        )
-
-        # !TODO: Add evaluation metrics for the model's performance at the end of epoch with dev set
-    # !TODO: Add evaluation metrics for the model's performance at the end of epoch with test set
-
-
-# TODO: Remove if unused
-def initialize_path(questions: torch.Tensor):
-    # Questions must be turned into queries
-    raise NotImplementedError
 
 
 # TODO: Move function to a separate file
@@ -1432,453 +1085,6 @@ def calculate_llm_reward_supasoft(
     ).mean(dim=-1)
     reward = -mse_loss
     return reward, bert_ans_embeddings
-
-@torch.no_grad()
-def gather_experience_steps(
-    env: ReinforcedUnsupervisedEnv,
-    actor: ContinuousPolicyGradient,
-    hunch_llm: nn.Module,
-    replay_buffer: QuestionReplayBuffer,
-    *,
-    mini_batch: pd.DataFrame,
-    num_steps: int,
-    max_env_steps: int,
-    pad_token_id: int,
-    question_counts: Dict[int, int],
-    use_random_actions: bool = False,
-) -> Dict[str, float]:
-    """Collect transitions for the provided mini-batch of questions."""
-
-    device = next(actor.parameters()).device
-    metrics: DefaultDict[str, List[float]] = defaultdict(list)
-    summary: Dict[str, float] = {}
-
-    if isinstance(mini_batch, pd.Series):
-        mini_batch = mini_batch.to_frame().T
-
-    question_ids: List[int] = mini_batch.index.tolist()
-    assert len(question_ids) > 0
-
-    question_count_map = {
-        int(qid): int(count)
-        for qid, count in question_counts.items()
-        if int(count) > 0
-    }
-    total_requested = sum(question_count_map.values())
-
-    if total_requested <= 0:
-        return {}
-
-    total_steps = total_requested
-
-    question_tokens = [
-        torch.as_tensor(seq, dtype=torch.long, device=device)
-        for seq in mini_batch["enc_questions"].values.tolist()
-    ]
-    path_sequences: List[List[int]] = mini_batch["triples_ints"].values.tolist()
-    answer_embeddings_raw = mini_batch.iloc[:, 3:].to_numpy()
-
-    answer_embeddings = [
-        torch.as_tensor(row, dtype=torch.float32, device=device)
-        for row in answer_embeddings_raw
-    ]
-
-    question_embeddings = env.get_llm_embeddings(question_tokens, device).detach()
-
-    question_data: Dict[int, Dict[str, torch.Tensor]] = {}
-    for idx, question_id in enumerate(question_ids):
-        question_embedding = question_embeddings[idx]
-        answer_embedding = answer_embeddings[idx]
-        encoded_question = question_tokens[idx]
-        path = path_sequences[idx]
-        if not path:
-            raise ValueError("Path sequence is empty; expected at least one entity id")
-        answer_entity_id = int(path[-1])
-        answer_id_tensor = torch.tensor([answer_entity_id], dtype=torch.long)
-
-        replay_buffer.ensure_question_metadata(
-            question_id,
-            question_embedding=question_embedding,
-            answer_embedding=answer_embedding,
-            answer_id=answer_id_tensor,
-        )
-
-        question_data[question_id] = {
-            "question_embedding": question_embedding.detach(),
-            "question_embedding_batch": question_embedding.detach().unsqueeze(0),
-            "answer_embedding": answer_embedding.detach(),
-            "answer_id_tensor": answer_id_tensor.detach(),
-            "question_tokens": encoded_question.detach(),
-            "question_tokens_batch": encoded_question.detach().unsqueeze(0),
-        }
-
-    action_dim = actor.mu_layer.out_features
-    total_transitions = 0
-    max_history = max(1, max_env_steps)
-
-    # Batch initialize any questions missing a reset transition.
-    questions_needing_init = [
-        qid for qid in question_ids if not replay_buffer.has_transitions(qid)
-    ]
-    if questions_needing_init:
-        init_tensor = torch.cat(
-            [question_data[qid]["question_embedding_batch"] for qid in questions_needing_init],
-            dim=0,
-        ).to(device)
-        init_states = env.reset(init_tensor).to(device)
-        if init_states.dim() == 1:
-            init_states = init_states.unsqueeze(0)
-        for idx, question_id in enumerate(questions_needing_init):
-            init_state = init_states[idx]
-            if init_state.dim() == 2:
-                init_state = init_state.squeeze(0)
-            replay_buffer.add_reset_transition(question_id, init_state, action_dim)
-            metrics["init_resets"].append(1.0)
-
-    # Per Question Loop
-    for question_id, repetitions in tqdm(question_count_map.items(), f"Question maps with len: {len(question_count_map)}. "):
-        question_info = question_data[question_id]
-
-        if not replay_buffer.has_transitions(question_id):
-            init_state = env.reset(
-                question_info["question_embedding_batch"]
-            )
-            if init_state.dim() == 2:
-                init_state = init_state.squeeze(0)
-            replay_buffer.add_reset_transition(question_id, init_state, action_dim)
-            metrics["init_resets"].append(1.0)
-
-        # Per Repetition Loop
-        for _ in range(repetitions):
-            last_transition = replay_buffer.get_last_transition(question_id)
-            need_reset = False
-            had_transition = last_transition is not None
-            if last_transition is None:
-                need_reset = True
-            else:
-                if last_transition.done.any():
-                    need_reset = True
-                elif last_transition.path_states.size(0) >= max_env_steps:
-                    need_reset = True
-
-            if need_reset:
-                init_state = env.reset(
-                    question_info["question_embedding_batch"]
-                )
-                if init_state.dim() == 2:
-                    init_state = init_state.squeeze(0)
-                replay_buffer.add_reset_transition(question_id, init_state, action_dim)
-                if had_transition:
-                    metrics["path/forced_reset"].append(1.0)
-                last_transition = replay_buffer.get_last_transition(question_id)
-
-            assert last_transition is not None, "Replay buffer should contain a reset transition after initialization"
-
-            current_path_tensor = last_transition.path_states
-            current_state = current_path_tensor
-            agent_input = current_state
-
-            if use_random_actions:
-                action = torch.empty(1, action_dim, device=device).uniform_(-1.0, 1.0)
-                log_prob = None
-                entropy = None
-            else:
-                action, log_prob, entropy, _, _ = actor(agent_input)
-
-            observation = ReinforcedUnsupervisedEnv.RUE_Observation(
-                state=current_state[-1,:], # Send the very last position # TODO: Ensure it is not an action or something wroong
-                answer_id=question_info["answer_id_tensor"],
-            )
-            next_state, env_reward, done_flags = env.step(observation, action)
-
-            next_state = next_state.to(device)
-            if next_state.dim() == 1:
-                next_state = next_state.unsqueeze(0)
-            env_reward = env_reward.to(device)
-            done_flags = done_flags.to(device)
-
-            llm_reward, _ = calculate_llm_reward_supasoft(
-                hunch_llm,
-                next_state,
-                question_info["answer_embedding"],
-                question_info["question_tokens_batch"],
-                pad_token_id,
-            )
-
-            env_reward_scalar = env_reward.view(-1)
-            llm_reward_scalar = llm_reward.view(-1)
-            total_reward = llm_reward_scalar #+ env_reward_scalar
-            done_scalar = done_flags.view(-1)
-
-            next_state_entity = next_state.squeeze(0)
-            new_path_states = torch.cat(
-                [current_path_tensor, action,next_state_entity.unsqueeze(0)], dim=0
-            )
-            path_length = new_path_states.size(0)
-            reached_max_horizon = path_length >= (max_env_steps * 2 -1 )
-            if reached_max_horizon:
-                done_scalar = torch.ones_like(done_scalar, dtype=torch.bool)
-                metrics["path/max_steps_reached"].append(1.0)
-
-            trimmed_path_tensor = new_path_states[-max_history:].detach().cpu()
-            transition = Transition(
-                state=agent_input.squeeze(0).detach().cpu(),
-                action=action.squeeze(0).detach().cpu(),
-                reward=total_reward.detach().cpu(),
-                next_state=next_state_entity.detach().cpu(),
-                done=done_scalar.detach().cpu(),
-                path_states=trimmed_path_tensor,
-                step_index=path_length - 1,
-                env_reward=env_reward_scalar.detach().cpu(),
-                llm_reward=llm_reward_scalar.detach().cpu(),
-                log_prob=log_prob.detach().cpu() if log_prob is not None else None,
-                entropy=entropy.detach().cpu() if entropy is not None else None,
-            )
-            replay_buffer.add_transition(question_id, transition)
-
-            metrics["reward/env_mean"].append(env_reward_scalar.mean().item())
-            metrics["reward/llm_mean"].append(llm_reward_scalar.mean().item())
-            metrics["reward/total_mean"].append(total_reward.mean().item())
-            metrics["done_ratio"].append(done_scalar.float().mean().item())
-            metrics["path/length_mean"].append(float(path_length))
-
-            if log_prob is not None:
-                metrics["policy/logprob_mean"].append(log_prob.mean().item())
-            if entropy is not None:
-                metrics["policy/entropy_mean"].append(entropy.mean().item())
-
-            total_transitions += 1
-
-    summary.update({
-        metric: float(sum(values) / len(values))
-        for metric, values in metrics.items()
-        if values
-    })
-    summary["num_transitions"] = float(total_transitions)
-    summary["num_questions_sampled"] = float(len(question_count_map))
-    summary["used_random_actions"] = float(use_random_actions)
-    summary["total_requested_steps"] = float(total_steps)
-
-    return summary
-
-
-@torch.no_grad()
-def collect_transitions_per_question(
-    env: ReinforcedUnsupervisedEnv,
-    actor: ContinuousPolicyGradient,
-    hunch_llm: nn.Module,
-    *,
-    num_simulations: int,
-    question_embeddings: torch.Tensor,
-    answer_bert_embeddings: torch.Tensor,
-    path: List[int],
-    max_env_steps: int,
-) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, float]]:
-    """Roll a single question through the environment and return transitions for replay."""
-
-    assert (
-        question_embeddings.dim() == 1
-    ), "collect_transitions_per_question() only takes a single question at a time. You are sending a 2d tensor."
-    assert (
-        answer_bert_embeddings.dim() == 1
-    ), "collect_transitions_per_question() only takes a single answer at a time. You are sending a 2d tensor."
-
-    ########################################
-    # Input Processing
-    ########################################
-
-    device = question_embeddings.device
-    action_dim = actor.mu_layer.out_features
-
-    path_answer_id = torch.Tensor(path[-1]).to(torch.long).to(device)
-
-    # Tile questions and answers.
-    question_embeddings = question_embeddings.view(1,-1).repeat(num_simulations, 1)
-    answer_embeddings = answer_bert_embeddings
-    path_answer_id = path_answer_id.view(1,-1).repeat(num_simulations, 1)
-
-    # Normalize any provided action overrides to [steps, batch, action_dim]
-    # TODO: Look into this, if we want to enforce an overriding action. For now we comment it out
-    # overrides_tensor: Optional[torch.Tensor]
-    # overrides_tensor = None
-    # if action_overrides is not None:
-    #     if action_overrides.dim() == 2:
-    #         expected_shape = (num_simulations, action_dim)
-    #         if tuple(action_overrides.shape) != expected_shape:
-    #             raise ValueError(
-    #                 "action_overrides must have shape "
-    #                 f"{expected_shape}, got {tuple(action_overrides.shape)}"
-    #             )
-    #             #TODO: This is weird. I cannto think of a reason we would want to squeeze this out.
-    #         overrides_tensor = action_overrides.unsqueeze(0).to(device)
-    #     else:
-    #         raise ValueError("action_overrides must be rank 2 or 3")
-
-
-    observations = env.reset(question_embeddings).to(device) # Our current approach doesnt provide any info to reseting the environment
-    observations = torch.cat((observations, question_embeddings), dim=-1)
-
-    ########################################
-    # Some Data Prepping
-    ########################################
-    prev_state = observations
-    # if prev_state.dim() < 2:
-    #     prev_state = prev_state.unsqueeze(0)
-    state_shape = prev_state.shape[1:]
-    action_shape: Tuple[int, ...] = (action_dim,)
-
-    metrics: DefaultDict[str, List[float]] = defaultdict(list)
-
-    stored_states: List[torch.Tensor] = []
-    stored_step_no: List[torch.Tensor] = []
-    stored_actions: List[torch.Tensor] = []
-    stored_rewards: List[torch.Tensor] = []
-    stored_next_states: List[torch.Tensor] = []
-    stored_dones: List[torch.Tensor] = []
-
-    extra_rewards_env: List[torch.Tensor] = []
-    extra_rewards_llm: List[torch.Tensor] = []
-    extra_entropy: List[torch.Tensor] = []
-    extra_logprob: List[torch.Tensor] = []
-
-    active_mask = torch.ones(num_simulations, dtype=torch.bool, device=device)
-    steps_taken = 0
-
-    ########################################
-    # Start Collecting Experience
-    ########################################
-    for step_idx in range(max_env_steps):
-        if not active_mask.any():
-            break
-
-        # TODO: unsure if I want overrides here.
-        # if overrides_tensor is not None:
-        #     override_index = min(step_idx, overrides_tensor.shape[0] - 1)
-        #     actions = overrides_tensor[override_index]
-        #     log_prob = None
-        #     entropy = None
-        # else:
-        #     actions, log_prob, entropy, _, _ = actor(prev_state)
-
-
-        ########################################
-        # Take Action, Step in Environment
-        ########################################
-        actions, log_prob, entropy, _, _ = actor(prev_state)
-
-        # TODO: Ensure the active_mask mechanism is working properly, or even necessary.
-        if not active_mask.all():
-            actions = actions.clone()
-            actions[~active_mask] = 0
-        step_observation = ReinforcedUnsupervisedEnv.RUE_Observation(
-            state=prev_state, answer_id=path_answer_id
-        )
-
-        next_observation, extrinsic_reward, done_flags = env.step(step_observation, actions)
-        next_state = next_observation
-
-        if next_state.dim() < 2:
-            next_state = next_state.unsqueeze(0)
-
-        ########################################
-        # Calculate Reward
-        ########################################
-        # llm_input = next_state.unsqueeze(1) if next_state.dim() == 2 else next_state
-        # llm_reward_tokens, _ = calculate_llm_reward_supasoft(
-        llm_scalar_reward, _ = calculate_llm_reward_supasoft(
-            hunch_llm,
-            next_state,
-            answer_bert_embeddings,
-        )
-        # llm_scalar_reward = (llm_reward_tokens * token_mask_float).sum(dim=1) / token_counts
-
-
-        ########################################
-        # Record Results
-        ########################################
-        extrinsic_scalar = extrinsic_reward.squeeze(-1)
-        total_reward = extrinsic_scalar + llm_scalar_reward
-
-        active_prev_state = prev_state[active_mask].detach()
-        if active_prev_state.numel() == 0:
-            break
-
-        active_actions = actions[active_mask].detach()
-        active_rewards = total_reward[active_mask].unsqueeze(-1).detach()
-        active_next_states = next_state[active_mask].detach()
-        active_done = done_flags[active_mask].detach()
-
-        stored_states.append(active_prev_state)
-        stored_step_no.append(torch.full_like(stored_states,step_idx))
-        stored_actions.append(active_actions)
-        stored_rewards.append(active_rewards)
-        stored_next_states.append(active_next_states)
-        stored_dones.append(active_done)
-
-        extra_rewards_env.append(extrinsic_scalar[active_mask].unsqueeze(-1).detach())
-        extra_rewards_llm.append(llm_scalar_reward[active_mask].unsqueeze(-1).detach())
-
-        metrics["reward/env_mean"].append(extrinsic_scalar[active_mask].mean().item())
-        metrics["reward/llm_mean"].append(llm_scalar_reward[active_mask].mean().item())
-        metrics["reward/total_mean"].append(total_reward[active_mask].mean().item())
-        metrics["done_ratio"].append(done_flags[active_mask].float().mean().item())
-
-        if log_prob is not None:
-            extra_logprob.append(log_prob[active_mask].unsqueeze(-1).detach())
-            metrics["policy/logprob_mean"].append(log_prob[active_mask].mean().item())
-        if entropy is not None:
-            extra_entropy.append(entropy[active_mask].unsqueeze(-1).detach())
-            metrics["policy/entropy_mean"].append(entropy[active_mask].mean().item())
-
-        active_mask = active_mask & (~done_flags.squeeze(-1))
-        prev_state = next_state
-        # TODO: This feels a bit forced, think about it. Perhaps project it if you want to stick with it.
-        prev_state = torch.cat((prev_state, question_embeddings), dim=-1)
-        steps_taken += 1
-
-    # Edge Case: For when we really didnt capture anything
-    if not stored_states:
-        empty = {
-            "states": torch.empty((0,) + state_shape, device=device),
-            "steps_no": torch.empty((0,) + state_shape, device=device),
-            "actions": torch.empty((0,) + action_shape, device=device),
-            "rewards": torch.empty((0, 1), device=device),
-            "next_states": torch.empty((0,) + state_shape, device=device),
-            "dones": torch.empty((0, 1), dtype=torch.bool, device=device),
-            "extras": {},
-        }
-        summary = {k: 0.0 for k in metrics}
-        summary["num_samples"] = 0
-        summary["num_env_steps"] = 0
-        summary["num_transitions"] = 0
-        assert False, "This stored_states thing ought to never happen right?"
-        return empty, summary
-
-    transitions = {
-        "states": torch.cat(stored_states, dim=0),
-        "steps_no": torch.cat(stored_step_no, dim=0),
-        "actions": torch.cat(stored_actions, dim=0),
-        "rewards": torch.cat(stored_rewards, dim=0),
-        "next_states": torch.cat(stored_next_states, dim=0),
-        "dones": torch.cat(stored_dones, dim=0),
-        "extras": {
-            "reward_env": torch.cat(extra_rewards_env, dim=0),
-            "reward_llm": torch.cat(extra_rewards_llm, dim=0),
-        },
-    }
-    transitions_extras = {}
-
-    if extra_entropy:
-        transitions_extras["entropy"] = torch.cat(extra_entropy, dim=0)
-    if extra_logprob:
-        transitions_extras["log_prob"] = torch.cat(extra_logprob, dim=0)
-
-    summary = {k: (sum(v) / len(v)) for k, v in metrics.items() if v}
-    summary["num_samples"] = batch_size
-    summary["num_env_steps"] = steps_taken
-    summary["num_transitions"] = transitions["states"].size(0)
-
-    return transitions, transitions_extras, summary
 
 
 def main():
@@ -1994,20 +1200,28 @@ def main():
     # Load the KGE Dictionaries
     id2ent, ent2id, id2rel, rel2id = data_utils.load_dictionaries(qna_data_path)
 
+    ########################################
     # Load the QA Dataset
+    ########################################
     # At this point we assume that `pretraining` has run so a cache is waiting for us
     # You should not recalcualte the cache anyways, it is very dependent on how pretraining determined the cache
     # Talk to @ottersome if you need more info
-    train_df, dev_df, test_df = data_utils.load_cached_pretraining_data(args.pretraining_metadata_cache_path)
+    train_df, dev_df, test_df, metadata = data_utils.load_cached_pretraining_data(args.pretraining_metadata_cache_path)
+    bert_emb_dim = metadata["ques_cols"][1] - metadata["ques_cols"][0]
 
     data_partitions = DataPartitions(
         train_df, dev_df, test_df
     )
-
-    if not isinstance(dev_df, pd.DataFrame) or not isinstance(train_df, pd.DataFrame):
-        raise RuntimeError(
-            "The data was not loaded properly. Please check the data loading code."
-        )
+    ########################################
+    # Load Bert Embeddings
+    ########################################
+    # bert_model = AutoModel.from_pretrained(args.bert_model)
+    # train_ques_list = train_df["enc_questions"].tolist()
+    # quest_bert_dim = bert_model.config.hidden_size
+    # embedded_questions = [
+    #     bert_model(torch.LongTensor(enc_ques))
+    #     for enc_ques in train_ques_list
+    # ]
 
     # Get the Module for Approximate Nearest Neighbor Search
     ########################################
@@ -2092,7 +1306,7 @@ def main():
     ).to(args.device)
 
 
-    if os.path.exists(args.replay_buffer_cache_path):
+    if os.path.exists(args.replay_buffer_cache_path) and not args.force_replaybuffer_recompute:
         logger.info(f"Found replay buffer cache. Will be using it now: {args.replay_buffer_cache_path}")
         with open(args.replay_buffer_cache_path, 'rb') as f: 
             replay_buffer = pickle.load(f)
@@ -2105,6 +1319,7 @@ def main():
             num_questions = len(train_df), # TODO: check this is correct
             state_shape=dim_entity,
             action_shape=dim_relation,
+            bert_emb_dim=bert_emb_dim,
             experiences_per_question=args.experiences_per_question,
             batch_size=args.batch_size,
             max_env_steps=args.max_env_steps,
@@ -2150,24 +1365,26 @@ def main():
         args.verbose = True
 
     critic_q1 = GraphCriticQ(
-        obs_dim=dim_observation,
+        graph_obs_dim=dim_observation,
         action_dim=dim_relation,
         encoder_num_layers=args.num_enc_layers,
         encoder_num_heads=args.num_enc_heads,
         enc_ff_dim=args.enc_ff_dim,
         enc_dropout=args.enc_dropout,
         dim_hidden=args.critic_q_hiddim,
-        max_seq_length=args.max_env_steps * 2 - 1
+        max_seq_length=args.max_env_steps * 2 - 1,
+        ques_emb_dim=bert_emb_dim,
     ).to(args.device)
     critic_q2 = GraphCriticQ(
-        obs_dim=dim_observation,
+        graph_obs_dim=dim_observation,
         action_dim=dim_relation,
         encoder_num_layers=args.num_enc_layers,
         encoder_num_heads=args.num_enc_heads,
         enc_ff_dim=args.enc_ff_dim,
         enc_dropout=args.enc_dropout,
         dim_hidden=args.critic_q_hiddim,
-        max_seq_length=args.max_env_steps * 2 - 1
+        max_seq_length=args.max_env_steps * 2 - 1,
+        ques_emb_dim=bert_emb_dim,
     ).to(args.device)
     value_net = GraphCriticV(
         obs_dim=dim_observation,
@@ -2176,7 +1393,8 @@ def main():
         enc_ff_dim=args.enc_ff_dim,
         enc_dropout=args.enc_dropout,
         dim_hidden=args.critic_v_hiddim,
-        max_seq_length=args.max_env_steps * 2 - 1
+        max_seq_length=args.max_env_steps * 2 - 1,
+        ques_emb_dim=bert_emb_dim,
     ).to(args.device)
 
     train_multihopkg(
@@ -2200,7 +1418,7 @@ def main():
         num_simulations_per_ques=args.experiences_per_question,
         wandb_on=args.wandb,
         num_update_steps=args.num_update_steps,
-        max_env_steps = args.max_env_steps,
+        update_batch_size=args.update_batch_size,
         critic_q1=critic_q1,
         critic_q2=critic_q2,
         value_net=value_net

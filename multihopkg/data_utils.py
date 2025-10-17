@@ -994,7 +994,7 @@ def load_cached_pretraining_data(metadata_cache_path: str):
     dev_df = dev_df.map(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
     test_df = test_df.map(lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
 
-    return train_df, dev_df, test_df
+    return train_df, dev_df, test_df, train_metadata
 
 def load_qa_data(
     cached_metadata_path: str,
@@ -1018,7 +1018,7 @@ def load_qa_data(
     cache_exists = os.path.exists(cached_metadata_path)
     if (cache_exists is not None) and (not force_recompute):
         logger.info(f"Found cache at {cached_metadata_path}. Loading it now.")
-        train_df, dev_df, test_df = load_cached_pretraining_data(cached_metadata_path)
+        train_df, dev_df, test_df, _ = load_cached_pretraining_data(cached_metadata_path)
         train_metadata = json.load(open(os.path.join(cached_metadata_path)))
     else:
         ########################################

@@ -19,11 +19,13 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--track_gradients', '-g', action='store_true', help='Track and log gradients during training')
     ap.add_argument('--preferred_config', type=str, default="configs/rl_config.yaml", help="Path to YAML configuration file (default: configs/my_config.yaml). " \
                         "If not empty, overrides the respective command line arguments.")
+    ap.add_argument('--update_batch_size', type=int, default=32, help="Number of experiences to sample per update")
 
     # Buffer
     ap.add_argument('--replay_buffer_memory_per_question', type=int, default=25000, help="Max number of steps that the replay buffer can hold.")
     ap.add_argument('--replay_min_usable_size', type=int, default=10000, help="Minium number of transitions necessary in the Replay Buffer deemed sufficient to train the model.")
     ap.add_argument('--replay_buffer_cache_path', type=str, default=".cache/replay_buffer/replay_buffer.pkl", help="Minium number of transitions necessary in the Replay Buffer deemed sufficient to train the model.")
+    ap.add_argument('--force_replaybuffer_recompute', action="store_true", help="Whether to recomptue the replay buffer.")
 
     # Environment
     ap.add_argument('--max_env_steps', type=int, default=8, help="Maximum number of steps to collect from an initial configuration")
@@ -39,6 +41,10 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--enc_ff_dim', type=int, default=768, help="Encoder fast forward dimension")
     ap.add_argument('--log_std_min', type=float, default=-20)
     ap.add_argument('--log_std_max', type=float, default=2)
+
+    # Question Embedder
+    ap.add_argument('--bert_model', type=str, default="bert-base-uncased")
+    ap.add_argument('--bert_tokenizer', type=str, default="bert-base-uncased")
 
     # Critics
     ap.add_argument('--critic_q_hiddim', type=float, default=256)

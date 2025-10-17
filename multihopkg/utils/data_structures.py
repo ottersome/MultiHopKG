@@ -4,11 +4,11 @@ import pandas as pd
 
 class DataPartitions:
 
-    ASSUMED_COLUMNS = ["enc_questions", "enc_answer", "triples_ints", "bert_ans_emb"]
+    ASSUMED_COLUMNS = ["enc_questions", "enc_answer", "triples_ints", "bert_ans_emb", "bert_ques_emb"]
     def __init__(self, train: pd.DataFrame, validation: pd.DataFrame, test: pd.DataFrame):
 
         # Ensure integrity of dataset
-        for ac in self.ASSUMED_COLUMNS[:-1]:
+        for ac in self.ASSUMED_COLUMNS[:-2]:
             for ds in [train,validation, test]:
                 if ac not in ds.columns:
                     error_str = f"Expected column '{ac}' to be found in the dataset."\
