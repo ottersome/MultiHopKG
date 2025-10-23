@@ -159,7 +159,7 @@ class QuestionReplayBuffer:
 
         # Sample
         cur_states = self.cur_states[qids_idxs, experiences_idxs]
-        quest_bert_emb = self.quest_bert_emb[qids_idxs]
+        quest_bert_emb = self.quest_bert_emb[qids_idxs, experiences_idxs]
         actions = self.actions[qids_idxs, experiences_idxs]
         rewards = self.rewards[qids_idxs, experiences_idxs]
         next_states = self.next_states[qids_idxs, experiences_idxs]
