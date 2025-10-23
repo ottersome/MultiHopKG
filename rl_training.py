@@ -808,9 +808,9 @@ def prepopulate_replay_buffer(
             cur_states=init_states.view(-1, state_dim), # TODO: we might want to remove this since we already have path_states
             actions=action.view(-1, action_dim).detach().to(cpu_device),
             rewards=llm_reward.detach().to(cpu_device),
+            path_states = padded_path.view(_inner_batch_size * num_simulations_per_question, -1, padded_path.shape[-1]),
             next_states=next_state.view(-1, state_dim).detach().to(cpu_device),
             dones=torch.zeros((_inner_batch_size * num_simulations_per_question), dtype=torch.bool),
-            path_states = padded_path.view(_inner_batch_size * num_simulations_per_question, -1, padded_path.shape[-1]),
             log_probs = torch.ones_like(llm_reward, dtype=torch.float), # TODO: make sure we handle this place holder value properly later
             entropies = torch.full_like(llm_reward, -1.0),
             step_counter = step_counter,
@@ -984,17 +984,23 @@ def train_multihopkg(
                 question_counts = {
                     int(qid): num_simulations_per_ques for qid in sampled_ids
                 }
-                _, bert_quest_emb, actions, rewards, next_states, dones, path_states, _, _, step_counter, = replay_buffer.sample_transitions(question_counts)
 
-                update_metrics = sac_update_step(
+                # Sample sample
+                (
+                    _,
                     bert_quest_emb,
-                    path_states,
                     actions,
                     rewards,
                     next_states,
-                    step_counter,
                     dones,
+                    path_states,
+                    _,
+                    _,
+                    step_counter,
+                ) = replay_buffer.sample_transitions(question_counts)
+
                 )
+
                 if wandb_on:
                     wandb.log({f"train/{k}": v for k, v in update_metrics.items()})
                 for metric_name, metric_value in update_metrics.items():
