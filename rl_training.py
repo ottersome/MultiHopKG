@@ -901,12 +901,25 @@ def train_multihopkg(
 
         alpha = log_alpha.exp()
 
+        next_states_path = states_path.clone()
+        next_states_path[:, 2*step_counter + 1, : ] = actions
+        next_states_path[:, 2*step_counter + 2, : ] = next_states
+
         with torch.no_grad():
-            target_values = target_value_net(next_states)
+            graph_state_mask = torch.zeros((states_path.shape[0], states_path.shape[1]), dtype=torch.bool).to(device)
+            # graph_state_mask[:, : 2 * step_counter + 3] = True
+            for i in range(graph_state_mask.shape[0]):
+                graph_state_mask[i, : 2 * step_counter[i] + 3] = True
+            target_values = target_value_net(
+                next_states_path, graph_state_mask.unsqueeze(1).unsqueeze(2), bert_quest_emb
+            )
             q_target = rewards + (1.0 - dones) * gamma * target_values
 
-        q1_pred = critic_q1(states, actions, bert_quest_emb)
-        q2_pred = critic_q2(states, actions, bert_quest_emb)
+        cur_q_path_state = states_path.clone()
+        cur_q_path_state[:, 2*step_counter + 1, : ] = actions
+        cur_q_path_mask = cur_q_path_state != PATH_PADDING_VALUE
+        q1_pred = critic_q1(cur_q_path_state, cur_q_path_mask, bert_quest_emb)
+        q2_pred = critic_q2(cur_q_path_state, cur_q_path_mask, bert_quest_emb)
         critic_loss = F.mse_loss(q1_pred, q_target) + F.mse_loss(q2_pred, q_target)
 
         critic_optimizer.zero_grad()
@@ -914,6 +927,8 @@ def train_multihopkg(
         critic_optimizer.step()
 
         policy_actions, log_probs, entropy, _, _ = nav_agent(states_path)
+        next_states_path_acted = next_states_path.clone()
+        next_states_path_acted[:, 2*step_counter + 1 ,: ] = policy_actions
         q1_pi = critic_q1(states_path, policy_actions, bert_quest_emb)
         q2_pi = critic_q2(states_path, policy_actions, bert_quest_emb)
         min_q_pi = torch.min(q1_pi, q2_pi)

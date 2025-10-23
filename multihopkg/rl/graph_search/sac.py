@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 import time
 
-from multihopkg.models_language.classical import DecoderLayer, PositionalEncoding
+from multihopkg.models_language.classical import EncoderLayer, PositionalEncoding
 
 def init_layer_uniform(layer: nn.Linear, init_w: float = 3e-3) -> nn.Linear:
     """Init uniform parameters on the single layer."""
@@ -117,15 +117,11 @@ class GraphCriticQ(nn.Module):
         super(GraphCriticQ, self).__init__()
 
         # Transformer Stack
-        decoder_layers = nn.ModuleList(
-            [DecoderLayer(graph_obs_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
+        self.encoder_layers = nn.ModuleList(
+            [EncoderLayer(graph_obs_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
         )
-        positional_encoding_xattn_left = PositionalEncoding(graph_obs_dim, max_seq_length)
-        self.graph_encoder = nn.Sequential(
-            positional_encoding_xattn_left,
-            nn.Dropout(enc_dropout),
-            decoder_layers
-        )
+        self.pos_enc = PositionalEncoding(graph_obs_dim, max_seq_length)
+        self.dropout = nn.Dropout(enc_dropout)
         self.graph_ques_proj = nn.Linear(graph_obs_dim, dim_hidden)
         self.graph_ques_proj = init_layer_uniform(self.graph_ques_proj)
 
@@ -134,15 +130,19 @@ class GraphCriticQ(nn.Module):
         self.out = nn.Linear(dim_hidden, 1)
         self.out = init_layer_uniform(self.out)
 
-    def forward(self, graph_state: torch.Tensor, action: torch.Tensor, context_quest_bert_emb: torch.Tensor) -> torch.Tensor:
-        """Forward method implementation."""
+    def forward(self, graph_state: torch.Tensor, graph_state_mask: torch.Tensor, context_quest_bert_emb: torch.Tensor) -> torch.Tensor:
+        """
+        Forward method implementation.
+        Action is Expected to be part of graph_state
+        """
         # TODO: add graph masking to this encoder.
-        graph_output = self.graph_encoder(graph_state)
-        x = torch.cat((graph_output, action, context_quest_bert_emb), dim=-1)
-        # TODO: Check if our encoder has a pooled output we can use to do one final projection.
-        x = F.relu(self.graph_ques_proj(x))
+        x = self.pos_enc(graph_state)
+        x = self.dropout(x)
+        for layer in self.encoder_layers:
+            x = layer(x, graph_state_mask)
 
-        x = torch.cat((graph_state, action), dim=-1)
+        x = torch.cat((x, context_quest_bert_emb), dim=-1)
+        x = F.relu(self.graph_ques_proj(x))
         x = F.relu(self.hidden1(x))
         x = F.relu(self.hidden2(x))
         value = self.out(x)
@@ -183,32 +183,39 @@ class GraphCriticV(nn.Module):
         """Initialize. You can design your own V Critic architecture."""
         super(GraphCriticV, self).__init__()
 
-        decoder_layers = nn.ModuleList(
-            [DecoderLayer(obs_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
+        model_dim = obs_dim
+        self.encoder_layers = nn.ModuleList(
+            [EncoderLayer(model_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
         )
-        positional_encoding_xattn_left = PositionalEncoding(obs_dim, max_seq_length)
-        self.graph_encoder = nn.Sequential(
-            positional_encoding_xattn_left,
-            nn.Dropout(enc_dropout),
-            decoder_layers
-        )
+        self.pos_enc = PositionalEncoding(obs_dim, max_seq_length)
+        self.dropout = nn.Dropout(enc_dropout)
 
-        self.graph_ques_proj = nn.Linear(ques_emb_dim + obs_dim, dim_hidden)
+        self.graph_ques_proj = nn.Linear(ques_emb_dim + model_dim, dim_hidden)
         self.graph_ques_proj = init_layer_uniform(self.graph_ques_proj)
 
         # TODO: I don't know if 2 is necessary here we can think about something better later
-        self.hidden1 = nn.Linear(dim_hidden * 2, dim_hidden)
-        self.hidden2 = nn.Linear(dim_hidden, dim_hidden)
+        self.hidden1 = nn.Linear(dim_hidden, dim_hidden * 2)
+        self.hidden2 = nn.Linear(dim_hidden * 2, dim_hidden)
         self.out = nn.Linear(dim_hidden, 1)
         self.out = init_layer_uniform(self.out)
 
-    def forward(self, graph_state: torch.Tensor, context_quest_bert_emb: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        graph_state: torch.Tensor,
+        graph_state_mask: torch.Tensor,
+        context_quest_bert_emb: torch.Tensor,
+    ) -> torch.Tensor:
         """Forward method implementation."""
-        graph_output = self.graph_encoder(graph_state)
-        cat_input = torch.cat((graph_output, context_quest_bert_emb), dim=-1)
+        x = self.pos_enc(graph_state)
+        x = self.dropout(x)
+        for layer in self.encoder_layers:
+            x = layer(x, graph_state_mask)
+        last_step_idxs = torch.sum(graph_state_mask.squeeze(), dim=-1)
+        last_hidden_enc_state = x[torch.arange(last_step_idxs.shape[0]), last_step_idxs]
+        cat_input = torch.cat((last_hidden_enc_state, context_quest_bert_emb), dim=-1)
 
         x = F.relu(self.graph_ques_proj(cat_input))
-        x = F.relu(self.hidden1(graph_output))
+        x = F.relu(self.hidden1(x))
         x = F.relu(self.hidden2(x))
         value = self.out(x)
 
