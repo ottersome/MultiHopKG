@@ -735,8 +735,6 @@ def prepopulate_replay_buffer(
         ).to(gpu_device)
         padded_questions_tokens = padded_questions_tokens.view(-1,1,padded_questions_tokens.shape[-1])
         padded_questions_tokens = padded_questions_tokens.repeat(1,num_simulations_per_question,1).squeeze(1)
-        padded_token_len = padded_questions_tokens.shape[-1]
-        old_bert_quest_embs = env.get_llm_embeddings(padded_questions_tokens.view(-1, padded_token_len))
 
         # Answers Graph Embeddings
         paths = mini_batch.loc[:, "triples_ints"]
