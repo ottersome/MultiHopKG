@@ -890,7 +890,7 @@ def train_multihopkg(
 
     def sac_update_step(
         bert_quest_emb: torch.Tensor,
-        states: torch.Tensor,
+        states_path: torch.Tensor,
         actions: torch.Tensor,
         rewards: torch.Tensor,
         next_states: torch.Tensor,
@@ -913,13 +913,13 @@ def train_multihopkg(
         critic_loss.backward()
         critic_optimizer.step()
 
-        policy_actions, log_probs, entropy, _, _ = nav_agent(states)
-        q1_pi = critic_q1(states, policy_actions, bert_quest_emb)
-        q2_pi = critic_q2(states, policy_actions, bert_quest_emb)
+        policy_actions, log_probs, entropy, _, _ = nav_agent(states_path)
+        q1_pi = critic_q1(states_path, policy_actions, bert_quest_emb)
+        q2_pi = critic_q2(states_path, policy_actions, bert_quest_emb)
         min_q_pi = torch.min(q1_pi, q2_pi)
 
         value_target = (min_q_pi - alpha * log_probs.unsqueeze(-1)).detach()
-        value_pred = value_net(states, bert_quest_emb)
+        value_pred = value_net(states_path, bert_quest_emb)
         value_loss = F.mse_loss(value_pred, value_target)
 
         value_optimizer.zero_grad()
