@@ -1014,6 +1014,15 @@ def train_multihopkg(
                     step_counter,
                 ) = replay_buffer.sample_transitions(question_counts)
 
+                # Update
+                update_metrics = sac_update_step(
+                    bert_quest_emb.to(device),
+                    path_states.to(device),
+                    actions.to(device),
+                    rewards.to(device),
+                    next_states.to(device),
+                    step_counter.to(device),
+                    dones.to(device),
                 )
 
                 if wandb_on:
