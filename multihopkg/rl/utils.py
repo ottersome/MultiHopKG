@@ -64,6 +64,7 @@ class QuestionReplayBuffer:
         )
         self.log_prob = torch.zeros((self.num_questions, self.experiences_per_question))
         self.entropy = torch.zeros((self.num_questions, self.experiences_per_question))
+        self.step_counter = torch.zeros((self.num_questions, self.experiences_per_question), dtype=torch.long)
 
     def get_question_bert_emb_dim(self):
         return self.bert_emb_dim
@@ -83,6 +84,7 @@ class QuestionReplayBuffer:
         path_states: torch.Tensor,           # [E, T, A]
         log_probs: torch.Tensor,             # [E]
         entropies: torch.Tensor,             # [E]
+        step_counter:  torch.Tensor,         # [E]
         # Where E indexes experience, T indexes path length, and A is action/state shape. B is Bert Pooled Embedding Dim
     ):
         """
@@ -111,6 +113,7 @@ class QuestionReplayBuffer:
         self.path_states[question_n_exp_idxs, exp_ids] = path_states.to(device)
         self.log_prob[question_n_exp_idxs, exp_ids] = log_probs.to(device)
         self.entropy[question_n_exp_idxs, exp_ids] = entropies.to(device)
+        self.step_counter[question_n_exp_idxs, exp_ids] = step_counter.to(device)
 
         # Advance write pointer
         self.write_ptr[qids] = (start + qids_count) % cap
@@ -164,6 +167,7 @@ class QuestionReplayBuffer:
         path_states = self.path_states[qids_idxs, experiences_idxs]
         log_probs = self.log_prob[qids_idxs, experiences_idxs]
         entropies = self.entropy[qids_idxs, experiences_idxs]
+        step_counter = self.step_counter[qids_idxs, experiences_idxs]
 
         return (
             cur_states,
@@ -174,7 +178,8 @@ class QuestionReplayBuffer:
             dones,
             path_states,
             log_probs,
-            entropies
+            entropies,
+            step_counter,
         )
 
     # def sample(self, device: torch.device, batch_size: Optional[int] = None) -> Dict[str, torch.Tensor]:

@@ -793,6 +793,9 @@ def prepopulate_replay_buffer(
         init_states = init_states.detach().to(cpu_device)
         padded_path = torch.full([init_states.shape[0], max_env_steps*2 - 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float)
         padded_path[:,0,:] = init_states
+
+        # Obviously this is only a one step thing:
+        step_counter = torch.zeros_like(llm_reward, dtype=torch.long)
         ########################################
         # Fill out Replay Buffer 
         ########################################
@@ -809,7 +812,8 @@ def prepopulate_replay_buffer(
             dones=torch.zeros((_inner_batch_size * num_simulations_per_question), dtype=torch.bool),
             path_states = padded_path.view(_inner_batch_size * num_simulations_per_question, -1, padded_path.shape[-1]),
             log_probs = torch.ones_like(llm_reward, dtype=torch.float), # TODO: make sure we handle this place holder value properly later
-            entropies = torch.full_like(llm_reward, -1.0)
+            entropies = torch.full_like(llm_reward, -1.0),
+            step_counter = step_counter,
         )
         del bert_quest_emb, answer_graphemb_idxs, answer_bert_heuristics, init_states, next_state, llm_reward, action, padded_path
         torch.cuda.empty_cache()
@@ -890,6 +894,7 @@ def train_multihopkg(
         actions: torch.Tensor,
         rewards: torch.Tensor,
         next_states: torch.Tensor,
+        step_counter: torch.Tensor,
         dones: torch.Tensor,
     ) -> Dict[str, float]:
         nonlocal log_alpha
@@ -979,7 +984,7 @@ def train_multihopkg(
                 question_counts = {
                     int(qid): num_simulations_per_ques for qid in sampled_ids
                 }
-                _, bert_quest_emb, actions, rewards, next_states, dones, path_states, _, _ = replay_buffer.sample_transitions(question_counts)
+                _, bert_quest_emb, actions, rewards, next_states, dones, path_states, _, _, step_counter, = replay_buffer.sample_transitions(question_counts)
 
                 update_metrics = sac_update_step(
                     bert_quest_emb,
@@ -987,6 +992,7 @@ def train_multihopkg(
                     actions,
                     rewards,
                     next_states,
+                    step_counter,
                     dones,
                 )
                 if wandb_on:
