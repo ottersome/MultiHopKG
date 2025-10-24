@@ -1168,6 +1168,17 @@ def train_multihopkg(
 
         soft_update(value_net, target_value_net, tau)
 
+        rewards_float = rewards.float()
+        dones_float = dones.float()
+        q_target_mean = q_target.mean().item()
+        q_target_std = q_target.float().std(unbiased=False).item()
+        q1_mean = q1_pred.mean().item()
+        q2_mean = q2_pred.mean().item()
+        value_pred_mean = value_pred.mean().item()
+        log_prob_mean = log_probs.mean().item()
+        log_prob_std = log_probs.float().std(unbiased=False).item()
+        mask_token_counts = graph_nextState_mask.squeeze(1).squeeze(1).sum(dim=-1).float()
+
         return {
             "critic_loss": critic_loss.item(),
             "value_loss": value_loss.item(),
@@ -1175,7 +1186,18 @@ def train_multihopkg(
             "alpha_loss": alpha_loss.item(),
             "alpha": alpha.item(),
             "entropy": entropy.mean().item(),
-            "log_prob": log_probs.mean().item(),
+            "log_prob_mean": log_prob_mean,
+            "log_prob_std": log_prob_std,
+            "reward_mean": rewards_float.mean().item(),
+            "reward_std": rewards_float.std(unbiased=False).item(),
+            "success_rate": dones_float.mean().item(),
+            "q_target_mean": q_target_mean,
+            "q_target_std": q_target_std,
+            "q1_mean": q1_mean,
+            "q2_mean": q2_mean,
+            "value_pred_mean": value_pred_mean,
+            "step_counter_mean": step_counter.float().mean().item(),
+            "mask_tokens_mean": mask_token_counts.mean().item(),
         }
 
     question_ids = replay_buffer.qet_question_ids()
@@ -1189,6 +1211,16 @@ def train_multihopkg(
     writer = SummaryWriter(
         log_dir=f"runs/rl/{env.knowledge_graph.model_name.lower()}/{timestamp}/"
     )
+    writer.add_scalar("train_config/hydration_interval", hydration_interval, 0)
+    writer.add_scalar("train_config/hydration_rollouts", hydration_rollouts, 0)
+    if wandb_on:
+        wandb.log(
+            {
+                "train_config/hydration_interval": hydration_interval,
+                "train_config/hydration_rollouts": hydration_rollouts,
+            },
+            step=0,
+        )
 
     collections_per_epoch = math.ceil(len(question_ids) / batch_size)
 
@@ -1240,6 +1272,7 @@ def train_multihopkg(
                 step_counter.to(device),
                 dones.to(device),
             )
+            update_metrics["coverage_progress"] = coverage_sampler.get_progress()
 
             if wandb_on:
                 wandb.log({f"train/{k}": v for k, v in update_metrics.items()})
@@ -1287,6 +1320,21 @@ def train_multihopkg(
             len(replay_buffer),
             total_gradient_updates,
             coverage_sampler.cycles_completed,
+        )
+
+        epoch_progress = coverage_sampler.get_progress()
+        if wandb_on:
+            wandb.log(
+                {
+                    "train/coverage_cycles": coverage_sampler.cycles_completed,
+                    "train/coverage_progress_epoch": epoch_progress,
+                }
+            )
+        writer.add_scalar(
+            "train/coverage_cycles", coverage_sampler.cycles_completed, epoch_id
+        )
+        writer.add_scalar(
+            "train/coverage_progress_epoch", epoch_progress, epoch_id
         )
 
         if total_gradient_updates >= num_updates_limit:
