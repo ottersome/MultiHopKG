@@ -927,10 +927,10 @@ def train_multihopkg(
             target_values = target_value_net(
                 next_states_path, graph_state_mask, bert_quest_emb
             )
-            q_target = rewards + (1.0 - dones.to(torch.float32)) * gamma * target_values
+            q_target = rewards + (1.0 - dones.to(torch.float32)) * gamma * target_values.squeeze()
 
-        q1_pred = critic_q1(qa_state, graph_nextState_mask, bert_quest_emb)
-        q2_pred = critic_q2(qa_state, graph_nextState_mask, bert_quest_emb)
+        q1_pred = critic_q1(qa_state, graph_nextState_mask, bert_quest_emb).squeeze()
+        q2_pred = critic_q2(qa_state, graph_nextState_mask, bert_quest_emb).squeeze()
         critic_loss = F.mse_loss(q1_pred, q_target) + F.mse_loss(q2_pred, q_target)
 
         critic_optimizer.zero_grad()
