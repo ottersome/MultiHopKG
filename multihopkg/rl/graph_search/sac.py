@@ -116,17 +116,18 @@ class GraphCriticQ(nn.Module):
         """Initialize. You can design your own Q Critic architecture."""
         super(GraphCriticQ, self).__init__()
 
+        model_dim = graph_obs_dim
         # Transformer Stack
         self.encoder_layers = nn.ModuleList(
-            [EncoderLayer(graph_obs_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
+            [EncoderLayer(model_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
         )
         self.pos_enc = PositionalEncoding(graph_obs_dim, max_seq_length)
         self.dropout = nn.Dropout(enc_dropout)
-        self.graph_ques_proj = nn.Linear(graph_obs_dim, dim_hidden)
+        self.graph_ques_proj = nn.Linear(model_dim + ques_emb_dim, dim_hidden)
         self.graph_ques_proj = init_layer_uniform(self.graph_ques_proj)
 
-        self.hidden1 = nn.Linear(action_dim + graph_obs_dim + dim_hidden, dim_hidden)
-        self.hidden2 = nn.Linear(dim_hidden, dim_hidden)
+        self.hidden1 = nn.Linear(dim_hidden, dim_hidden * 2)
+        self.hidden2 = nn.Linear(dim_hidden * 2, dim_hidden)
         self.out = nn.Linear(dim_hidden, 1)
         self.out = init_layer_uniform(self.out)
 
@@ -141,7 +142,10 @@ class GraphCriticQ(nn.Module):
         for layer in self.encoder_layers:
             x = layer(x, graph_state_mask)
 
-        x = torch.cat((x, context_quest_bert_emb), dim=-1)
+        last_step_idxs = torch.sum(graph_state_mask.squeeze(), dim=-1)
+        last_hidden_enc_state = x[torch.arange(last_step_idxs.shape[0]), last_step_idxs]
+
+        x = torch.cat((last_hidden_enc_state, context_quest_bert_emb), dim=-1)
         x = F.relu(self.graph_ques_proj(x))
         x = F.relu(self.hidden1(x))
         x = F.relu(self.hidden2(x))
