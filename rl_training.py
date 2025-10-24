@@ -788,6 +788,7 @@ def prepopulate_replay_buffer(
             padded_questions_tokens.view(-1, padded_questions_tokens.shape[-1]),
             pad_token_id,
         )
+        combined_reward = llm_reward + extrinsic_reward.squeeze(-1)
         init_states = init_states.detach().to(cpu_device)
         padded_path = torch.full([init_states.shape[0], max_env_steps*2 - 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float)
         padded_path[:,0,:] = init_states
@@ -805,7 +806,7 @@ def prepopulate_replay_buffer(
             quest_bert_emb=bert_quest_emb,
             cur_states=init_states.view(-1, state_dim), # TODO: we might want to remove this since we already have path_states
             actions=action.view(-1, action_dim).detach().to(cpu_device),
-            rewards=llm_reward.detach().to(cpu_device),
+            rewards=combined_reward.detach().to(cpu_device),
             path_states = padded_path.view(_inner_batch_size * num_simulations_per_question, -1, padded_path.shape[-1]),
             next_states=next_state.view(-1, state_dim).detach().to(cpu_device),
             dones=torch.zeros((_inner_batch_size * num_simulations_per_question), dtype=torch.bool),
@@ -813,12 +814,196 @@ def prepopulate_replay_buffer(
             entropies = torch.full_like(llm_reward, -1.0),
             step_counter = step_counter,
         )
-        del bert_quest_emb, answer_graphemb_idxs, answer_bert_heuristics, init_states, next_state, llm_reward, action, padded_path
+        del bert_quest_emb, answer_graphemb_idxs, answer_bert_heuristics, init_states, next_state, llm_reward, combined_reward, action, padded_path
         torch.cuda.empty_cache()
     actor.train()
     # hunch_llm does not really need to be trained here.
 
     return replay_buffer
+
+
+@torch.no_grad()
+def hydrate_replay_buffer(
+    *,
+    env: ReinforcedUnsupervisedEnv,
+    actor: ContinuousPolicyGradient,
+    hunch_llm: nn.Module,
+    replay_buffer: QuestionReplayBuffer,
+    train_df: pd.DataFrame,
+    question_ids: Sequence[int],
+    num_rollouts_per_question: int,
+    max_env_steps: int,
+    pad_token_id: int,
+    logger: Optional[logging.Logger] = None,
+) -> int:
+    """Collect additional experiences with the current policy."""
+
+    if not question_ids:
+        return 0
+
+    valid_ids = [qid for qid in question_ids if qid in train_df.index]
+    if not valid_ids:
+        if logger:
+            logger.debug("hydrate_replay_buffer: question ids not found in training df")
+        return 0
+
+    actor_mode = actor.training
+    hunch_mode = hunch_llm.training
+    actor.eval()
+    hunch_llm.eval()
+
+    device = next(actor.parameters()).device
+    cpu_device = replay_buffer.cur_states.device
+    bert_emb_dim = replay_buffer.get_question_bert_emb_dim()
+    max_path_len = replay_buffer.path_states.shape[2]
+    state_dim = replay_buffer.path_states.shape[-1]
+    max_transitions = min(max_env_steps, (max_path_len - 1) // 2)
+
+    total_added = 0
+    chunk_size = 32
+    seq_positions = torch.arange(max_path_len, device=device).unsqueeze(0)
+
+    for offset in range(0, len(valid_ids), chunk_size):
+        chunk_ids = valid_ids[offset : offset + chunk_size]
+        mini_batch = train_df.loc[chunk_ids]
+        if mini_batch.empty:
+            continue
+
+        base_batch = len(mini_batch)
+        rollout_count = base_batch * num_rollouts_per_question
+        if rollout_count == 0:
+            continue
+
+        question_idx = torch.tensor(mini_batch.index.values, dtype=torch.long, device=device)
+        question_idx_expanded = (
+            question_idx.unsqueeze(1)
+            .repeat(1, num_rollouts_per_question)
+            .view(-1)
+        )
+
+        questions_tokens = [torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()]
+        padded_questions = torch.nn.utils.rnn.pad_sequence(
+            questions_tokens, batch_first=True, padding_value=pad_token_id
+        ).to(device)
+        question_tokens_expanded = (
+            padded_questions.unsqueeze(1)
+            .repeat(1, num_rollouts_per_question, 1)
+            .view(rollout_count, -1)
+        )
+
+        paths = mini_batch["triples_ints"].tolist()
+        answer_ids = torch.tensor([path[-1] for path in paths], dtype=torch.long, device=device)
+        answer_ids_expanded = (
+            answer_ids.unsqueeze(1)
+            .repeat(1, num_rollouts_per_question)
+            .view(rollout_count)
+        )
+
+        if "bert_ques_emb" in mini_batch.columns:
+            bert_ques = torch.tensor(mini_batch["bert_ques_emb"].tolist(), dtype=torch.float32, device=device)
+        else:
+            bert_ques = torch.tensor(
+                mini_batch.iloc[:, 3 + bert_emb_dim :].values.tolist(),
+                dtype=torch.float32,
+                device=device,
+            )
+        bert_quest_emb = (
+            bert_ques.unsqueeze(1)
+            .repeat(1, num_rollouts_per_question, 1)
+            .view(rollout_count, -1)
+        )
+
+        if "bert_ans_emb" in mini_batch.columns:
+            bert_ans = torch.tensor(mini_batch["bert_ans_emb"].tolist(), dtype=torch.float32, device=device)
+        else:
+            bert_ans = torch.tensor(
+                mini_batch.iloc[:, 3 : 3 + bert_emb_dim].values.tolist(),
+                dtype=torch.float32,
+                device=device,
+            )
+        answer_bert_expanded = (
+            bert_ans.unsqueeze(1)
+            .repeat(1, num_rollouts_per_question, 1)
+            .view(rollout_count, -1)
+        )
+
+        init_states = env.reset(bert_quest_emb)
+        path_trace = torch.full(
+            (rollout_count, max_path_len, state_dim),
+            PATH_PADDING_VALUE,
+            device=device,
+            dtype=init_states.dtype,
+        )
+        path_trace[:, 0, :] = init_states
+
+        step_counter = torch.zeros(rollout_count, dtype=torch.long, device=device)
+        done_mask = torch.zeros(rollout_count, dtype=torch.bool, device=device)
+
+        for _ in range(max_transitions):
+            active_idx = (~done_mask).nonzero(as_tuple=False).squeeze(-1)
+            if active_idx.numel() == 0:
+                break
+
+            path_active = path_trace[active_idx]
+            step_active = step_counter[active_idx]
+            mask_active = seq_positions <= (2 * step_active).unsqueeze(1)
+
+            actions, log_probs, entropy, _, _ = actor(
+                path_active,
+                graph_state_mask=mask_active,
+                context_quest_bert_emb=bert_quest_emb[active_idx],
+            )
+
+            row_idx = torch.arange(active_idx.size(0), device=device)
+            current_states = path_active[row_idx, 2 * step_active, :]
+
+            observation = ReinforcedUnsupervisedEnv.RUE_Observation(
+                state=current_states,
+                answer_id=answer_ids_expanded[active_idx],
+            )
+
+            next_states, extrinsic_reward, done = env.step(observation, actions)
+            llm_reward, _ = calculate_llm_reward_supasoft(
+                hunch_llm,
+                next_states.unsqueeze(1),
+                answer_bert_expanded[active_idx],
+                question_tokens_expanded[active_idx],
+                pad_token_id,
+            )
+
+            path_trace[active_idx, 2 * step_active + 1, :] = actions
+            path_trace[active_idx, 2 * step_active + 2, :] = next_states
+
+            rewards = llm_reward.squeeze() + extrinsic_reward.squeeze()
+
+            replay_buffer.add_transitions(
+                question_n_exp_idxs=question_idx_expanded[active_idx].detach().cpu(),
+                quest_bert_emb=bert_quest_emb[active_idx].detach().to(cpu_device),
+                cur_states=current_states.detach().to(cpu_device),
+                actions=actions.detach().to(cpu_device),
+                rewards=rewards.detach().to(cpu_device),
+                next_states=next_states.detach().to(cpu_device),
+                dones=done.squeeze().detach().to(torch.bool).cpu(),
+                path_states=path_trace[active_idx].detach().cpu(),
+                log_probs=log_probs.detach().cpu(),
+                entropies=entropy.detach().cpu(),
+                step_counter=step_active.detach().cpu(),
+            )
+
+            total_added += active_idx.size(0)
+
+            step_counter[active_idx] = step_active + 1
+            done_mask[active_idx] = done.squeeze(-1).bool() | (
+                step_counter[active_idx] >= max_transitions
+            )
+
+    if actor_mode:
+        actor.train()
+    if hunch_mode:
+        hunch_llm.train()
+
+    return total_added
+
 
 
 
@@ -853,6 +1038,11 @@ def train_multihopkg(
         raise ValueError(
             "Answer tokenizer must expose a pad token id before replay can be constructed"
         )
+    pad_token_id = (
+        question_tokenizer.pad_token_id
+        if question_tokenizer.pad_token_id is not None
+        else answer_tokenizer.pad_token_id
+    )
 
     ########################################
     # Common Tools and Optimizer Setup
@@ -877,6 +1067,15 @@ def train_multihopkg(
     target_entropy = -float(action_shape[0])
     tau = 0.005
     gamma = nav_agent.gamma
+    hydration_interval = (
+        max(1, num_update_steps // 4)
+        if num_update_steps is not None and num_update_steps > 0
+        else 1
+    )
+    hydration_rollouts = max(1, num_simulations_per_ques)
+    updates_since_hydration = 0
+    recent_question_ids: List[int] = []
+    train_df = data_partitions.train
 
     ########################################
     # Helper Functions Setup
@@ -1001,61 +1200,86 @@ def train_multihopkg(
         value_net.train()
         target_value_net.eval()
 
-        for _ in tqdm(range(collections_per_epoch), desc="Collection", leave=False):
+        tqdm_bar = tqdm(range(collections_per_epoch), desc="Epoch", leave=False)
+        for _ in tqdm_bar:
             # Sample Questions Ids that we will experience
 
             ########################################
             # Training/Updates
-            ########################################
-            while (
-                # replay_buffer.is_ready(total_gradient_updates) and
-                total_gradient_updates < num_updates_limit
-            ):
-                sampled_ids, _ = coverage_sampler.sample(batch_size)
-                question_counts = {
-                    int(qid): num_simulations_per_ques for qid in sampled_ids
-                }
+            # while (
+            #     # replay_buffer.is_ready(total_gradient_updates) and
+            #     total_gradient_updates < num_updates_limit
+            # ):
+            sampled_ids, _ = coverage_sampler.sample(batch_size)
+            question_counts = {
+                int(qid): num_simulations_per_ques for qid in sampled_ids
+            }
+            recent_question_ids = sampled_ids
 
-                # Sample sample
-                (
-                    _,
-                    bert_quest_emb,
-                    actions,
-                    rewards,
-                    next_states,
-                    dones,
-                    path_states,
-                    _,
-                    _,
-                    step_counter,
-                ) = replay_buffer.sample_transitions(question_counts)
+            # Sample sample
+            (
+                _,
+                bert_quest_emb,
+                actions,
+                rewards,
+                next_states,
+                dones,
+                path_states,
+                _,
+                _,
+                step_counter,
+            ) = replay_buffer.sample_transitions(question_counts)
 
-                # Update
-                update_metrics = sac_update_step(
-                    bert_quest_emb.to(device),
-                    path_states.to(device),
-                    actions.to(device),
-                    rewards.to(device),
-                    next_states.to(device),
-                    step_counter.to(device),
-                    dones.to(device),
+            # Update
+            update_metrics = sac_update_step(
+                bert_quest_emb.to(device),
+                path_states.to(device),
+                actions.to(device),
+                rewards.to(device),
+                next_states.to(device),
+                step_counter.to(device),
+                dones.to(device),
+            )
+
+            if wandb_on:
+                wandb.log({f"train/{k}": v for k, v in update_metrics.items()})
+            for metric_name, metric_value in update_metrics.items():
+                writer.add_scalar(
+                    f"train/{metric_name}", metric_value, total_gradient_updates
                 )
+            total_gradient_updates += 1
+            updates_since_hydration += 1
 
-                if wandb_on:
-                    wandb.log({f"train/{k}": v for k, v in update_metrics.items()})
-                for metric_name, metric_value in update_metrics.items():
+            if updates_since_hydration >= hydration_interval:
+                tqdm_bar.set_description("Rehydrating replay buffer")
+                added = hydrate_replay_buffer(
+                    env=env,
+                    actor=nav_agent,
+                    hunch_llm=hunch_llm,
+                    replay_buffer=replay_buffer,
+                    train_df=train_df,
+                    question_ids=recent_question_ids,
+                    num_rollouts_per_question=hydration_rollouts,
+                    max_env_steps=replay_buffer.max_env_steps,
+                    pad_token_id=pad_token_id,
+                    logger=globals().get("logger"),
+                )
+                if added:
+                    if wandb_on:
+                        wandb.log({"train/rehydrated_transitions": added})
                     writer.add_scalar(
-                        f"train/{metric_name}", metric_value, total_gradient_updates
+                        "train/rehydrated_transitions",
+                        added,
+                        total_gradient_updates,
                     )
-                total_gradient_updates += 1
+                updates_since_hydration = 0
 
-                if total_gradient_updates >= num_updates_limit:
-                    break
+            if total_gradient_updates >= num_updates_limit:
+                break
 
             ########################################
-            # Rehydrate the Replay Buffer
+            # Replay buffer hydration handled above
             ########################################
-            # TODO: Rehydrate the replay buffer
 
         logger.info(
             "Epoch %d completed | replay_size=%d | gradient_updates=%d | coverage_cycles=%d",
