@@ -899,14 +899,8 @@ def hydrate_replay_buffer(
             .view(rollout_count)
         )
 
-        if "bert_ques_emb" in mini_batch.columns:
-            bert_ques = torch.tensor(mini_batch["bert_ques_emb"].tolist(), dtype=torch.float32, device=device)
-        else:
-            bert_ques = torch.tensor(
-                mini_batch.iloc[:, 3 + bert_emb_dim :].values.tolist(),
-                dtype=torch.float32,
-                device=device,
-            )
+        bert_ques = torch.tensor(mini_batch["bert_ques_emb"].tolist(), dtype=torch.float32, device=device)
+
         bert_quest_emb = (
             bert_ques.unsqueeze(1)
             .repeat(1, num_rollouts_per_question, 1)
@@ -1006,6 +1000,299 @@ def hydrate_replay_buffer(
 
 
 
+@torch.no_grad()
+def evaluate_seq2seq_outputs(
+    *,
+    env: ReinforcedUnsupervisedEnv,
+    nav_agent: ContinuousPolicyGradient,
+    hunch_llm: nn.Module,
+    dataset: pd.DataFrame,
+    question_tokenizer: PreTrainedTokenizer,
+    answer_tokenizer: PreTrainedTokenizer,
+    batch_size: int,
+    max_env_steps: int,
+    pad_token_id: int,
+    writer: SummaryWriter,
+    wandb_on: bool,
+    global_step: int,
+    logger: Optional[logging.Logger],
+    prefix: str,
+    num_rollouts_per_question: int = 1,
+    max_batches: Optional[int] = None,
+    num_samples_to_log: int = 5,
+) -> Dict[str, float]:
+    """Run policy evaluation on a dataset and log seq2seq decoder outputs."""
+
+    if dataset is None or len(dataset) == 0:
+        return {}
+
+    device = next(nav_agent.parameters()).device
+    state_dim = nav_agent.observation_dim
+    max_path_len = max_env_steps * 2 - 1
+    max_transitions = min(max_env_steps, (max_path_len - 1) // 2)
+
+    nav_mode = nav_agent.training
+    llm_mode = hunch_llm.training
+    nav_agent.eval()
+    hunch_llm.eval()
+    # env.eval()
+
+    total_nll = 0.0
+    total_tokens = 0
+    total_token_correct = 0
+    total_sequences = 0
+    exact_match_count = 0
+    success_count = 0
+    total_steps = 0.0
+    total_generated_len = 0.0
+    mse_alignment_sum = 0.0
+    mse_alignment_count = 0
+
+    sample_logs: List[str] = []
+
+    seq_positions = torch.arange(max_path_len, device=device).unsqueeze(0)
+
+    total_batches = math.ceil(len(dataset) / batch_size)
+    if max_batches is not None:
+        total_batches = min(total_batches, max_batches)
+
+    for batch_idx in range(total_batches):
+        mini_batch = dataset.iloc[
+            batch_idx * batch_size : (batch_idx + 1) * batch_size
+        ]
+        if mini_batch.empty:
+            continue
+
+        base_batch = len(mini_batch)
+        rollout_count = base_batch * num_rollouts_per_question
+        if rollout_count == 0:
+            continue
+
+        question_tokens_list = [
+            torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()
+        ]
+
+        answer_tokens_list = [
+            torch.tensor(ans, dtype=torch.long) for ans in mini_batch["enc_answer"].tolist()
+        ]
+        padded_answers = torch.nn.utils.rnn.pad_sequence(
+            answer_tokens_list, batch_first=True, padding_value=pad_token_id
+        ).to(device)
+        labels = padded_answers.clone()
+        labels[labels == pad_token_id] = -100
+        repeated_answers = padded_answers.repeat(num_rollouts_per_question, 1)
+
+        if "bert_ques_emb" in mini_batch.columns:
+            bert_quest = torch.tensor(
+                mini_batch["bert_ques_emb"].tolist(), dtype=torch.float32, device=device
+            )
+        else:
+            bert_emb_dim = padded_answers.shape[-1]
+            bert_quest = torch.tensor(
+                mini_batch.iloc[:, 3 + bert_emb_dim :].values.tolist(),
+                dtype=torch.float32,
+                device=device,
+            )
+        bert_quest_emb = (
+            bert_quest.unsqueeze(1)
+            .repeat(1, num_rollouts_per_question, 1)
+            .view(rollout_count, -1)
+        )
+
+        if "bert_ans_emb" in mini_batch.columns:
+            bert_ans = torch.tensor(
+                mini_batch["bert_ans_emb"].tolist(), dtype=torch.float32, device=device
+            )
+            bert_ans_expanded = (
+                bert_ans.unsqueeze(1)
+                .repeat(1, num_rollouts_per_question, 1)
+                .view(rollout_count, -1)
+            )
+        else:
+            bert_ans_expanded = None
+
+        paths = mini_batch["triples_ints"].tolist()
+        answer_ids = torch.tensor([path[-1] for path in paths], dtype=torch.long, device=device)
+        answer_ids_expanded = (
+            answer_ids.unsqueeze(1)
+            .repeat(1, num_rollouts_per_question)
+            .view(rollout_count)
+        )
+
+        init_states = env.reset(bert_quest_emb)
+        path_trace = torch.full(
+            (rollout_count, max_path_len, state_dim),
+            PATH_PADDING_VALUE,
+            device=device,
+            dtype=init_states.dtype,
+        )
+        path_trace[:, 0, :] = init_states
+
+        step_counter = torch.zeros(rollout_count, dtype=torch.long, device=device)
+        done_mask = torch.zeros(rollout_count, dtype=torch.bool, device=device)
+        success_flags = torch.zeros(rollout_count, dtype=torch.bool, device=device)
+
+        for _ in range(max_transitions):
+            active_idx = (~done_mask).nonzero(as_tuple=False).squeeze(-1)
+            if active_idx.numel() == 0:
+                break
+
+            path_active = path_trace[active_idx]
+            step_active = step_counter[active_idx]
+            mask_active = seq_positions <= (2 * step_active).unsqueeze(1)
+
+            actions, _, _, _, _ = nav_agent(
+                path_active,
+                graph_state_mask=mask_active,
+                context_quest_bert_emb=bert_quest_emb[active_idx],
+            )
+
+            row_idx = torch.arange(active_idx.size(0), device=device)
+            current_states = path_active[row_idx, 2 * step_active, :]
+
+            observation = ReinforcedUnsupervisedEnv.RUE_Observation(
+                state=current_states,
+                answer_id=answer_ids_expanded[active_idx],
+            )
+            next_states, extrinsic_reward, done = env.step(observation, actions)
+
+            path_trace[active_idx, 2 * step_active + 1, :] = actions
+            path_trace[active_idx, 2 * step_active + 2, :] = next_states
+
+            success_flags[active_idx] |= done.squeeze(-1).bool()
+
+            step_counter[active_idx] = step_active + 1
+            done_mask[active_idx] = done.squeeze(-1).bool() | (
+                step_counter[active_idx] >= max_transitions
+            )
+
+        final_indices = torch.clamp(2 * step_counter, max=max_path_len - 1)
+        final_states = path_trace[
+            torch.arange(rollout_count, device=device), final_indices, :
+        ].unsqueeze(1)
+        encoder_attention_mask = torch.ones(
+            (rollout_count, final_states.shape[1]), dtype=torch.long, device=device
+        )
+
+        translated_embeddings = hunch_llm.embedding_translator(final_states)
+        outputs = hunch_llm.bart(
+            inputs_embeds=translated_embeddings,
+            attention_mask=encoder_attention_mask,
+            labels=repeated_answers,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+        logits = outputs.logits
+
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = repeated_answers[:, 1:].contiguous()
+        token_mask = shift_labels != pad_token_id
+        if token_mask.any():
+            nll = F.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                reduction="sum",
+                ignore_index=pad_token_id,
+            )
+            total_nll += nll.item()
+            total_tokens += token_mask.sum().item()
+
+            predictions = shift_logits.argmax(dim=-1)
+            total_token_correct += ((predictions == shift_labels) & token_mask).sum().item()
+
+        generated_ids = hunch_llm.bart.generate(
+            inputs_embeds=translated_embeddings,
+            attention_mask=encoder_attention_mask,
+            decoder_start_token_id=answer_tokenizer.bos_token_id,
+            eos_token_id=answer_tokenizer.eos_token_id,
+            pad_token_id=pad_token_id,
+            max_length=padded_answers.shape[1],
+            num_beams=1,
+        )
+
+        pred_texts = answer_tokenizer.batch_decode(
+            generated_ids, skip_special_tokens=True
+        )
+        ref_texts = answer_tokenizer.batch_decode(
+            padded_answers, skip_special_tokens=True
+        )
+
+        total_sequences += rollout_count
+        success_count += success_flags.sum().item()
+        total_steps += step_counter.float().mean().item()
+        total_generated_len += (
+            generated_ids.ne(pad_token_id).sum(dim=1).float().mean().item()
+        )
+
+        if bert_ans_expanded is not None:
+            reward_supasoft, _ = calculate_llm_reward_supasoft(
+                hunch_llm,
+                final_states,
+                bert_ans_expanded,
+                repeated_answers,
+                pad_token_id,
+            )
+            mse_alignment_sum += (-reward_supasoft).sum().item()
+            mse_alignment_count += reward_supasoft.numel()
+
+        for pred, ref, q_tokens in zip(
+            pred_texts,
+            ref_texts,
+            question_tokens_list,
+        ):
+            if len(sample_logs) >= num_samples_to_log:
+                break
+            question_text = question_tokenizer.decode(
+                q_tokens.tolist(), skip_special_tokens=True
+            )
+            sample_logs.append(
+                f"Q: {question_text} | Pred: {pred.strip()} | Ref: {ref.strip()}"
+            )
+
+        exact_match_count += sum(
+            1 for pred, ref in zip(pred_texts, ref_texts) if pred.strip() == ref.strip()
+        )
+
+    metrics: Dict[str, float] = {}
+    if total_tokens > 0:
+        avg_ce = total_nll / total_tokens
+        metrics[f"{prefix}/cross_entropy"] = avg_ce
+        metrics[f"{prefix}/perplexity"] = math.exp(avg_ce)
+        metrics[f"{prefix}/token_accuracy"] = total_token_correct / total_tokens
+    if total_sequences > 0:
+        metrics[f"{prefix}/success_rate"] = success_count / total_sequences
+        metrics[f"{prefix}/exact_match"] = exact_match_count / total_sequences
+        metrics[f"{prefix}/avg_step_count"] = total_steps / max(total_sequences, 1)
+        metrics[f"{prefix}/avg_generated_length"] = (
+            total_generated_len / max(total_sequences, 1)
+        )
+    if mse_alignment_count > 0:
+        metrics[f"{prefix}/bert_alignment_mse"] = (
+            mse_alignment_sum / mse_alignment_count
+        )
+
+    if metrics:
+        for metric_name, metric_value in metrics.items():
+            writer.add_scalar(metric_name, metric_value, global_step)
+        if wandb_on:
+            wandb.log(metrics, step=global_step)
+
+    if logger and sample_logs:
+        logger.info("=== Seq2Seq Evaluation Samples (%s) ===", prefix)
+        for line in sample_logs:
+            logger.info(line)
+
+    if nav_mode:
+        nav_agent.train()
+    if llm_mode:
+        hunch_llm.train()
+
+    return metrics
+
+
+
+
+
 
 def train_multihopkg(
     epochs: int, 
@@ -1076,6 +1363,8 @@ def train_multihopkg(
     updates_since_hydration = 0
     recent_question_ids: List[int] = []
     train_df = data_partitions.train
+    eval_interval_updates = max(1, num_batches_till_eval)
+    last_eval_updates = 0
 
     ########################################
     # Helper Functions Setup
@@ -1232,23 +1521,18 @@ def train_multihopkg(
         value_net.train()
         target_value_net.eval()
 
-        tqdm_bar = tqdm(range(collections_per_epoch), desc="Epoch", leave=False)
+        tqdm_bar = tqdm(range(collections_per_epoch), desc="Collection", leave=False)
         for _ in tqdm_bar:
-            # Sample Questions Ids that we will experience
-
             ########################################
             # Training/Updates
-            # while (
-            #     # replay_buffer.is_ready(total_gradient_updates) and
-            #     total_gradient_updates < num_updates_limit
-            # ):
+            ########################################
+            # while total_gradient_updates < num_updates_limit:
             sampled_ids, _ = coverage_sampler.sample(batch_size)
             question_counts = {
                 int(qid): num_simulations_per_ques for qid in sampled_ids
             }
             recent_question_ids = sampled_ids
 
-            # Sample sample
             (
                 _,
                 bert_quest_emb,
@@ -1262,7 +1546,6 @@ def train_multihopkg(
                 step_counter,
             ) = replay_buffer.sample_transitions(question_counts)
 
-            # Update
             update_metrics = sac_update_step(
                 bert_quest_emb.to(device),
                 path_states.to(device),
@@ -1284,7 +1567,6 @@ def train_multihopkg(
             updates_since_hydration += 1
 
             if updates_since_hydration >= hydration_interval:
-                tqdm_bar.set_description("Rehydrating replay buffer")
                 added = hydrate_replay_buffer(
                     env=env,
                     actor=nav_agent,
@@ -1310,9 +1592,8 @@ def train_multihopkg(
             if total_gradient_updates >= num_updates_limit:
                 break
 
-            ########################################
-            # Replay buffer hydration handled above
-            ########################################
+            if total_gradient_updates >= num_updates_limit:
+                break
 
         logger.info(
             "Epoch %d completed | replay_size=%d | gradient_updates=%d | coverage_cycles=%d",
@@ -1336,6 +1617,46 @@ def train_multihopkg(
         writer.add_scalar(
             "train/coverage_progress_epoch", epoch_progress, epoch_id
         )
+
+        if total_gradient_updates - last_eval_updates >= eval_interval_updates:
+            evaluate_seq2seq_outputs(
+                env=env,
+                nav_agent=nav_agent,
+                hunch_llm=hunch_llm,
+                dataset=data_partitions.validation,
+                question_tokenizer=question_tokenizer,
+                answer_tokenizer=answer_tokenizer,
+                batch_size=batch_size_dev,
+                max_env_steps=replay_buffer.max_env_steps,
+                pad_token_id=pad_token_id,
+                writer=writer,
+                wandb_on=wandb_on,
+                global_step=total_gradient_updates,
+                logger=globals().get("logger"),
+                prefix="dev",
+                num_rollouts_per_question=1,
+            )
+
+            evaluate_seq2seq_outputs(
+                env=env,
+                nav_agent=nav_agent,
+                hunch_llm=hunch_llm,
+                dataset=data_partitions.test,
+                question_tokenizer=question_tokenizer,
+                answer_tokenizer=answer_tokenizer,
+                batch_size=batch_size_dev,
+                max_env_steps=replay_buffer.max_env_steps,
+                pad_token_id=pad_token_id,
+                writer=writer,
+                wandb_on=wandb_on,
+                global_step=total_gradient_updates,
+                logger=globals().get("logger"),
+                prefix="test",
+                num_rollouts_per_question=1,
+                num_samples_to_log=3,
+            )
+
+            last_eval_updates = total_gradient_updates
 
         if total_gradient_updates >= num_updates_limit:
             logger.info("Reached gradient update budget; stopping training loop early.")
