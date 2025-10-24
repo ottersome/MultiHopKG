@@ -150,15 +150,12 @@ class ContinuousPolicyGradient(nn.Module):
     def _decode_graph_state(
         self,
         observations: torch.Tensor,
-        graph_state_mask: Optional[torch.Tensor] = None,
-        context_quest_bert_emb: Optional[torch.Tensor] = None,
+        graph_state_mask: torch.Tensor,
+        context_quest_bert_emb: torch.Tensor,
     ) -> torch.Tensor:
         """Combine graph trajectory and question context akin to the critics."""
 
         batch_size, seq_len, _ = observations.shape
-
-        if graph_state_mask is None:
-            graph_state_mask = observations.new_ones((batch_size, seq_len), dtype=torch.bool)
 
         if graph_state_mask.dim() == 2:
             flat_mask = graph_state_mask
@@ -177,16 +174,6 @@ class ContinuousPolicyGradient(nn.Module):
         last_step_idxs = last_step_idxs.clamp(min=1, max=seq_len) - 1
         batch_indices = torch.arange(batch_size, device=observations.device)
         last_hidden_enc_state = x[batch_indices, last_step_idxs]
-
-        if self.ques_emb_dim == 0:
-            return torch.relu(self.graph_ques_proj(last_hidden_enc_state))
-
-        if context_quest_bert_emb is None:
-            context_quest_bert_emb = torch.zeros(
-                (batch_size, self.ques_emb_dim),
-                device=observations.device,
-                dtype=observations.dtype,
-            )
 
         fused = torch.cat((last_hidden_enc_state, context_quest_bert_emb), dim=-1)
         return torch.relu(self.graph_ques_proj(fused))
