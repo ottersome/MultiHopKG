@@ -1,14 +1,13 @@
-from numpy import common_type
-from torch._C import _cuda_tunableop_set_max_tuning_duration
-from multihopkg.models_language.classical import DecoderLayer, PositionalEncoding
+# NOTE: This module focuses on the policy used by the graph RL agent.
+#       Several legacy imports are intentionally left commented in the
+#       bottom section of the file for historical reference.
+from multihopkg.models_language.classical import EncoderLayer, PositionalEncoding
 from multihopkg.utils.ops import int_fill_var_cuda, var_cuda, zeros_var_cuda
 from multihopkg.utils import ops
 import torch
 from torch import nn
-from typing import Tuple
+from typing import Optional, Tuple
 import pdb
-
-import torch.nn.functional as F
 
 import sys
 
@@ -32,6 +31,7 @@ class ContinuousPolicyGradient(nn.Module):
         encoder_num_layers: int, 
         encoder_num_heads: int,
         encoder_dropout: float,
+        ques_emb_dim: int = 0,
         log_std_min: float = -20,
         log_std_max: float = 2,
     ):
@@ -43,30 +43,42 @@ class ContinuousPolicyGradient(nn.Module):
         self.observation_dim = dim_observation
 
         self.max_seq_length = max_path_length
+        self.ques_emb_dim = ques_emb_dim
+        self.readout_hidden_dim = enc_ff_dim
         ########################################
         # Torch Modules
         ########################################
-        self.graph_encoder, self.mu_layer, self.sigma_layer = self._define_modules(
+        self._define_modules(
             encoder_num_layers=encoder_num_layers,
             obs_dim=dim_observation,
             encoder_num_heads=encoder_num_heads,
             enc_ff_dim=enc_ff_dim,
             enc_dropout=encoder_dropout,
-            action_dim=dim_action
+            action_dim=dim_action,
+            ques_emb_dim=ques_emb_dim,
         )
 
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
 
     def forward(
-        self, observations: torch.Tensor
+        self,
+        observations: torch.Tensor,
+        graph_state_mask: Optional[torch.Tensor] = None,
+        context_quest_bert_emb: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # Once we do the observations we need to do the sampling
-        return self._sample_action(observations)
+        return self._sample_action(
+            observations,
+            graph_state_mask=graph_state_mask,
+            context_quest_bert_emb=context_quest_bert_emb,
+        )
 
     def _sample_action(
         self,
         observations: torch.Tensor,
+        graph_state_mask: Optional[torch.Tensor] = None,
+        context_quest_bert_emb: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Will sample batch_len actions given batch_len observations
@@ -74,8 +86,11 @@ class ContinuousPolicyGradient(nn.Module):
             observations: torch.Tensor. Shape: (batch_len, path_encoder_dim)
         """
 
-        # TODO: We need a mask as input 
-        projections = self.graph_encoder(observations)
+        projections = self._decode_graph_state(
+            observations,
+            graph_state_mask=graph_state_mask,
+            context_quest_bert_emb=context_quest_bert_emb,
+        )
 
         mu = self.mu_layer(projections).tanh()
 
@@ -111,32 +126,70 @@ class ContinuousPolicyGradient(nn.Module):
         enc_ff_dim: int,
         enc_dropout: float,
         action_dim: int,
+        ques_emb_dim: int,
     ):
+        model_dim = obs_dim
 
-        # TOREM: legacy
-        # hidden1 = nn.Linear(input_dim, hidden_dim)
-        # hidden2 = nn.Linear(hidden_dim, hidden_dim)
-        
-        # Transformer Stack
-        decoder_layers = nn.ModuleList(
-            [DecoderLayer(obs_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
+        # Transformer stack mirroring the graph critics
+        self.encoder_layers = nn.ModuleList(
+            [EncoderLayer(model_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
         )
-        positional_encoding_xattn_left = PositionalEncoding(obs_dim, self.max_seq_length)
-        graph_encoder = nn.Sequential(
-            positional_encoding_xattn_left,
-            nn.Dropout(enc_dropout),
-            decoder_layers
-        )
-        
-        # AutoEncoder Stack
-        mu_layer = nn.Linear(enc_ff_dim, action_dim)
-        sigma_layer = nn.Linear(enc_ff_dim, action_dim)
+        self.pos_enc = PositionalEncoding(model_dim, self.max_seq_length)
+        self.dropout = nn.Dropout(enc_dropout)
 
-        # Custom initialization
-        mu_layer = init_layer_uniform(mu_layer)
-        sigma_layer = init_layer_uniform(sigma_layer)
+        readout_in_dim = model_dim + ques_emb_dim if ques_emb_dim > 0 else model_dim
+        self.graph_ques_proj = nn.Linear(readout_in_dim, enc_ff_dim)
+        self.graph_ques_proj = init_layer_uniform(self.graph_ques_proj)
 
-        return graph_encoder, mu_layer, sigma_layer
+        self.mu_layer = nn.Linear(enc_ff_dim, action_dim)
+        self.sigma_layer = nn.Linear(enc_ff_dim, action_dim)
+
+        self.mu_layer = init_layer_uniform(self.mu_layer)
+        self.sigma_layer = init_layer_uniform(self.sigma_layer)
+
+    def _decode_graph_state(
+        self,
+        observations: torch.Tensor,
+        graph_state_mask: Optional[torch.Tensor] = None,
+        context_quest_bert_emb: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Combine graph trajectory and question context akin to the critics."""
+
+        batch_size, seq_len, _ = observations.shape
+
+        if graph_state_mask is None:
+            graph_state_mask = observations.new_ones((batch_size, seq_len), dtype=torch.bool)
+
+        if graph_state_mask.dim() == 2:
+            flat_mask = graph_state_mask
+            graph_state_mask = graph_state_mask.unsqueeze(1).unsqueeze(2)
+        elif graph_state_mask.dim() == 4:
+            flat_mask = graph_state_mask.squeeze(1).squeeze(1)
+        else:
+            raise ValueError("graph_state_mask must have 2 or 4 dimensions")
+
+        x = self.pos_enc(observations)
+        x = self.dropout(x)
+        for layer in self.encoder_layers:
+            x = layer(x, graph_state_mask)
+
+        last_step_idxs = torch.sum(flat_mask, dim=-1)
+        last_step_idxs = last_step_idxs.clamp(min=1, max=seq_len) - 1
+        batch_indices = torch.arange(batch_size, device=observations.device)
+        last_hidden_enc_state = x[batch_indices, last_step_idxs]
+
+        if self.ques_emb_dim == 0:
+            return torch.relu(self.graph_ques_proj(last_hidden_enc_state))
+
+        if context_quest_bert_emb is None:
+            context_quest_bert_emb = torch.zeros(
+                (batch_size, self.ques_emb_dim),
+                device=observations.device,
+                dtype=observations.dtype,
+            )
+
+        fused = torch.cat((last_hidden_enc_state, context_quest_bert_emb), dim=-1)
+        return torch.relu(self.graph_ques_proj(fused))
 
     def _reparemeteriztion(self, dist, action):
         return dist.log_prob(action).sum(dim=-1)

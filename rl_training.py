@@ -937,15 +937,20 @@ def train_multihopkg(
         critic_loss.backward()
         critic_optimizer.step()
 
-        policy_actions, log_probs, entropy, _, _ = nav_agent(states_path)
-        next_states_path_acted = next_states_path.clone()
-        next_states_path_acted[:, 2*step_counter + 1 ,: ] = policy_actions
-        q1_pi = critic_q1(states_path, policy_actions, bert_quest_emb)
-        q2_pi = critic_q2(states_path, policy_actions, bert_quest_emb)
+        policy_actions, log_probs, entropy, _, _ = nav_agent(
+            states_path,
+            graph_state_mask=graph_nextState_mask,
+            context_quest_bert_emb=bert_quest_emb,
+        )
+        policy_state = states_path.clone()
+        policy_state[:, 2 * step_counter + 1, :] = policy_actions
+
+        q1_pi = critic_q1(policy_state, graph_nextState_mask, bert_quest_emb)
+        q2_pi = critic_q2(policy_state, graph_nextState_mask, bert_quest_emb)
         min_q_pi = torch.min(q1_pi, q2_pi)
 
         value_target = (min_q_pi - alpha * log_probs.unsqueeze(-1)).detach()
-        value_pred = value_net(states_path, bert_quest_emb)
+        value_pred = value_net(states_path, graph_nextState_mask, bert_quest_emb)
         value_loss = F.mse_loss(value_pred, value_target)
 
         value_optimizer.zero_grad()
@@ -1348,6 +1353,7 @@ def main():
         encoder_num_layers=args.num_enc_layers,
         encoder_num_heads=args.num_enc_heads,
         encoder_dropout=args.enc_dropout,
+        ques_emb_dim=bert_emb_dim,
         log_std_min=args.log_std_min,
         log_std_max=args.log_std_max,
     ).to(args.device)
