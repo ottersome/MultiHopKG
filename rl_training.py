@@ -890,13 +890,21 @@ def hydrate_replay_buffer(
         )
         new_paths[:, 0, :] = reset_states
         path_states[done_flags] = new_paths
+        step_counter[done_flags] = 0
+    else:
+        notdone_flags = ~done_flags
+        steps = step_counter[notdone_flags]
+        path_states[notdone_flags, ((steps+1)*2) + 1] = actions[notdone_flags]
+        path_states[notdone_flags, ((steps+1)*2) + 2] = next_states[notdone_flags]
+        # CHeck if its done
+        step_counter[notdone_flags]  += 1
+        done_flags[notdone_flags] = steps == max_steps
 
-    valid_mask = ~(path_states == PATH_PADDING_VALUE).all(dim=-1)
+    valid_mask = torch.zeros((amount_ques, max_path_len), dtype=torch.bool)
+    for row_idx in range(step_counter.shape[0]):
+        valid_mask[row_idx, :step_counter[row_idx] + 1] = True
+    graph_state_mask = valid_mask.unsqueeze(1).unsqueeze(2).to(device)
     valid_counts = valid_mask.sum(dim=-1)
-    current_steps = torch.clamp((valid_counts - 1) // 2, min=0)
-
-    mask_flat = seq_positions <= (2 * current_steps).unsqueeze(1)
-    graph_state_mask = mask_flat.unsqueeze(1).unsqueeze(2)
 
     actions, log_probs, entropy, _, _ = actor(
         path_states,
@@ -904,18 +912,21 @@ def hydrate_replay_buffer(
         context_quest_bert_emb=bert_quest,
     )
 
-    row_idx = torch.arange(path_states.shape[0], device=device)
-    current_state_indices = 2 * current_steps
-    current_states = path_states[row_idx, current_state_indices, :]
+    row_idx = torch.arange(amount_ques, device=device)
+    current_states = path_states[row_idx, valid_counts, :]
 
     observation = ReinforcedUnsupervisedEnv.RUE_Observation(
         state=current_states,
         answer_id=answer_ids_tensor,
     )
 
+    # Take a Step
     next_states, extrinsic_reward, done = env.step(observation, actions)
+
+    # Calculate Reward
     llm_reward, _ = calculate_llm_reward_supasoft(
         hunch_llm,
+        #NOTE : Check on this unsqueeze
         next_states.unsqueeze(1),
         answer_bert_embs,
         padded_questions_tokens,
@@ -924,20 +935,20 @@ def hydrate_replay_buffer(
 
     combined_reward = llm_reward.squeeze() + extrinsic_reward.squeeze()
 
-    path_states_updated = path_states.clone()
-    action_indices = 2 * current_steps + 1
-    state_indices = action_indices + 1
-
-    within_bounds = state_indices < max_path_len
-    if not within_bounds.all():
-        overflow_mask = ~within_bounds
-        action_indices = torch.clamp(action_indices, max=max_path_len - 2)
-        state_indices = action_indices + 1
-        done = done.clone()
-        done[overflow_mask] = True
-
-    path_states_updated[row_idx, action_indices, :] = actions
-    path_states_updated[row_idx, state_indices, :] = next_states
+    # path_states_updated = path_states.clone()
+    # action_indices = 2 * current_steps + 1
+    # state_indices = action_indices + 1
+    #
+    # within_bounds = state_indices < max_path_len
+    # if not within_bounds.all():
+    #     overflow_mask = ~within_bounds
+    #     action_indices = torch.clamp(action_indices, max=max_path_len - 2)
+    #     state_indices = action_indices + 1
+    #     done = done.clone()
+    #     done[overflow_mask] = True
+    #
+    # path_states_updated[row_idx, action_indices, :] = actions
+    # path_states_updated[row_idx, state_indices, :] = next_states
 
     replay_buffer.add_transitions(
         questions_ids=buffer_indices.to(torch.long),
@@ -947,7 +958,7 @@ def hydrate_replay_buffer(
         rewards=combined_reward.detach().to(cpu_device),
         next_states=next_states.detach().to(cpu_device),
         dones=done.squeeze(-1).detach().to(torch.bool).cpu(),
-        path_states=path_states_updated.detach().cpu(),
+        path_states=path_states.detach().cpu(),
         log_probs=log_probs.detach().cpu(),
         entropies=entropy.detach().cpu(),
         step_counter=step_counter.detach().cpu(),
