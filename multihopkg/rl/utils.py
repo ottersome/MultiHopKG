@@ -65,6 +65,9 @@ class QuestionReplayBuffer:
     def get_question_bert_emb_dim(self):
         return self.bert_emb_dim
 
+    def get_max_path_len(self):
+        return self.max_env_steps * 2 - 1
+
     def add_transitions(
         self,
         questions_ids: torch.Tensor,   # [E]
@@ -213,6 +216,9 @@ class QuestionReplayBuffer:
             buf_idx_tensor,
             self.quest_bert_emb[buf_idx_tensor, slot_tensor].clone(),
             self.path_states[buf_idx_tensor, slot_tensor].clone(),
+            self.actions[buf_idx_tensor, slot_tensor].clone(),
+            self.next_states[buf_idx_tensor, slot_tensor].clone(),
             self.step_counter[buf_idx_tensor, slot_tensor].clone(),
             self.done[buf_idx_tensor, slot_tensor].clone(),
+            self.step_counter[buf_idx_tensor].clone()
         )

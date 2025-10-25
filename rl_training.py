@@ -840,8 +840,12 @@ def hydrate_replay_buffer(
 
     device = next(actor.parameters()).device
     cpu_device = replay_buffer.cur_states.device
+    bert_embed_dim = replay_buffer.get_question_bert_emb_dim()
     max_path_len = replay_buffer.path_states.shape[2]
     state_dim = replay_buffer.path_states.shape[-1]
+    max_path_len =  replay_buffer.get_max_path_len()
+    max_steps = (max_path_len-1)//2
+    amount_ques = len(question_ids)
     seq_positions = torch.arange(max_path_len, device=device).unsqueeze(0)
 
     sample_size = min(len(question_ids), num_hydration_samples)
@@ -852,17 +856,26 @@ def hydrate_replay_buffer(
         buffer_indices,
         bert_quest,
         path_states,
+        actions,
+        next_states,
         done_flags,
+        step_counter,
     ) = replay_buffer.pop_oldest_batch(sampled_qids)
 
     mini_batch = train_df.loc[question_ids]
 
-    question_tokens_list = [
-        torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()
-    ]
-    padded_questions = torch.nn.utils.rnn.pad_sequence(
-        question_tokens_list, batch_first=True, padding_value=pad_token_id
+    questions_tokens = [torch.Tensor(ques).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
+    padded_questions_tokens = torch.nn.utils.rnn.pad_sequence(
+        questions_tokens, batch_first=True, padding_value=pad_token_id
     ).to(device)
+    # NOTE: Double check on this indexing
+    answer_bert_embs = (
+        torch.Tensor(
+            train_df.iloc[mini_batch.index, 3 : 3 + bert_embed_dim].values.tolist()
+        )
+        .to(torch.long)
+        .to(device)
+    )
 
     answer_ids = [path[-1] for path in mini_batch["triples_ints"].tolist()]
     answer_ids_tensor = torch.tensor(answer_ids, dtype=torch.long, device=device)
@@ -904,8 +917,8 @@ def hydrate_replay_buffer(
     llm_reward, _ = calculate_llm_reward_supasoft(
         hunch_llm,
         next_states.unsqueeze(1),
-        bert_ans,
-        padded_questions,
+        answer_bert_embs,
+        padded_questions_tokens,
         pad_token_id,
     )
 
@@ -937,7 +950,7 @@ def hydrate_replay_buffer(
         path_states=path_states_updated.detach().cpu(),
         log_probs=log_probs.detach().cpu(),
         entropies=entropy.detach().cpu(),
-        step_counter=current_steps.detach().cpu(),
+        step_counter=step_counter.detach().cpu(),
     )
 
     actor.train()
