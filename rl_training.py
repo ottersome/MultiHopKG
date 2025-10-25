@@ -824,24 +824,17 @@ def prepopulate_replay_buffer(
 
 @torch.no_grad()
 def hydrate_replay_buffer(
-    *,
+    num_hydration_samples: int,
     env: ReinforcedUnsupervisedEnv,
     actor: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
     replay_buffer: QuestionReplayBuffer,
     train_df: pd.DataFrame,
     question_ids: Sequence[int],
-    num_rollouts_per_question: int,
     pad_token_id: int,
-    logger: Optional[logging.Logger] = None,
 ) -> int:
     """Generate new transitions by extending oldest trajectories in replay."""
 
-    if not question_ids:
-        return 0
-
-    actor_mode = actor.training
-    hunch_mode = hunch_llm.training
     actor.eval()
     hunch_llm.eval()
 
@@ -851,56 +844,18 @@ def hydrate_replay_buffer(
     state_dim = replay_buffer.path_states.shape[-1]
     seq_positions = torch.arange(max_path_len, device=device).unsqueeze(0)
 
-    sample_multiplier = max(1, num_rollouts_per_question)
-    sample_size = min(len(question_ids), max(1, replay_buffer.batch_size * sample_multiplier))
-    if sample_size == 0:
-        if actor_mode:
-            actor.train()
-        if hunch_mode:
-            hunch_llm.train()
-        return 0
+    sample_size = min(len(question_ids), num_hydration_samples)
 
+    # Get Samples
     sampled_qids = random.choices(question_ids, k=sample_size)
-    popped = replay_buffer.pop_oldest_batch(sampled_qids)
-    if popped is None:
-        if actor_mode:
-            actor.train()
-        if hunch_mode:
-            hunch_llm.train()
-        if logger:
-            logger.debug("hydrate_replay_buffer: no available trajectories to extend")
-        return 0
+    (
+        buffer_indices,
+        bert_quest,
+        path_states,
+        done_flags,
+    ) = replay_buffer.pop_oldest_batch(sampled_qids)
 
-    buffer_indices = popped["buffer_indices"]
-    qid_list = popped["question_ids"]
-
-    mini_batch = train_df.loc[qid_list]
-    if isinstance(mini_batch, pd.Series):
-        mini_batch = mini_batch.to_frame().T
-
-    if "bert_ques_emb" in mini_batch.columns:
-        bert_quest = torch.tensor(
-            mini_batch["bert_ques_emb"].tolist(), dtype=torch.float32, device=device
-        )
-    else:
-        bert_emb_dim = replay_buffer.get_question_bert_emb_dim()
-        bert_quest = torch.tensor(
-            mini_batch.iloc[:, 3 + bert_emb_dim :].values.tolist(),
-            dtype=torch.float32,
-            device=device,
-        )
-
-    if "bert_ans_emb" in mini_batch.columns:
-        bert_ans = torch.tensor(
-            mini_batch["bert_ans_emb"].tolist(), dtype=torch.float32, device=device
-        )
-    else:
-        bert_emb_dim = replay_buffer.get_question_bert_emb_dim()
-        bert_ans = torch.tensor(
-            mini_batch.iloc[:, 3 : 3 + bert_emb_dim].values.tolist(),
-            dtype=torch.float32,
-            device=device,
-        )
+    mini_batch = train_df.loc[question_ids]
 
     question_tokens_list = [
         torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()
@@ -911,9 +866,6 @@ def hydrate_replay_buffer(
 
     answer_ids = [path[-1] for path in mini_batch["triples_ints"].tolist()]
     answer_ids_tensor = torch.tensor(answer_ids, dtype=torch.long, device=device)
-
-    path_states = popped["path_states"].to(device)
-    done_flags = popped["done"].to(device)
 
     if done_flags.any():
         reset_states = env.reset(bert_quest[done_flags])
@@ -988,10 +940,8 @@ def hydrate_replay_buffer(
         step_counter=current_steps.detach().cpu(),
     )
 
-    if actor_mode:
-        actor.train()
-    if hunch_mode:
-        hunch_llm.train()
+    actor.train()
+    hunch_llm.train()
 
     return path_states.shape[0]
 
@@ -1014,8 +964,6 @@ def evaluate_seq2seq_outputs(
     global_step: int,
     logger: Optional[logging.Logger],
     prefix: str,
-    num_rollouts_per_question: int = 1,
-    max_batches: Optional[int] = None,
     num_samples_to_log: int = 5,
 ) -> Dict[str, float]:
     """Run policy evaluation on a dataset and log seq2seq decoder outputs."""
@@ -1026,7 +974,7 @@ def evaluate_seq2seq_outputs(
     device = next(nav_agent.parameters()).device
     state_dim = nav_agent.observation_dim
     max_path_len = max_env_steps * 2 - 1
-    max_transitions = min(max_env_steps, (max_path_len - 1) // 2)
+    max_transitions = max_env_steps
 
     nav_mode = nav_agent.training
     llm_mode = hunch_llm.training
@@ -1050,84 +998,38 @@ def evaluate_seq2seq_outputs(
     seq_positions = torch.arange(max_path_len, device=device).unsqueeze(0)
 
     total_batches = math.ceil(len(dataset) / batch_size)
-    if max_batches is not None:
-        total_batches = min(total_batches, max_batches)
 
     for batch_idx in range(total_batches):
+        # Get the Minibatch
         mini_batch = dataset.iloc[
             batch_idx * batch_size : (batch_idx + 1) * batch_size
         ]
-        if mini_batch.empty:
-            continue
 
-        base_batch = len(mini_batch)
-        rollout_count = base_batch * num_rollouts_per_question
-        if rollout_count == 0:
-            continue
+        # Get individual columns and do post processing
+        question_tokens_list = [torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()]
+        answer_tokens_list = [torch.tensor(ans, dtype=torch.long) for ans in mini_batch["enc_answer"].tolist()]
 
-        question_tokens_list = [
-            torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()
-        ]
-
-        answer_tokens_list = [
-            torch.tensor(ans, dtype=torch.long) for ans in mini_batch["enc_answer"].tolist()
-        ]
-        padded_answers = torch.nn.utils.rnn.pad_sequence(
-            answer_tokens_list, batch_first=True, padding_value=pad_token_id
-        ).to(device)
+        padded_answers = torch.nn.utils.rnn.pad_sequence(answer_tokens_list, batch_first=True, padding_value=pad_token_id).to(device)
+        # TODO: Check if we actually have the answer tokens
         labels = padded_answers.clone()
         labels[labels == pad_token_id] = -100
-        repeated_answers = padded_answers.repeat(num_rollouts_per_question, 1)
-
-        if "bert_ques_emb" in mini_batch.columns:
-            bert_quest = torch.tensor(
-                mini_batch["bert_ques_emb"].tolist(), dtype=torch.float32, device=device
-            )
-        else:
-            bert_emb_dim = padded_answers.shape[-1]
-            bert_quest = torch.tensor(
-                mini_batch.iloc[:, 3 + bert_emb_dim :].values.tolist(),
-                dtype=torch.float32,
-                device=device,
-            )
-        bert_quest_emb = (
-            bert_quest.unsqueeze(1)
-            .repeat(1, num_rollouts_per_question, 1)
-            .view(rollout_count, -1)
-        )
-
-        if "bert_ans_emb" in mini_batch.columns:
-            bert_ans = torch.tensor(
-                mini_batch["bert_ans_emb"].tolist(), dtype=torch.float32, device=device
-            )
-            bert_ans_expanded = (
-                bert_ans.unsqueeze(1)
-                .repeat(1, num_rollouts_per_question, 1)
-                .view(rollout_count, -1)
-            )
-        else:
-            bert_ans_expanded = None
+        bert_quest = torch.tensor(mini_batch["bert_ques_emb"].tolist(), dtype=torch.float32, device=device)
+        bert_ans = torch.tensor(mini_batch["bert_ans_emb"].tolist(), dtype=torch.float32, device=device)
 
         paths = mini_batch["triples_ints"].tolist()
         answer_ids = torch.tensor([path[-1] for path in paths], dtype=torch.long, device=device)
-        answer_ids_expanded = (
-            answer_ids.unsqueeze(1)
-            .repeat(1, num_rollouts_per_question)
-            .view(rollout_count)
-        )
-
-        init_states = env.reset(bert_quest_emb)
+        init_states = env.reset(bert_quest)
         path_trace = torch.full(
-            (rollout_count, max_path_len, state_dim),
+            (batch_size, max_path_len, state_dim),
             PATH_PADDING_VALUE,
             device=device,
             dtype=init_states.dtype,
         )
         path_trace[:, 0, :] = init_states
 
-        step_counter = torch.zeros(rollout_count, dtype=torch.long, device=device)
-        done_mask = torch.zeros(rollout_count, dtype=torch.bool, device=device)
-        success_flags = torch.zeros(rollout_count, dtype=torch.bool, device=device)
+        step_counter = torch.zeros(batch_size, dtype=torch.long, device=device)
+        done_mask = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        success_flags = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
         for _ in range(max_transitions):
             active_idx = (~done_mask).nonzero(as_tuple=False).squeeze(-1)
@@ -1141,7 +1043,7 @@ def evaluate_seq2seq_outputs(
             actions, _, _, _, _ = nav_agent(
                 path_active,
                 graph_state_mask=mask_active,
-                context_quest_bert_emb=bert_quest_emb[active_idx],
+                context_quest_bert_emb=bert_quest[active_idx],
             )
 
             row_idx = torch.arange(active_idx.size(0), device=device)
@@ -1149,7 +1051,7 @@ def evaluate_seq2seq_outputs(
 
             observation = ReinforcedUnsupervisedEnv.RUE_Observation(
                 state=current_states,
-                answer_id=answer_ids_expanded[active_idx],
+                answer_id=answer_ids[active_idx],
             )
             next_states, extrinsic_reward, done = env.step(observation, actions)
 
@@ -1221,7 +1123,7 @@ def evaluate_seq2seq_outputs(
             generated_ids.ne(pad_token_id).sum(dim=1).float().mean().item()
         )
 
-        if bert_ans_expanded is not None:
+        if bert_ans is not None:
             reward_supasoft, _ = calculate_llm_reward_supasoft(
                 hunch_llm,
                 final_states,
@@ -1303,16 +1205,13 @@ def train_multihopkg(
     replay_buffer: QuestionReplayBuffer,
     dev_df: pd.DataFrame,
     mbatches_b4_eval: int,
-    verbose: bool,
-    visualize: bool,
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
-    track_gradients: bool,
     num_batches_till_eval: int,
     num_simulations_per_ques: int,
     wandb_on: bool,
     num_update_steps: int,
-    update_batch_size: int,
+    num_hydration_samples: int,
     critic_q1: GraphCriticQ,
     critic_q2: GraphCriticQ,
     value_net: GraphCriticV,
@@ -1359,6 +1258,8 @@ def train_multihopkg(
     hydration_rollouts = max(1, num_simulations_per_ques)
     updates_since_hydration = 0
     train_df = data_partitions.train
+    question_ids = train_df.index.values.tolist()
+    assert isinstance(question_ids, List)
     eval_interval_updates = max(1, num_batches_till_eval)
     last_eval_updates = 0
 
@@ -1485,7 +1386,6 @@ def train_multihopkg(
             "mask_tokens_mean": mask_token_counts.mean().item(),
         }
 
-    question_ids = replay_buffer.qet_question_ids()
     coverage_sampler = QuestionCoverageSampler(question_ids)
 
     num_updates_limit = max(1, num_update_steps)
@@ -1563,15 +1463,14 @@ def train_multihopkg(
 
             if updates_since_hydration >= hydration_interval:
                 added = hydrate_replay_buffer(
+                    num_hydration_samples=num_hydration_samples,
                     env=env,
                     actor=nav_agent,
                     hunch_llm=hunch_llm,
                     replay_buffer=replay_buffer,
                     train_df=train_df,
-                    question_ids=replay_buffer.qet_question_ids(),
-                    num_rollouts_per_question=hydration_rollouts,
+                    question_ids=question_ids,
                     pad_token_id=pad_token_id,
-                    logger=globals().get("logger"),
                 )
                 if added:
                     if wandb_on:
@@ -1631,24 +1530,24 @@ def train_multihopkg(
                 num_rollouts_per_question=1,
             )
 
-            evaluate_seq2seq_outputs(
-                env=env,
-                nav_agent=nav_agent,
-                hunch_llm=hunch_llm,
-                dataset=data_partitions.test,
-                question_tokenizer=question_tokenizer,
-                answer_tokenizer=answer_tokenizer,
-                batch_size=batch_size_dev,
-                max_env_steps=replay_buffer.max_env_steps,
-                pad_token_id=pad_token_id,
-                writer=writer,
-                wandb_on=wandb_on,
-                global_step=total_gradient_updates,
-                logger=globals().get("logger"),
-                prefix="test",
-                num_rollouts_per_question=1,
-                num_samples_to_log=3,
-            )
+            # evaluate_seq2seq_outputs(
+            #     env=env,
+            #     nav_agent=nav_agent,
+            #     hunch_llm=hunch_llm,
+            #     dataset=data_partitions.test,
+            #     question_tokenizer=question_tokenizer,
+            #     answer_tokenizer=answer_tokenizer,
+            #     batch_size=batch_size_dev,
+            #     max_env_steps=replay_buffer.max_env_steps,
+            #     pad_token_id=pad_token_id,
+            #     writer=writer,
+            #     wandb_on=wandb_on,
+            #     global_step=total_gradient_updates,
+            #     logger=globals().get("logger"),
+            #     prefix="test",
+            #     num_rollouts_per_question=1,
+            #     num_samples_to_log=3,
+            # )
 
             last_eval_updates = total_gradient_updates
 
@@ -1961,7 +1860,6 @@ def main():
             action_shape=dim_relation,
             bert_emb_dim=bert_emb_dim,
             experiences_per_question=args.experiences_per_question,
-            batch_size=args.batch_size,
             max_env_steps=args.max_env_steps,
             question_ids=train_df.index.tolist(),
         )
@@ -2049,16 +1947,13 @@ def main():
         replay_buffer=replay_buffer,
         dev_df=dev_df,
         mbatches_b4_eval=args.batches_b4_eval,
-        verbose=args.verbose,
-        visualize=args.visualize,
         question_tokenizer=gtllm_tokenizer,
         answer_tokenizer=gtllm_tokenizer,
-        track_gradients=args.track_gradients,
         num_batches_till_eval=args.num_batches_till_eval,
         num_simulations_per_ques=args.experiences_per_question,
         wandb_on=args.wandb,
         num_update_steps=args.num_update_steps,
-        update_batch_size=args.update_batch_size,
+        num_hydration_samples=args.num_hydration_samples,
         critic_q1=critic_q1,
         critic_q2=critic_q2,
         value_net=value_net

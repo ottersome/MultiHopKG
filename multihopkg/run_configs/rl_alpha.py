@@ -26,6 +26,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--replay_min_usable_size', type=int, default=10000, help="Minium number of transitions necessary in the Replay Buffer deemed sufficient to train the model.")
     ap.add_argument('--replay_buffer_cache_path', type=str, default=".cache/replay_buffer/replay_buffer.pkl", help="Minium number of transitions necessary in the Replay Buffer deemed sufficient to train the model.")
     ap.add_argument('--force_replaybuffer_recompute', action="store_true", help="Whether to recomptue the replay buffer.")
+    ap.add_argument('--num_hydration_samples', default=64, type=int, help="How many samples to hydrate on the replay buffer after updates.")
 
     # Environment
     ap.add_argument('--max_env_steps', type=int, default=8, help="Maximum number of steps to collect from an initial configuration")

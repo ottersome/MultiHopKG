@@ -18,7 +18,6 @@ class QuestionReplayBuffer:
         action_shape: int,
         bert_emb_dim: int,
         experiences_per_question: int,
-        batch_size: int,
         max_env_steps: int, 
         *,
         question_ids: Sequence[int],
@@ -28,7 +27,6 @@ class QuestionReplayBuffer:
         reward_dtype: torch.dtype = torch.float32,
     ) -> None:
         self.num_questions = num_questions
-        self.batch_size = batch_size
         self.warmup_size = warmup_size
         self.max_env_steps = max_env_steps
         self.min_update_steps = min_update_steps
@@ -40,10 +38,6 @@ class QuestionReplayBuffer:
         self.bert_emb_dim = bert_emb_dim
 
         assert len(question_ids) == num_questions, "question_ids must match num_questions"
-        self._question_ids = list(question_ids)
-        self._question_id_to_idx = {
-            question_id: idx for idx, question_id in enumerate(self._question_ids)
-        }
 
         self.capacity = num_questions * experiences_per_question
         self._total_size = 0
@@ -70,9 +64,6 @@ class QuestionReplayBuffer:
 
     def get_question_bert_emb_dim(self):
         return self.bert_emb_dim
-
-    def qet_question_ids(self):
-        return self._question_ids
 
     def add_transitions(
         self,
@@ -121,27 +112,22 @@ class QuestionReplayBuffer:
         self.write_ptr[qids] = (start + qids_count) % cap
 
         # Update counters and track overwrites to maintain FIFO semantics
-        qids_list = qids.tolist()
-        q_counts_list = qids_count.tolist()
-        for qid, qcount in zip(qids_list, q_counts_list):
-            current_count = self.count[qid].item()
-            new_count = current_count + qcount
-            if new_count > cap:
-                overflow = new_count - cap
-                self.read_ptr[qid] = (self.read_ptr[qid] + overflow) % cap
-                self.count[qid] = cap
-            else:
-                self.count[qid] = new_count
+        # qids_list = qids.tolist()
+        # q_counts_list = qids_count.tolist()
+        # for qid, qcount in zip(qids_list, q_counts_list):
+        #     current_count = self.count[qid].item()
+        #     new_count = current_count + qcount
+        #     if new_count > cap:
+        #         overflow = new_count - cap
+        #         self.read_ptr[qid] = (self.read_ptr[qid] + overflow) % cap
+        #         self.count[qid] = cap
+        #     else:
+        #         self.count[qid] = new_count
 
-        self._total_size = int(self.count.sum().item())
+        # self._total_size = int(self.count.sum().item())
 
     def __len__(self) -> int:
         return self._total_size
-
-    def is_ready(self, num_updates_done: int) -> bool:
-        if self._total_size < max(self.warmup_size, self.batch_size):
-            return False
-        return num_updates_done >= self.min_update_steps
 
     def sample_transitions(self, question_counts: Dict[int,int]):
         """
@@ -199,39 +185,21 @@ class QuestionReplayBuffer:
             step_counter,
         )
 
-    def pop_oldest_batch(self, question_ids: Sequence[int]):
-        if not question_ids:
-            return None
+    def pop_oldest_batch(self, question_ids: Sequence[int]) -> Tuple[torch.Tensor, ...]:
 
         cap = self.experiences_per_question
         buffer_indices: List[int] = []
         slot_indices: List[int] = []
-        valid_question_ids: List[int] = []
 
         for qid in question_ids:
-            if qid not in self._question_id_to_idx:
-                continue
-            buf_idx = self._question_id_to_idx[qid]
+            buf_idx = qid
             if self.count[buf_idx] <= 0:
-                continue
+                raise ValueError("There should be no empty replay buffers. Theres a severe logic error.")
             buffer_indices.append(buf_idx)
             slot_indices.append(int(self.read_ptr[buf_idx].item()))
-            valid_question_ids.append(qid)
-
-        if not buffer_indices:
-            return None
 
         buf_idx_tensor = torch.tensor(buffer_indices, dtype=torch.long)
         slot_tensor = torch.tensor(slot_indices, dtype=torch.long)
-
-        data = {
-            "buffer_indices": buf_idx_tensor,
-            "question_ids": valid_question_ids,
-            "quest_bert_emb": self.quest_bert_emb[buf_idx_tensor, slot_tensor].clone(),
-            "path_states": self.path_states[buf_idx_tensor, slot_tensor].clone(),
-            "step_counter": self.step_counter[buf_idx_tensor, slot_tensor].clone(),
-            "done": self.done[buf_idx_tensor, slot_tensor].clone(),
-        }
 
         # Advance read pointer and decrease counts to emulate FIFO pop
         for buf_idx in buf_idx_tensor.tolist():
@@ -241,77 +209,10 @@ class QuestionReplayBuffer:
 
         self._total_size = int(self.count.sum().item())
 
-        return data
-
-    # def sample(self, device: torch.device, batch_size: Optional[int] = None) -> Dict[str, torch.Tensor]:
-    #     if batch_size is None:
-    #         batch_size = self.batch_size
-    #
-    #     all_transitions: List[Tuple[int, Transition]] = list(self.iter_all())
-    #     if len(all_transitions) < batch_size:
-    #         raise ValueError(
-    #             "Cannot sample from replay buffer before it holds at least one batch"
-    #         )
-    #
-    #     perm = torch.randperm(len(all_transitions))[:batch_size]
-    #
-    #     states = []
-    #     actions = []
-    #     rewards = []
-    #     next_states = []
-    #     dones = []
-    #     env_rewards = []
-    #     llm_rewards = []
-    #     log_probs: List[torch.Tensor] = []
-    #     entropies: List[torch.Tensor] = []
-    #     question_embeddings = []
-    #     question_ids: List[int] = []
-    #     path_states: List[List[torch.Tensor]] = []
-    #     step_indices: List[int] = []
-    #
-    #     for idx in perm.tolist():
-    #         question_id, transition = all_transitions[idx]
-    #         states.append(transition.state)
-    #         actions.append(transition.action)
-    #         rewards.append(transition.reward)
-    #         next_states.append(transition.next_state)
-    #         dones.append(transition.done)
-    #         env_rewards.append(transition.env_reward)
-    #         llm_rewards.append(transition.llm_reward)
-    #         path_states.append(transition.path_states)
-    #         step_indices.append(transition.step_index)
-    #         question_embeddings.append(self.get_question_embedding(question_id))
-    #         question_ids.append(question_id)
-    #
-    #         if transition.log_prob is not None:
-    #             log_probs.append(transition.log_prob)
-    #         if transition.entropy is not None:
-    #             entropies.append(transition.entropy)
-    #
-    #     batch = {
-    #         "states": torch.stack(states).to(device),
-    #         "actions": torch.stack(actions).to(device),
-    #         "rewards": torch.stack(rewards).to(device),
-    #         "next_states": torch.stack(next_states).to(device),
-    #         "dones": torch.stack(dones).to(device),
-    #     }
-    #
-    #     extras: Dict[str, torch.Tensor] = {
-    #         "env_reward": torch.stack(env_rewards).to(device),
-    #         "llm_reward": torch.stack(llm_rewards).to(device),
-    #         "question_embedding": torch.stack(question_embeddings).to(device),
-    #         "question_id": torch.tensor(question_ids, dtype=torch.long, device=device),
-    #         "step_index": torch.tensor(step_indices, dtype=torch.long, device=device),
-    #     }
-    #
-    #     if log_probs:
-    #         extras["log_prob"] = torch.stack(log_probs).to(device)
-    #     if entropies:
-    #         extras["entropy"] = torch.stack(entropies).to(device)
-    #
-    #     batch["extras"] = {
-    #         **extras,
-    #         "path_states": path_states,
-    #     }
-    #
-    #     return batch
+        return (
+            buf_idx_tensor,
+            self.quest_bert_emb[buf_idx_tensor, slot_tensor].clone(),
+            self.path_states[buf_idx_tensor, slot_tensor].clone(),
+            self.step_counter[buf_idx_tensor, slot_tensor].clone(),
+            self.done[buf_idx_tensor, slot_tensor].clone(),
+        )
