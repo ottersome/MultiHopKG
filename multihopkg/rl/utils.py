@@ -52,6 +52,8 @@ class QuestionReplayBuffer:
         # Allocate Memory
         ########################################
         self.write_ptr = torch.zeros(self.num_questions, dtype=torch.long)
+        self.read_ptr = torch.zeros(self.num_questions, dtype=torch.long)
+        self.count = torch.zeros(self.num_questions, dtype=torch.long)
 
         self.quest_bert_emb = torch.zeros((self.num_questions, self.experiences_per_question, self.bert_emb_dim))
         self.cur_states = torch.zeros((self.num_questions, self.experiences_per_question, self._action_shape))
@@ -118,6 +120,21 @@ class QuestionReplayBuffer:
         # Advance write pointer
         self.write_ptr[qids] = (start + qids_count) % cap
 
+        # Update counters and track overwrites to maintain FIFO semantics
+        qids_list = qids.tolist()
+        q_counts_list = qids_count.tolist()
+        for qid, qcount in zip(qids_list, q_counts_list):
+            current_count = self.count[qid].item()
+            new_count = current_count + qcount
+            if new_count > cap:
+                overflow = new_count - cap
+                self.read_ptr[qid] = (self.read_ptr[qid] + overflow) % cap
+                self.count[qid] = cap
+            else:
+                self.count[qid] = new_count
+
+        self._total_size = int(self.count.sum().item())
+
     def __len__(self) -> int:
         return self._total_size
 
@@ -181,6 +198,50 @@ class QuestionReplayBuffer:
             entropies,
             step_counter,
         )
+
+    def pop_oldest_batch(self, question_ids: Sequence[int]):
+        if not question_ids:
+            return None
+
+        cap = self.experiences_per_question
+        buffer_indices: List[int] = []
+        slot_indices: List[int] = []
+        valid_question_ids: List[int] = []
+
+        for qid in question_ids:
+            if qid not in self._question_id_to_idx:
+                continue
+            buf_idx = self._question_id_to_idx[qid]
+            if self.count[buf_idx] <= 0:
+                continue
+            buffer_indices.append(buf_idx)
+            slot_indices.append(int(self.read_ptr[buf_idx].item()))
+            valid_question_ids.append(qid)
+
+        if not buffer_indices:
+            return None
+
+        buf_idx_tensor = torch.tensor(buffer_indices, dtype=torch.long)
+        slot_tensor = torch.tensor(slot_indices, dtype=torch.long)
+
+        data = {
+            "buffer_indices": buf_idx_tensor,
+            "question_ids": valid_question_ids,
+            "quest_bert_emb": self.quest_bert_emb[buf_idx_tensor, slot_tensor].clone(),
+            "path_states": self.path_states[buf_idx_tensor, slot_tensor].clone(),
+            "step_counter": self.step_counter[buf_idx_tensor, slot_tensor].clone(),
+            "done": self.done[buf_idx_tensor, slot_tensor].clone(),
+        }
+
+        # Advance read pointer and decrease counts to emulate FIFO pop
+        for buf_idx in buf_idx_tensor.tolist():
+            self.read_ptr[buf_idx] = (self.read_ptr[buf_idx] + 1) % cap
+            if self.count[buf_idx] > 0:
+                self.count[buf_idx] -= 1
+
+        self._total_size = int(self.count.sum().item())
+
+        return data
 
     # def sample(self, device: torch.device, batch_size: Optional[int] = None) -> Dict[str, torch.Tensor]:
     #     if batch_size is None:

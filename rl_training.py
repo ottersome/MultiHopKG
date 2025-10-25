@@ -832,19 +832,12 @@ def hydrate_replay_buffer(
     train_df: pd.DataFrame,
     question_ids: Sequence[int],
     num_rollouts_per_question: int,
-    max_env_steps: int,
     pad_token_id: int,
     logger: Optional[logging.Logger] = None,
 ) -> int:
-    """Collect additional experiences with the current policy."""
+    """Generate new transitions by extending oldest trajectories in replay."""
 
     if not question_ids:
-        return 0
-
-    valid_ids = [qid for qid in question_ids if qid in train_df.index]
-    if not valid_ids:
-        if logger:
-            logger.debug("hydrate_replay_buffer: question ids not found in training df")
         return 0
 
     actor_mode = actor.training
@@ -854,149 +847,153 @@ def hydrate_replay_buffer(
 
     device = next(actor.parameters()).device
     cpu_device = replay_buffer.cur_states.device
-    bert_emb_dim = replay_buffer.get_question_bert_emb_dim()
     max_path_len = replay_buffer.path_states.shape[2]
     state_dim = replay_buffer.path_states.shape[-1]
-    max_transitions = min(max_env_steps, (max_path_len - 1) // 2)
-
-    total_added = 0
-    chunk_size = 32
     seq_positions = torch.arange(max_path_len, device=device).unsqueeze(0)
 
-    for offset in range(0, len(valid_ids), chunk_size):
-        chunk_ids = valid_ids[offset : offset + chunk_size]
-        mini_batch = train_df.loc[chunk_ids]
-        if mini_batch.empty:
-            continue
+    sample_multiplier = max(1, num_rollouts_per_question)
+    sample_size = min(len(question_ids), max(1, replay_buffer.batch_size * sample_multiplier))
+    if sample_size == 0:
+        if actor_mode:
+            actor.train()
+        if hunch_mode:
+            hunch_llm.train()
+        return 0
 
-        base_batch = len(mini_batch)
-        rollout_count = base_batch * num_rollouts_per_question
-        if rollout_count == 0:
-            continue
+    sampled_qids = random.choices(question_ids, k=sample_size)
+    popped = replay_buffer.pop_oldest_batch(sampled_qids)
+    if popped is None:
+        if actor_mode:
+            actor.train()
+        if hunch_mode:
+            hunch_llm.train()
+        if logger:
+            logger.debug("hydrate_replay_buffer: no available trajectories to extend")
+        return 0
 
-        question_idx = torch.tensor(mini_batch.index.values, dtype=torch.long, device=device)
-        question_idx_expanded = (
-            question_idx.unsqueeze(1)
-            .repeat(1, num_rollouts_per_question)
-            .view(-1)
+    buffer_indices = popped["buffer_indices"]
+    qid_list = popped["question_ids"]
+
+    mini_batch = train_df.loc[qid_list]
+    if isinstance(mini_batch, pd.Series):
+        mini_batch = mini_batch.to_frame().T
+
+    if "bert_ques_emb" in mini_batch.columns:
+        bert_quest = torch.tensor(
+            mini_batch["bert_ques_emb"].tolist(), dtype=torch.float32, device=device
+        )
+    else:
+        bert_emb_dim = replay_buffer.get_question_bert_emb_dim()
+        bert_quest = torch.tensor(
+            mini_batch.iloc[:, 3 + bert_emb_dim :].values.tolist(),
+            dtype=torch.float32,
+            device=device,
         )
 
-        questions_tokens = [torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()]
-        padded_questions = torch.nn.utils.rnn.pad_sequence(
-            questions_tokens, batch_first=True, padding_value=pad_token_id
-        ).to(device)
-        question_tokens_expanded = (
-            padded_questions.unsqueeze(1)
-            .repeat(1, num_rollouts_per_question, 1)
-            .view(rollout_count, -1)
+    if "bert_ans_emb" in mini_batch.columns:
+        bert_ans = torch.tensor(
+            mini_batch["bert_ans_emb"].tolist(), dtype=torch.float32, device=device
+        )
+    else:
+        bert_emb_dim = replay_buffer.get_question_bert_emb_dim()
+        bert_ans = torch.tensor(
+            mini_batch.iloc[:, 3 : 3 + bert_emb_dim].values.tolist(),
+            dtype=torch.float32,
+            device=device,
         )
 
-        paths = mini_batch["triples_ints"].tolist()
-        answer_ids = torch.tensor([path[-1] for path in paths], dtype=torch.long, device=device)
-        answer_ids_expanded = (
-            answer_ids.unsqueeze(1)
-            .repeat(1, num_rollouts_per_question)
-            .view(rollout_count)
-        )
+    question_tokens_list = [
+        torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()
+    ]
+    padded_questions = torch.nn.utils.rnn.pad_sequence(
+        question_tokens_list, batch_first=True, padding_value=pad_token_id
+    ).to(device)
 
-        bert_ques = torch.tensor(mini_batch["bert_ques_emb"].tolist(), dtype=torch.float32, device=device)
+    answer_ids = [path[-1] for path in mini_batch["triples_ints"].tolist()]
+    answer_ids_tensor = torch.tensor(answer_ids, dtype=torch.long, device=device)
 
-        bert_quest_emb = (
-            bert_ques.unsqueeze(1)
-            .repeat(1, num_rollouts_per_question, 1)
-            .view(rollout_count, -1)
-        )
+    path_states = popped["path_states"].to(device)
+    done_flags = popped["done"].to(device)
 
-        if "bert_ans_emb" in mini_batch.columns:
-            bert_ans = torch.tensor(mini_batch["bert_ans_emb"].tolist(), dtype=torch.float32, device=device)
-        else:
-            bert_ans = torch.tensor(
-                mini_batch.iloc[:, 3 : 3 + bert_emb_dim].values.tolist(),
-                dtype=torch.float32,
-                device=device,
-            )
-        answer_bert_expanded = (
-            bert_ans.unsqueeze(1)
-            .repeat(1, num_rollouts_per_question, 1)
-            .view(rollout_count, -1)
-        )
-
-        init_states = env.reset(bert_quest_emb)
-        path_trace = torch.full(
-            (rollout_count, max_path_len, state_dim),
+    if done_flags.any():
+        reset_states = env.reset(bert_quest[done_flags])
+        new_paths = torch.full(
+            (reset_states.shape[0], max_path_len, state_dim),
             PATH_PADDING_VALUE,
             device=device,
-            dtype=init_states.dtype,
+            dtype=path_states.dtype,
         )
-        path_trace[:, 0, :] = init_states
+        new_paths[:, 0, :] = reset_states
+        path_states[done_flags] = new_paths
 
-        step_counter = torch.zeros(rollout_count, dtype=torch.long, device=device)
-        done_mask = torch.zeros(rollout_count, dtype=torch.bool, device=device)
+    valid_mask = ~(path_states == PATH_PADDING_VALUE).all(dim=-1)
+    valid_counts = valid_mask.sum(dim=-1)
+    current_steps = torch.clamp((valid_counts - 1) // 2, min=0)
 
-        for _ in range(max_transitions):
-            active_idx = (~done_mask).nonzero(as_tuple=False).squeeze(-1)
-            if active_idx.numel() == 0:
-                break
+    mask_flat = seq_positions <= (2 * current_steps).unsqueeze(1)
+    graph_state_mask = mask_flat.unsqueeze(1).unsqueeze(2)
 
-            path_active = path_trace[active_idx]
-            step_active = step_counter[active_idx]
-            mask_active = seq_positions <= (2 * step_active).unsqueeze(1)
+    actions, log_probs, entropy, _, _ = actor(
+        path_states,
+        graph_state_mask=graph_state_mask,
+        context_quest_bert_emb=bert_quest,
+    )
 
-            actions, log_probs, entropy, _, _ = actor(
-                path_active,
-                graph_state_mask=mask_active,
-                context_quest_bert_emb=bert_quest_emb[active_idx],
-            )
+    row_idx = torch.arange(path_states.shape[0], device=device)
+    current_state_indices = 2 * current_steps
+    current_states = path_states[row_idx, current_state_indices, :]
 
-            row_idx = torch.arange(active_idx.size(0), device=device)
-            current_states = path_active[row_idx, 2 * step_active, :]
+    observation = ReinforcedUnsupervisedEnv.RUE_Observation(
+        state=current_states,
+        answer_id=answer_ids_tensor,
+    )
 
-            observation = ReinforcedUnsupervisedEnv.RUE_Observation(
-                state=current_states,
-                answer_id=answer_ids_expanded[active_idx],
-            )
+    next_states, extrinsic_reward, done = env.step(observation, actions)
+    llm_reward, _ = calculate_llm_reward_supasoft(
+        hunch_llm,
+        next_states.unsqueeze(1),
+        bert_ans,
+        padded_questions,
+        pad_token_id,
+    )
 
-            next_states, extrinsic_reward, done = env.step(observation, actions)
-            llm_reward, _ = calculate_llm_reward_supasoft(
-                hunch_llm,
-                next_states.unsqueeze(1),
-                answer_bert_expanded[active_idx],
-                question_tokens_expanded[active_idx],
-                pad_token_id,
-            )
+    combined_reward = llm_reward.squeeze() + extrinsic_reward.squeeze()
 
-            path_trace[active_idx, 2 * step_active + 1, :] = actions
-            path_trace[active_idx, 2 * step_active + 2, :] = next_states
+    path_states_updated = path_states.clone()
+    action_indices = 2 * current_steps + 1
+    state_indices = action_indices + 1
 
-            rewards = llm_reward.squeeze() + extrinsic_reward.squeeze()
+    within_bounds = state_indices < max_path_len
+    if not within_bounds.all():
+        overflow_mask = ~within_bounds
+        action_indices = torch.clamp(action_indices, max=max_path_len - 2)
+        state_indices = action_indices + 1
+        done = done.clone()
+        done[overflow_mask] = True
 
-            replay_buffer.add_transitions(
-                question_n_exp_idxs=question_idx_expanded[active_idx].detach().cpu(),
-                quest_bert_emb=bert_quest_emb[active_idx].detach().to(cpu_device),
-                cur_states=current_states.detach().to(cpu_device),
-                actions=actions.detach().to(cpu_device),
-                rewards=rewards.detach().to(cpu_device),
-                next_states=next_states.detach().to(cpu_device),
-                dones=done.squeeze().detach().to(torch.bool).cpu(),
-                path_states=path_trace[active_idx].detach().cpu(),
-                log_probs=log_probs.detach().cpu(),
-                entropies=entropy.detach().cpu(),
-                step_counter=step_active.detach().cpu(),
-            )
+    path_states_updated[row_idx, action_indices, :] = actions
+    path_states_updated[row_idx, state_indices, :] = next_states
 
-            total_added += active_idx.size(0)
-
-            step_counter[active_idx] = step_active + 1
-            done_mask[active_idx] = done.squeeze(-1).bool() | (
-                step_counter[active_idx] >= max_transitions
-            )
+    replay_buffer.add_transitions(
+        question_n_exp_idxs=buffer_indices.to(torch.long),
+        quest_bert_emb=bert_quest.detach().to(cpu_device),
+        cur_states=current_states.detach().to(cpu_device),
+        actions=actions.detach().to(cpu_device),
+        rewards=combined_reward.detach().to(cpu_device),
+        next_states=next_states.detach().to(cpu_device),
+        dones=done.squeeze(-1).detach().to(torch.bool).cpu(),
+        path_states=path_states_updated.detach().cpu(),
+        log_probs=log_probs.detach().cpu(),
+        entropies=entropy.detach().cpu(),
+        step_counter=current_steps.detach().cpu(),
+    )
 
     if actor_mode:
         actor.train()
     if hunch_mode:
         hunch_llm.train()
 
-    return total_added
+    return path_states.shape[0]
 
 
 
@@ -1361,7 +1358,6 @@ def train_multihopkg(
     )
     hydration_rollouts = max(1, num_simulations_per_ques)
     updates_since_hydration = 0
-    recent_question_ids: List[int] = []
     train_df = data_partitions.train
     eval_interval_updates = max(1, num_batches_till_eval)
     last_eval_updates = 0
@@ -1531,7 +1527,6 @@ def train_multihopkg(
             question_counts = {
                 int(qid): num_simulations_per_ques for qid in sampled_ids
             }
-            recent_question_ids = sampled_ids
 
             (
                 _,
@@ -1573,9 +1568,8 @@ def train_multihopkg(
                     hunch_llm=hunch_llm,
                     replay_buffer=replay_buffer,
                     train_df=train_df,
-                    question_ids=recent_question_ids,
+                    question_ids=replay_buffer.qet_question_ids(),
                     num_rollouts_per_question=hydration_rollouts,
-                    max_env_steps=replay_buffer.max_env_steps,
                     pad_token_id=pad_token_id,
                     logger=globals().get("logger"),
                 )
