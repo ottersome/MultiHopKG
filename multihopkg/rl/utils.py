@@ -188,37 +188,67 @@ class QuestionReplayBuffer:
             step_counter,
         )
 
-    def pop_oldest_batch(self, question_ids: Sequence[int]) -> Tuple[torch.Tensor, ...]:
+    def get_oldest_experiences(self, question_counts: Dict[int, int], device: torch.device)\
+            -> Tuple[torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,]:
+        
+        # Ensure we don't get more requests then we can serve
+        qids, qid_counts = zip(*question_counts.items())
+        assert all([qid_count <= self.experiences_per_question for qid_count in qid_counts]), \
+            f"Cannot sample more than {self.experiences_per_question} experiences from each question"
 
+        # Generate idxs to sample 
+        qids_idxs = []
+        exp_idxs = []
         cap = self.experiences_per_question
-        buffer_indices: List[int] = []
-        slot_indices: List[int] = []
-
-        for qid in question_ids:
-            buf_idx = qid
-            if self.count[buf_idx] <= 0:
-                raise ValueError("There should be no empty replay buffers. Theres a severe logic error.")
-            buffer_indices.append(buf_idx)
-            slot_indices.append(int(self.read_ptr[buf_idx].item()))
-
-        buf_idx_tensor = torch.tensor(buffer_indices, dtype=torch.long)
-        slot_tensor = torch.tensor(slot_indices, dtype=torch.long)
-
-        # Advance read pointer and decrease counts to emulate FIFO pop
-        for buf_idx in buf_idx_tensor.tolist():
-            self.read_ptr[buf_idx] = (self.read_ptr[buf_idx] + 1) % cap
-            if self.count[buf_idx] > 0:
-                self.count[buf_idx] -= 1
-
-        self._total_size = int(self.count.sum().item())
+        for qid, qid_count in zip(qids, qid_counts):
+            qids_idxs += [qid] * qid_count
+            _exp_idxs = torch.arange(self.write_ptr[qid].item(), (self.write_ptr[qid].item() + qid_count) % cap)
+            exp_idxs.append(_exp_idxs)
+        experiences_idxs = torch.concat(exp_idxs)
+        qids_idxs = torch.Tensor(qids_idxs).to(torch.long)
 
         return (
-            buf_idx_tensor,
-            self.quest_bert_emb[buf_idx_tensor, slot_tensor].clone(),
-            self.path_states[buf_idx_tensor, slot_tensor].clone(),
-            self.actions[buf_idx_tensor, slot_tensor].clone(),
-            self.next_states[buf_idx_tensor, slot_tensor].clone(),
-            self.step_counter[buf_idx_tensor, slot_tensor].clone(),
-            self.done[buf_idx_tensor, slot_tensor].clone(),
-            self.step_counter[buf_idx_tensor].clone()
+            qids_idxs.to(device),
+            experiences_idxs.to(device),
+            self.quest_bert_emb[qids_idxs, experiences_idxs].clone().to(device),
+            self.path_states[qids_idxs, experiences_idxs].clone().to(device),
+            self.actions[qids_idxs, experiences_idxs].clone().to(device),
+            self.next_states[qids_idxs, experiences_idxs].clone().to(device),
+            self.step_counter[qids_idxs, experiences_idxs].clone().to(device),
+            self.done[qids_idxs, experiences_idxs].clone().to(device),
         )
+    
+    # def pop_oldest_batch(self, question_ids: Sequence[int]) -> Tuple[torch.Tensor, ...]:
+    #
+    #     cap = self.experiences_per_question
+    #     buffer_indices: List[int] = []
+    #     slot_indices: List[int] = []
+    #
+    #     for qid in question_ids:
+    #         buf_idx = qid
+    #         if self.count[buf_idx] <= 0:
+    #             raise ValueError("There should be no empty replay buffers. Theres a severe logic error.")
+    #         buffer_indices.append(buf_idx)
+    #         slot_indices.append(int(self.read_ptr[buf_idx].item()))
+    #
+    #     buf_idx_tensor = torch.tensor(buffer_indices, dtype=torch.long)
+    #     slot_tensor = torch.tensor(slot_indices, dtype=torch.long)
+    #
+    #     # Advance read pointer and decrease counts to emulate FIFO pop
+    #     for buf_idx in buf_idx_tensor.tolist():
+    #         self.read_ptr[buf_idx] = (self.read_ptr[buf_idx] + 1) % cap
+    #         if self.count[buf_idx] > 0:
+    #             self.count[buf_idx] -= 1
+    #
+    #     self._total_size = int(self.count.sum().item())
+    #
+    #     return (
+    #         buf_idx_tensor,
+    #         self.quest_bert_emb[buf_idx_tensor, slot_tensor].clone(),
+    #         self.path_states[buf_idx_tensor, slot_tensor].clone(),
+    #         self.actions[buf_idx_tensor, slot_tensor].clone(),
+    #         self.next_states[buf_idx_tensor, slot_tensor].clone(),
+    #         self.step_counter[buf_idx_tensor, slot_tensor].clone(),
+    #         self.done[buf_idx_tensor, slot_tensor].clone(),
+    #         self.step_counter[buf_idx_tensor].clone()
+    #     )

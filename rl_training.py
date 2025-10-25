@@ -858,9 +858,9 @@ def hydrate_replay_buffer(
         path_states,
         actions,
         next_states,
-        done_flags,
         step_counter,
-    ) = replay_buffer.pop_oldest_batch(sampled_qids)
+        done_flags,
+    ) = replay_buffer.get_oldest_experiences(question_counts, device)
 
     mini_batch = train_df.loc[question_ids]
 
