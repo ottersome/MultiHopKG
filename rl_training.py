@@ -788,7 +788,7 @@ def prepopulate_replay_buffer(
             padded_questions_tokens.view(-1, padded_questions_tokens.shape[-1]),
             pad_token_id,
         )
-        combined_reward = llm_reward + extrinsic_reward.squeeze(-1)
+        combined_reward = llm_reward #+ extrinsic_reward.squeeze(-1)  #NOTE: at some point we might be interested in using this extrinsic reward.
         init_states = init_states.detach().to(cpu_device)
         padded_path = torch.full([init_states.shape[0], max_env_steps*2 - 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float)
         padded_path[:,0,:] = init_states
@@ -933,7 +933,7 @@ def hydrate_replay_buffer(
         pad_token_id,
     )
 
-    combined_reward = llm_reward.squeeze() + extrinsic_reward.squeeze()
+    combined_reward = llm_reward.squeeze()# + extrinsic_reward.squeeze()
 
     # path_states_updated = path_states.clone()
     # action_indices = 2 * current_steps + 1
@@ -1796,27 +1796,27 @@ def main():
     ########################################
     # Setup the Vector Searchers
     ########################################
-    # TODO: Improve the ANN index manager for rotational models
-    if ge_geom == "pRotatE":  # for rotational kge models
-        ann_index_manager_ent = ANN_IndexMan_pRotatE(
-            kge_model.get_all_entity_embeddings_wo_dropout(),
-            embedding_range=kge_model.embedding_range.item(),
-        )
-        ann_index_manager_rel = ANN_IndexMan_pRotatE(
-            kge_model.get_all_relations_embeddings_wo_dropout(),
-            embedding_range=kge_model.embedding_range.item(),
-        )
-    else:  # for non-rotational kge models
-        ann_index_manager_ent = ANN_IndexMan(
-            kge_model.get_all_entity_embeddings_wo_dropout(),
-            exact_computation=True,
-            nlist=100,
-        )
-        ann_index_manager_rel = ANN_IndexMan(
-            kge_model.get_all_relations_embeddings_wo_dropout(),
-            exact_computation=True,
-            nlist=100,
-        )
+    # TODO: Reincorporate it for extrinsic reward.
+    # if ge_geom == "pRotatE":  # for rotational kge models
+    #     ann_index_manager_ent = ANN_IndexMan_pRotatE(
+    #         kge_model.get_all_entity_embeddings_wo_dropout(),
+    #         embedding_range=kge_model.embedding_range.item(),
+    #     )
+    #     ann_index_manager_rel = ANN_IndexMan_pRotatE(
+    #         kge_model.get_all_relations_embeddings_wo_dropout(),
+    #         embedding_range=kge_model.embedding_range.item(),
+    #     )
+    # else:  # for non-rotational kge models
+    #     ann_index_manager_ent = ANN_IndexMan(
+    #         kge_model.get_all_entity_embeddings_wo_dropout(),
+    #         exact_computation=True,
+    #         nlist=100,
+    #     )
+    #     ann_index_manager_rel = ANN_IndexMan(
+    #         kge_model.get_all_relations_embeddings_wo_dropout(),
+    #         exact_computation=True,
+    #         nlist=100,
+    #     )
 
     # Setup the pretrained language model
     logger.info(":: Setting up the pretrained language model")
