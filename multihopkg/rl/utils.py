@@ -76,7 +76,7 @@ class QuestionReplayBuffer:
 
     def add_transitions(
         self,
-        question_n_exp_idxs: torch.Tensor,   # [E]
+        questions_ids: torch.Tensor,   # [E]
         quest_bert_emb: torch.Tensor,        # [E, B]
         cur_states: torch.Tensor,            # [E, A]
         actions: torch.Tensor,               # [E, A]
@@ -95,9 +95,9 @@ class QuestionReplayBuffer:
         device = self.cur_states.device
         cap = self.experiences_per_question
 
-        qids, qids_count = torch.unique(question_n_exp_idxs, return_counts=True)
+        qids, qids_count = torch.unique(questions_ids, return_counts=True)
         start = self.write_ptr[qids] # [E]
-        start_tiled = self.write_ptr[question_n_exp_idxs] # [E]
+        start_tiled = self.write_ptr[questions_ids] # [E]
         arange_N = torch.concat([
             torch.arange(qid_count, device=device)      # [N]
             for qid_count in qids_count
@@ -106,16 +106,16 @@ class QuestionReplayBuffer:
 
         # Write into buffer (parallelized)
         # TODO: We will likely want to remove cur_states as it may covered by path_states
-        self.quest_bert_emb[question_n_exp_idxs, exp_ids] = quest_bert_emb.to(device)
-        self.cur_states[question_n_exp_idxs, exp_ids] = cur_states.to(device)
-        self.actions[question_n_exp_idxs, exp_ids] = actions.to(device)
-        self.rewards[question_n_exp_idxs, exp_ids] = rewards.to(device)
-        self.next_states[question_n_exp_idxs, exp_ids] = next_states.to(device)
-        self.done[question_n_exp_idxs, exp_ids] = dones.to(device)
-        self.path_states[question_n_exp_idxs, exp_ids] = path_states.to(device)
-        self.log_prob[question_n_exp_idxs, exp_ids] = log_probs.to(device)
-        self.entropy[question_n_exp_idxs, exp_ids] = entropies.to(device)
-        self.step_counter[question_n_exp_idxs, exp_ids] = step_counter.to(device)
+        self.quest_bert_emb[questions_ids, exp_ids] = quest_bert_emb.to(device)
+        self.cur_states[questions_ids, exp_ids] = cur_states.to(device)
+        self.actions[questions_ids, exp_ids] = actions.to(device)
+        self.rewards[questions_ids, exp_ids] = rewards.to(device)
+        self.next_states[questions_ids, exp_ids] = next_states.to(device)
+        self.done[questions_ids, exp_ids] = dones.to(device)
+        self.path_states[questions_ids, exp_ids] = path_states.to(device)
+        self.log_prob[questions_ids, exp_ids] = log_probs.to(device)
+        self.entropy[questions_ids, exp_ids] = entropies.to(device)
+        self.step_counter[questions_ids, exp_ids] = step_counter.to(device)
 
         # Advance write pointer
         self.write_ptr[qids] = (start + qids_count) % cap

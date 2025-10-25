@@ -802,7 +802,7 @@ def prepopulate_replay_buffer(
         state_dim = init_states.shape[-1]
         question_n_exp_idxs = torch.Tensor(mini_batch.index).to(torch.long).unsqueeze(1).repeat(1, num_simulations_per_question).view(-1)
         replay_buffer.add_transitions(
-            question_n_exp_idxs=question_n_exp_idxs,
+            questions_ids=question_n_exp_idxs,
             quest_bert_emb=bert_quest_emb,
             cur_states=init_states.view(-1, state_dim), # TODO: we might want to remove this since we already have path_states
             actions=action.view(-1, action_dim).detach().to(cpu_device),
@@ -975,7 +975,7 @@ def hydrate_replay_buffer(
     path_states_updated[row_idx, state_indices, :] = next_states
 
     replay_buffer.add_transitions(
-        question_n_exp_idxs=buffer_indices.to(torch.long),
+        questions_ids=buffer_indices.to(torch.long),
         quest_bert_emb=bert_quest.detach().to(cpu_device),
         cur_states=current_states.detach().to(cpu_device),
         actions=actions.detach().to(cpu_device),
