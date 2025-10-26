@@ -830,7 +830,7 @@ def hydrate_replay_buffer(
     hunch_llm: nn.Module,
     replay_buffer: QuestionReplayBuffer,
     train_df: pd.DataFrame,
-    question_ids: Sequence[int],
+    traindf_question_ids: Sequence[int],
     pad_token_id: int,
 ) -> int:
     """Generate new transitions by extending oldest trajectories in replay."""
@@ -845,15 +845,16 @@ def hydrate_replay_buffer(
     state_dim = replay_buffer.path_states.shape[-1]
     max_path_len =  replay_buffer.get_max_path_len()
     max_steps = (max_path_len-1)//2
-    amount_ques = len(question_ids)
+    amount_ques = len(traindf_question_ids)
     seq_positions = torch.arange(max_path_len, device=device).unsqueeze(0)
 
-    sample_size = min(len(question_ids), num_hydration_samples)
+    sample_size = min(len(traindf_question_ids), num_hydration_samples)
 
     # Get Samples
-    sampled_qids = random.choices(question_ids, k=sample_size)
+    question_counts = Counter(random.choices(traindf_question_ids, k=sample_size))
     (
-        buffer_indices,
+        sampled_qidx,
+        experiences_qids,
         bert_quest,
         path_states,
         actions,
@@ -862,7 +863,7 @@ def hydrate_replay_buffer(
         done_flags,
     ) = replay_buffer.get_oldest_experiences(question_counts, device)
 
-    mini_batch = train_df.loc[question_ids]
+    mini_batch = train_df.loc[traindf_question_ids]
 
     questions_tokens = [torch.Tensor(ques).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
     padded_questions_tokens = torch.nn.utils.rnn.pad_sequence(
@@ -951,7 +952,7 @@ def hydrate_replay_buffer(
     # path_states_updated[row_idx, state_indices, :] = next_states
 
     replay_buffer.add_transitions(
-        questions_ids=buffer_indices.to(torch.long),
+        questions_ids=sampled_qidx.to(cpu_device),
         quest_bert_emb=bert_quest.detach().to(cpu_device),
         cur_states=current_states.detach().to(cpu_device),
         actions=actions.detach().to(cpu_device),
@@ -1493,7 +1494,7 @@ def train_multihopkg(
                     hunch_llm=hunch_llm,
                     replay_buffer=replay_buffer,
                     train_df=train_df,
-                    question_ids=question_ids,
+                    traindf_question_ids=question_ids,
                     pad_token_id=pad_token_id,
                 )
                 if added:
