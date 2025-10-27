@@ -790,7 +790,7 @@ def prepopulate_replay_buffer(
         )
         combined_reward = llm_reward #+ extrinsic_reward.squeeze(-1)  #NOTE: at some point we might be interested in using this extrinsic reward.
         init_states = init_states.detach().to(cpu_device)
-        padded_path = torch.full([init_states.shape[0], max_env_steps*2 - 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float)
+        padded_path = torch.full([init_states.shape[0], max_env_steps*2 + 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float)
         padded_path[:,0,:] = init_states
 
         # Obviously this is only a one step thing:
@@ -1860,7 +1860,7 @@ def main():
         dim_action=dim_relation,
         enc_ff_dim=args.enc_ff_dim,
         dim_observation=dim_observation,
-        max_path_length=args.max_env_steps * 2 -1, # We have to account for actions too
+        max_path_length=args.max_env_steps * 2 + 1, # We have to account for actions too
         encoder_num_layers=args.num_enc_layers,
         encoder_num_heads=args.num_enc_heads,
         encoder_dropout=args.enc_dropout,
@@ -1935,7 +1935,7 @@ def main():
         enc_ff_dim=args.enc_ff_dim,
         enc_dropout=args.enc_dropout,
         dim_hidden=args.critic_q_hiddim,
-        max_seq_length=args.max_env_steps * 2 - 1,
+        max_seq_length=args.max_env_steps * 2 + 1,
         ques_emb_dim=bert_emb_dim,
     ).to(args.device)
     critic_q2 = GraphCriticQ(
@@ -1946,7 +1946,7 @@ def main():
         enc_ff_dim=args.enc_ff_dim,
         enc_dropout=args.enc_dropout,
         dim_hidden=args.critic_q_hiddim,
-        max_seq_length=args.max_env_steps * 2 - 1,
+        max_seq_length=args.max_env_steps * 2 + 1,
         ques_emb_dim=bert_emb_dim,
     ).to(args.device)
     value_net = GraphCriticV(
@@ -1956,7 +1956,7 @@ def main():
         enc_ff_dim=args.enc_ff_dim,
         enc_dropout=args.enc_dropout,
         dim_hidden=args.critic_v_hiddim,
-        max_seq_length=args.max_env_steps * 2 - 1,
+        max_seq_length=args.max_env_steps * 2 + 1,
         ques_emb_dim=bert_emb_dim,
     ).to(args.device)
 

@@ -56,7 +56,7 @@ class QuestionReplayBuffer:
         self.next_states = torch.zeros((self.num_questions, self.experiences_per_question, self._action_shape))
         self.done = torch.zeros((self.num_questions, self.experiences_per_question), dtype=torch.bool)
         self.path_states = torch.zeros(
-            (self.num_questions , self.experiences_per_question, self.max_env_steps * 2 - 1, self._action_shape)
+            (self.num_questions , self.experiences_per_question, self.max_env_steps * 2 + 1, self._action_shape)
         )
         self.log_prob = torch.zeros((self.num_questions, self.experiences_per_question))
         self.entropy = torch.zeros((self.num_questions, self.experiences_per_question))
