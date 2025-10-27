@@ -483,8 +483,9 @@ class GraphEmbeddingDataset(Dataset):
         self.id2rel = id2rel
         self.embeddings_dim = id2ent.embedding_dim
 
+    @staticmethod
     def _merge_questions_and_answers(
-        self, questions: List[List[int]], answers: List[List[int]], sep_token: int
+        questions: List[List[int]], answers: List[List[int]], sep_token: int
     ) -> Tuple[List[List[int]], List[List[int]]]:
         """
         Merges questions and answers into a single string, separated by a token.
