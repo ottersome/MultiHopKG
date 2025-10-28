@@ -27,6 +27,8 @@ import debugpy
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from transformers.models.bart.modeling_bart import BART_GENERATION_EXAMPLE
+from multihopkg.datasets import GraphEmbeddingDataset
 from multihopkg.utils.data_structures import DataPartitions
 from multihopkg.utils.ops import ensure_list_of_ints
 import torch
@@ -762,6 +764,9 @@ def prepopulate_replay_buffer(
 
         #.... reset
         init_states = env.reset(bert_quest_emb)
+        # init_states = init_states.detach().to(cpu_device)
+        padded_path = torch.full([init_states.shape[0], max_env_steps*2 + 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float)
+        padded_path[:,0,:] = init_states
 
         #.... Action
 
@@ -781,17 +786,17 @@ def prepopulate_replay_buffer(
 
         # Calculate Main Reward (Yeah, outside the environment for now)
         bert_emb_dim = answer_bert_heuristics.shape[-1]
+        next_state_path = padded_path.clone()
+        next_state_path[:,1,:] = action
+        next_state_path[:,2,:] = next_state
         llm_reward, _ = calculate_llm_reward_supasoft(
             hunch_llm,
-            next_state.unsqueeze(1),
+            next_state_path,
             answer_bert_heuristics.view(-1, bert_emb_dim),
             padded_questions_tokens.view(-1, padded_questions_tokens.shape[-1]),
             pad_token_id,
         )
         combined_reward = llm_reward #+ extrinsic_reward.squeeze(-1)  #NOTE: at some point we might be interested in using this extrinsic reward.
-        init_states = init_states.detach().to(cpu_device)
-        padded_path = torch.full([init_states.shape[0], max_env_steps*2 + 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float)
-        padded_path[:,0,:] = init_states
 
         # Obviously this is only a one step thing:
         step_counter = torch.zeros_like(llm_reward, dtype=torch.long)
@@ -925,6 +930,10 @@ def hydrate_replay_buffer(
     next_states, extrinsic_reward, done = env.step(observation, actions)
 
     # Calculate Reward
+    # TODO: Confirm this works well
+    next_state_path = path_states.clone()
+    next_state_path[row_idx, (step_counter + 1) * 2 + 1, :] = next_states
+    next_state_path[row_idx, (step_counter + 1) * 2 + 2, :] = next_states
     llm_reward, _ = calculate_llm_reward_supasoft(
         hunch_llm,
         #NOTE : Check on this unsqueeze
@@ -974,7 +983,6 @@ def hydrate_replay_buffer(
 
 @torch.no_grad()
 def evaluate_seq2seq_outputs(
-    *,
     env: ReinforcedUnsupervisedEnv,
     nav_agent: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
@@ -982,13 +990,12 @@ def evaluate_seq2seq_outputs(
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
     batch_size: int,
+    bert_dim: int,
     max_env_steps: int,
-    pad_token_id: int,
-    writer: SummaryWriter,
-    wandb_on: bool,
+    bart_pad_token_id: int,
     global_step: int,
-    logger: Optional[logging.Logger],
     prefix: str,
+    writer: SummaryWriter,
     num_samples_to_log: int = 5,
 ) -> Dict[str, float]:
     """Run policy evaluation on a dataset and log seq2seq decoder outputs."""
@@ -998,9 +1005,10 @@ def evaluate_seq2seq_outputs(
 
     device = next(nav_agent.parameters()).device
     state_dim = nav_agent.observation_dim
-    max_path_len = max_env_steps * 2 - 1
+    max_path_len = max_env_steps * 2 + 1
     max_transitions = max_env_steps
 
+    assert isinstance(bert_dim, int)
     nav_mode = nav_agent.training
     llm_mode = hunch_llm.training
     nav_agent.eval()
@@ -1026,37 +1034,48 @@ def evaluate_seq2seq_outputs(
 
     for batch_idx in range(total_batches):
         # Get the Minibatch
+        start = batch_idx * batch_size
+        end = min((start + batch_size), len(dataset))
         mini_batch = dataset.iloc[
-            batch_idx * batch_size : (batch_idx + 1) * batch_size
+            start : end
         ]
+        _batch_size = end - start
 
         # Get individual columns and do post processing
-        question_tokens_list = [torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()]
-        answer_tokens_list = [torch.tensor(ans, dtype=torch.long) for ans in mini_batch["enc_answer"].tolist()]
+        question_tokens_list = [q for q in mini_batch["enc_questions"].tolist()]
+        answer_tokens_list = [ans for ans in mini_batch["enc_answer"].tolist()]
+        # TODO: Confirm that question_token_list has a `2` at the end (separator token)
+        question_tokens_list_tensor = [torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()]
+        padded_questions = torch.nn.utils.rnn.pad_sequence(question_tokens_list_tensor, batch_first=True, padding_value=bart_pad_token_id).to(device)
+        bart_questions_mask = padded_questions != bart_pad_token_id
+        answer_tokens_list_tensor = [torch.tensor(ans, dtype=torch.long) for ans in mini_batch["enc_answer"].tolist()]
+        # padded_answers = torch.nn.utils.rnn.pad_sequence(answer_tokens_list_tensor, batch_first=True, padding_value=bart_pad_token_id).to(device)
+        # max_answer_len = max(len(ans) for ans in answer_tokens_list_tensor)
 
-        padded_answers = torch.nn.utils.rnn.pad_sequence(answer_tokens_list, batch_first=True, padding_value=pad_token_id).to(device)
         # TODO: Check if we actually have the answer tokens
-        labels = padded_answers.clone()
-        labels[labels == pad_token_id] = -100
-        bert_quest = torch.tensor(mini_batch["bert_ques_emb"].tolist(), dtype=torch.float32, device=device)
-        bert_ans = torch.tensor(mini_batch["bert_ans_emb"].tolist(), dtype=torch.float32, device=device)
+        # labels = padded_answers.clone()
+        # labels[labels == pad_token_id] = -100
+        bert_quest = torch.tensor(mini_batch.iloc[:,3 + bert_dim:].values.tolist(), dtype=torch.float32, device=device)
+        bert_ans = torch.tensor(mini_batch.iloc[:,3:3 + bert_dim].values.tolist(), dtype=torch.float32, device=device)
 
         paths = mini_batch["triples_ints"].tolist()
-        answer_ids = torch.tensor([path[-1] for path in paths], dtype=torch.long, device=device)
+        answer_entity_ids = torch.tensor([path[-1] for path in paths], dtype=torch.long, device=device)
         init_states = env.reset(bert_quest)
         path_trace = torch.full(
-            (batch_size, max_path_len, state_dim),
+            (_batch_size, max_path_len, state_dim),
             PATH_PADDING_VALUE,
             device=device,
             dtype=init_states.dtype,
         )
         path_trace[:, 0, :] = init_states
 
-        step_counter = torch.zeros(batch_size, dtype=torch.long, device=device)
-        done_mask = torch.zeros(batch_size, dtype=torch.bool, device=device)
-        success_flags = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        step_counter = torch.zeros(_batch_size, dtype=torch.long, device=device)
+        done_mask = torch.zeros(_batch_size, dtype=torch.bool, device=device)
+        # success_flags = torch.zeros(_batch_size, dtype=torch.bool, device=device)
 
-        for _ in range(max_transitions):
+        step_active = torch.Tensor([])
+
+        for i in range(max_transitions):
             active_idx = (~done_mask).nonzero(as_tuple=False).squeeze(-1)
             if active_idx.numel() == 0:
                 break
@@ -1072,97 +1091,155 @@ def evaluate_seq2seq_outputs(
             )
 
             row_idx = torch.arange(active_idx.size(0), device=device)
+            # TODO: confirm this looks okay
             current_states = path_active[row_idx, 2 * step_active, :]
 
             observation = ReinforcedUnsupervisedEnv.RUE_Observation(
                 state=current_states,
-                answer_id=answer_ids[active_idx],
+                answer_id=answer_entity_ids[active_idx],
             )
+
+            # Agent Take Step
             next_states, extrinsic_reward, done = env.step(observation, actions)
 
             path_trace[active_idx, 2 * step_active + 1, :] = actions
             path_trace[active_idx, 2 * step_active + 2, :] = next_states
 
-            success_flags[active_idx] |= done.squeeze(-1).bool()
+            # success_flags[active_idx] |= done.squeeze(-1).bool()
 
             step_counter[active_idx] = step_active + 1
-            done_mask[active_idx] = done.squeeze(-1).bool() | (
-                step_counter[active_idx] >= max_transitions
-            )
 
-        final_indices = torch.clamp(2 * step_counter, max=max_path_len - 1)
-        final_states = path_trace[
-            torch.arange(rollout_count, device=device), final_indices, :
-        ].unsqueeze(1)
-        encoder_attention_mask = torch.ones(
-            (rollout_count, final_states.shape[1]), dtype=torch.long, device=device
+            # TOREM: This should not be necessary
+            # done_mask[active_idx] = done.squeeze(-1).bool() | (
+            #     step_counter[active_idx] >= max_transitions
+            # )
+
+        # final_indices = torch.clamp(2 * step_counter, max=max_path_len - 1) # Tstep_activeOREM: I really dont see this being necessary for now
+        idxs_out_of_range = [step_counter[i] > max_transitions for i in range(len(step_counter))]
+        assert not any(idxs_out_of_range), "There should be no id out of range" # TOREM: After debugging for long enough
+        # final_states = path_trace[torch.arange(_batch_size, device=device), step_counter, : ].unsqueeze(1)
+        # encoder_attention_mask = torch.ones((_batch_size, final_states.shape[1]), dtype=torch.long, device=device)
+        encoder_attention_mask = torch.zeros((_batch_size, max_path_len), dtype=torch.bool, device=device)
+        for i in range(_batch_size):
+            encoder_attention_mask[i, :step_active[i]] = True
+
+        translated_embeddings = hunch_llm.embedding_translator(path_trace) # type: ignore
+        ########################################
+        # TODO: Logit Loss Calculation
+        ########################################
+        qna_tokens, answer_mask = GraphEmbeddingDataset._merge_questions_and_answers(
+            question_tokens_list, answer_tokens_list, bart_pad_token_id
         )
-
-        translated_embeddings = hunch_llm.embedding_translator(final_states)
-        outputs = hunch_llm.bart(
+        qna_tokens_tensor = [ torch.tensor(qna_token, dtype=torch.long, device=device) for qna_token in qna_tokens ]
+        padded_qna_tokens = torch.nn.utils.rnn.pad_sequence(
+            qna_tokens_tensor, batch_first=True, padding_value=bart_pad_token_id
+        )
+        decoder_attention_mask = torch.ones_like(padded_qna_tokens, dtype=torch.long, device=device)
+        decoder_attention_mask[qna_tokens == bart_pad_token_id] = 0
+        bart_outputs = hunch_llm.bart( # type:ignore
             inputs_embeds=translated_embeddings,
             attention_mask=encoder_attention_mask,
-            labels=repeated_answers,
-            output_hidden_states=False,
-            return_dict=True,
+            decoder_input_ids=padded_qna_tokens,
+            decoder_attention_mask=decoder_attention_mask,
+            # labels=padded_answers,
+            output_hidden_states=True,
         )
-        logits = outputs.logits
+        logits = bart_outputs.logits
+        #
+        anslogits_pred_list = []
+        shapes_for_reconstruction = []
+        debug_meep = []
+        for i, logit in enumerate(logits):
+            ans_pred_ids = torch.nonzero(torch.tensor(answer_mask[i])).squeeze() - 1
+            selected_logits = logit[ans_pred_ids]
+            if len(selected_logits.shape) == 1:
+                selected_logits = selected_logits.unsqueeze(0)
+            anslogits_pred_list.append(selected_logits)
+            debug_meep.append(selected_logits)
+            shapes_for_reconstruction.append(selected_logits.shape[0])
 
-        shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = repeated_answers[:, 1:].contiguous()
-        token_mask = shift_labels != pad_token_id
-        if token_mask.any():
-            nll = F.cross_entropy(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-                reduction="sum",
-                ignore_index=pad_token_id,
+        # We then concatenate it into a single 0-dim because it will simply go to cross entropy
+        anslogits_pred_list = torch.cat(anslogits_pred_list, dim=0)
+
+        # shift_logits = logits[:, :-1, :].contiguous()
+        # shift_labels = padded_answers[:, 1:].contiguous()
+        flattened_answer = torch.cat(answer_tokens_list_tensor).to(device)
+        nll = F.cross_entropy(
+            anslogits_pred_list,
+            flattened_answer,
+            reduction="sum",
+            ignore_index=bart_pad_token_id,
+        )
+        total_nll += nll.item()
+        total_tokens += flattened_answer.numel()
+        #
+        predictions = anslogits_pred_list.argmax(dim=-1)
+        total_token_correct += ((predictions == flattened_answer)).sum().item()
+
+        # For Human Visualization Later
+        offset = 0
+        legible_tokens = []
+        for size in shapes_for_reconstruction:
+            legible_tokens.append(
+                predictions[offset : offset + size].tolist()
             )
-            total_nll += nll.item()
-            total_tokens += token_mask.sum().item()
+            offset += size
 
-            predictions = shift_logits.argmax(dim=-1)
-            total_token_correct += ((predictions == shift_labels) & token_mask).sum().item()
-
-        generated_ids = hunch_llm.bart.generate(
+        ########################################
+        # Actual NLP Generation (Using Beam-search)
+        ########################################
+        # TODO: We have to to change decoder_start_token_id=answer_tokenizer.bos_token_id
+        # To include the question at the beginning
+        # We need to look for the logic in pretraining
+        # Prep questions
+        generated_ids = hunch_llm.bart.generate( # type: ignore
+            decoder_input_ids=padded_questions,
             inputs_embeds=translated_embeddings,
             attention_mask=encoder_attention_mask,
-            decoder_start_token_id=answer_tokenizer.bos_token_id,
-            eos_token_id=answer_tokenizer.eos_token_id,
-            pad_token_id=pad_token_id,
-            max_length=padded_answers.shape[1],
-            num_beams=1,
+            decoder_attention_mask=bart_questions_mask,
+            # decoder_start_token_id=answer_tokenizer.bos_token_id,
+            # eos_token_id=answer_tokenizer.eos_token_id,
+            # pad_token_id=pad_token_id,
+            max_length=100,
+            num_beams=3,
         )
 
         pred_texts = answer_tokenizer.batch_decode(
             generated_ids, skip_special_tokens=True
         )
-        ref_texts = answer_tokenizer.batch_decode(
-            padded_answers, skip_special_tokens=True
-        )
+        ref_texts = answer_tokenizer.batch_decode(answer_tokens_list, skip_special_tokens=True)
 
-        total_sequences += rollout_count
-        success_count += success_flags.sum().item()
+        total_sequences += _batch_size
+        # success_count += success_flags.sum().item()
         total_steps += step_counter.float().mean().item()
         total_generated_len += (
-            generated_ids.ne(pad_token_id).sum(dim=1).float().mean().item()
+            generated_ids.ne(bart_pad_token_id).sum(dim=1).float().mean().item()
         )
 
-        if bert_ans is not None:
-            reward_supasoft, _ = calculate_llm_reward_supasoft(
-                hunch_llm,
-                final_states,
-                bert_ans_expanded,
-                repeated_answers,
-                pad_token_id,
-            )
-            mse_alignment_sum += (-reward_supasoft).sum().item()
-            mse_alignment_count += reward_supasoft.numel()
+        # For supasoft reward
+        last_decoder_hidden_state = bart_outputs.decoder_hidden_states[-1]
+
+        # 2. Pooling to get a single vector.
+        # TODO: Figure out the attention_mask
+        pooled = (last_decoder_hidden_state * decoder_attention_mask.unsqueeze(-1)).sum(1) / encoder_attention_mask.sum(1, keepdim=True)
+        pooled = hunch_llm.activation(hunch_llm.pooler(pooled)) # type: ignore
+        bert_alignment_inference = hunch_llm.projection(pooled)  # type: ignore
+
+        # TODO: implement
+        reward_supasoft, _ = calculate_llm_reward_supasoft(
+            hunch_llm,
+            path_trace,
+            bert_ans,
+            padded_questions,
+            bart_pad_token_id,
+        )
+        # mse_alignment_sum += (-reward_supasoft).sum().item()
+        # mse_alignment_count += reward_supasoft.numel()
 
         for pred, ref, q_tokens in zip(
             pred_texts,
             ref_texts,
-            question_tokens_list,
+            question_tokens_list_tensor,
         ):
             if len(sample_logs) >= num_samples_to_log:
                 break
@@ -1177,6 +1254,7 @@ def evaluate_seq2seq_outputs(
             1 for pred, ref in zip(pred_texts, ref_texts) if pred.strip() == ref.strip()
         )
 
+    # TODO: reimplement
     metrics: Dict[str, float] = {}
     if total_tokens > 0:
         avg_ce = total_nll / total_tokens
@@ -1195,21 +1273,17 @@ def evaluate_seq2seq_outputs(
             mse_alignment_sum / mse_alignment_count
         )
 
-    if metrics:
-        for metric_name, metric_value in metrics.items():
-            writer.add_scalar(metric_name, metric_value, global_step)
-        if wandb_on:
-            wandb.log(metrics, step=global_step)
-
+    for metric_name, metric_value in metrics.items():
+        writer.add_scalar(metric_name, metric_value, global_step)
+    # if wandb_on:
+    #     wandb.log(metrics, step=global_step)
     if logger and sample_logs:
         logger.info("=== Seq2Seq Evaluation Samples (%s) ===", prefix)
         for line in sample_logs:
             logger.info(line)
 
-    if nav_mode:
-        nav_agent.train()
-    if llm_mode:
-        hunch_llm.train()
+    nav_agent.train()
+    hunch_llm.train()
 
     return metrics
 
@@ -1228,7 +1302,7 @@ def train_multihopkg(
     env: ReinforcedUnsupervisedEnv,
     data_partitions: DataPartitions,
     replay_buffer: QuestionReplayBuffer,
-    dev_df: pd.DataFrame,
+    bart_pad_token_id: int,
     mbatches_b4_eval: int,
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
@@ -1240,7 +1314,6 @@ def train_multihopkg(
     critic_q1: GraphCriticQ,
     critic_q2: GraphCriticQ,
     value_net: GraphCriticV,
-
 ):
     if answer_tokenizer.pad_token_id is None:
         raise ValueError(
@@ -1274,6 +1347,7 @@ def train_multihopkg(
     alpha_optimizer = torch.optim.Adam([log_alpha], lr=learning_rate)
     target_entropy = -float(action_shape[0])
     tau = 0.005
+    bert_dim = replay_buffer.get_question_bert_emb_dim()
     gamma = nav_agent.gamma
     hydration_interval = (
         max(1, num_update_steps // 4)
@@ -1545,14 +1619,13 @@ def train_multihopkg(
                 question_tokenizer=question_tokenizer,
                 answer_tokenizer=answer_tokenizer,
                 batch_size=batch_size_dev,
+                bert_dim=bert_dim,
                 max_env_steps=replay_buffer.max_env_steps,
-                pad_token_id=pad_token_id,
-                writer=writer,
-                wandb_on=wandb_on,
+                bart_pad_token_id=bart_pad_token_id,
                 global_step=total_gradient_updates,
-                logger=globals().get("logger"),
                 prefix="dev",
-                num_rollouts_per_question=1,
+                writer=writer,
+                num_samples_to_log=1,
             )
 
             # evaluate_seq2seq_outputs(
@@ -1960,6 +2033,21 @@ def main():
         ques_emb_dim=bert_emb_dim,
     ).to(args.device)
 
+    # # DEBUG: Again, remove this after
+    # evaluate_seq2seq_outputs(
+    #     env=env,
+    #     nav_agent=nav_agent,
+    #     hunch_llm=hunch_llm,
+    #     dataset=data_partitions.validation,
+    #     question_tokenizer=gtllm_tokenizer,
+    #     answer_tokenizer=gtllm_tokenizer,
+    #     batch_size=args.batch_size_dev,
+    #     max_env_steps=replay_buffer.max_env_steps,
+    #     bert_dim=replay_buffer.get_question_bert_emb_dim(),
+    #     bart_pad_token_id=PATH_PADDING_VALUE,
+    #     global_step=1,
+    #     prefix="dev",
+    # )
     train_multihopkg(
         epochs=args.epochs,
         batch_size=args.batch_size,
@@ -1970,7 +2058,7 @@ def main():
         env=env,
         data_partitions=data_partitions,
         replay_buffer=replay_buffer,
-        dev_df=dev_df,
+        bart_pad_token_id=BART_PADDING_VALUE,
         mbatches_b4_eval=args.batches_b4_eval,
         question_tokenizer=gtllm_tokenizer,
         answer_tokenizer=gtllm_tokenizer,
@@ -1981,7 +2069,7 @@ def main():
         num_hydration_samples=args.num_hydration_samples,
         critic_q1=critic_q1,
         critic_q2=critic_q2,
-        value_net=value_net
+        value_net=value_net,
     )
     logger.info("Done with everything. Exiting...")
 
