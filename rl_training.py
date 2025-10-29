@@ -1870,26 +1870,26 @@ def main():
     # Setup the Vector Searchers
     ########################################
     # TODO: Reincorporate it for extrinsic reward.
-    # if ge_geom == "pRotatE":  # for rotational kge models
-    #     ann_index_manager_ent = ANN_IndexMan_pRotatE(
-    #         kge_model.get_all_entity_embeddings_wo_dropout(),
-    #         embedding_range=kge_model.embedding_range.item(),
-    #     )
-    #     ann_index_manager_rel = ANN_IndexMan_pRotatE(
-    #         kge_model.get_all_relations_embeddings_wo_dropout(),
-    #         embedding_range=kge_model.embedding_range.item(),
-    #     )
-    # else:  # for non-rotational kge models
-    #     ann_index_manager_ent = ANN_IndexMan(
-    #         kge_model.get_all_entity_embeddings_wo_dropout(),
-    #         exact_computation=True,
-    #         nlist=100,
-    #     )
-    #     ann_index_manager_rel = ANN_IndexMan(
-    #         kge_model.get_all_relations_embeddings_wo_dropout(),
-    #         exact_computation=True,
-    #         nlist=100,
-    #     )
+    if ge_geom == "pRotatE":  # for rotational kge models
+        ann_index_manager_ent = ANN_IndexMan_pRotatE(
+            kge_model.get_all_entity_embeddings_wo_dropout(),
+            embedding_range=kge_model.embedding_range.item(),
+        )
+        ann_index_manager_rel = ANN_IndexMan_pRotatE(
+            kge_model.get_all_relations_embeddings_wo_dropout(),
+            embedding_range=kge_model.embedding_range.item(),
+        )
+    else:  # for non-rotational kge models
+        ann_index_manager_ent = ANN_IndexMan(
+            kge_model.get_all_entity_embeddings_wo_dropout(),
+            exact_computation=True,
+            nlist=100,
+        )
+        ann_index_manager_rel = ANN_IndexMan(
+            kge_model.get_all_relations_embeddings_wo_dropout(),
+            exact_computation=True,
+            nlist=100,
+        )
 
     # Setup the pretrained language model
     logger.info(":: Setting up the pretrained language model")
