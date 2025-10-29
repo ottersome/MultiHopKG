@@ -20,7 +20,7 @@ import random
 import sys
 import time
 import math
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from typing import Any, DefaultDict, Dict, List, Optional, Sequence, Tuple
 
 import debugpy
@@ -835,7 +835,6 @@ def hydrate_replay_buffer(
     hunch_llm: nn.Module,
     replay_buffer: QuestionReplayBuffer,
     train_df: pd.DataFrame,
-    traindf_question_ids: Sequence[int],
     pad_token_id: int,
 ) -> int:
     """Generate new transitions by extending oldest trajectories in replay."""
@@ -850,13 +849,9 @@ def hydrate_replay_buffer(
     state_dim = replay_buffer.path_states.shape[-1]
     max_path_len =  replay_buffer.get_max_path_len()
     max_steps = (max_path_len-1)//2
-    amount_ques = len(traindf_question_ids)
-    seq_positions = torch.arange(max_path_len, device=device).unsqueeze(0)
-
-    sample_size = min(len(traindf_question_ids), num_hydration_samples)
 
     # Get Samples
-    question_counts = Counter(random.choices(traindf_question_ids, k=sample_size))
+    question_counts = Counter(random.choices(train_df.index, k=num_hydration_samples))
     (
         sampled_qidx,
         experiences_qids,
@@ -867,8 +862,9 @@ def hydrate_replay_buffer(
         step_counter,
         done_flags,
     ) = replay_buffer.get_oldest_experiences(question_counts, device)
+    sampled_question_idxs = sampled_qidx.to(cpu_device).numpy().tolist()
 
-    mini_batch = train_df.loc[traindf_question_ids]
+    mini_batch = train_df.loc[sampled_question_idxs]
 
     questions_tokens = [torch.Tensor(ques).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
     padded_questions_tokens = torch.nn.utils.rnn.pad_sequence(
@@ -906,7 +902,7 @@ def hydrate_replay_buffer(
         step_counter[notdone_flags]  += 1
         done_flags[notdone_flags] = steps == max_steps
 
-    valid_mask = torch.zeros((amount_ques, max_path_len), dtype=torch.bool)
+    valid_mask = torch.zeros((num_hydration_samples, max_path_len), dtype=torch.bool)
     for row_idx in range(step_counter.shape[0]):
         valid_mask[row_idx, :step_counter[row_idx] + 1] = True
     graph_state_mask = valid_mask.unsqueeze(1).unsqueeze(2).to(device)
@@ -918,7 +914,7 @@ def hydrate_replay_buffer(
         context_quest_bert_emb=bert_quest,
     )
 
-    row_idx = torch.arange(amount_ques, device=device)
+    row_idx = torch.arange(num_hydration_samples, device=device)
     current_states = path_states[row_idx, valid_counts, :]
 
     observation = ReinforcedUnsupervisedEnv.RUE_Observation(
@@ -984,6 +980,8 @@ def hydrate_replay_buffer(
 @torch.no_grad()
 def evaluate_seq2seq_outputs(
     env: ReinforcedUnsupervisedEnv,
+    ann_index_manager_ent: ANN_IndexMan,
+    ann_index_manager_rel: ANN_IndexMan,
     nav_agent: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
     dataset: pd.DataFrame,
@@ -1027,7 +1025,8 @@ def evaluate_seq2seq_outputs(
     mse_alignment_count = 0
 
     # Samples for Humans
-    samples_idxs = np.random.choice(len(dataset), 4, replace=False)
+    samples_idxs = np.random.choice(len(dataset), 4, replace=False).tolist()
+    samples_idxs = deque(sorted(samples_idxs))
     samples_for_humans = []
 
     sample_logs: List[str] = []
@@ -1261,16 +1260,16 @@ def evaluate_seq2seq_outputs(
         # Samples For Humans collections
         # Pop idxs to set apart
         # Peek into deque if the id is mini_batch ids
-        if len(samples_idxs) > 0:
-            while samples_idxs[0] in mini_batch.index:
-                sidx = samples_idxs.popleft()
-                _local_sidxs = sidx % batch_size
-                samples_for_humans.append({
-                    "path_states": path_trace[_local_sidxs,:, :],
-                    "step_counter": step_counter[_local_sidxs],
-                    "predicted_texts": pred_texts[_local_sidxs],
-                    "reference_texts": ref_texts[_local_sidxs],
-                })
+        while len(samples_idxs) > 0 and samples_idxs[0] in mini_batch.index:
+            sidx = samples_idxs.popleft()
+            _local_sidxs = sidx % batch_size
+            samples_for_humans.append({
+                "dataset_id" : sidx,
+                "path_states": path_trace[_local_sidxs,:, :],
+                "step_counter": step_counter[_local_sidxs],
+                "predicted_texts": pred_texts[_local_sidxs],
+                "reference_texts": ref_texts[_local_sidxs],
+            })
 
 
     # TODO: reimplement
@@ -1301,6 +1300,19 @@ def evaluate_seq2seq_outputs(
         for line in sample_logs:
             logger.info(line)
 
+    # Process Metrics for Humans
+    for sample in samples_for_humans:
+        idx = sample["dataset_id"]
+        predicted_text = sample["predicted_texts"]
+        reference_text = sample["reference_texts"]
+        logger.info(
+            "----------------------------------------\n"
+            f"The following is the {idx}th sample.\n"
+            f"Reference Text is {reference_text}\n"
+            f"Predicted Text is {predicted_text}\n"
+            "----------------------------------------\n"
+        )
+
     nav_agent.train()
     hunch_llm.train()
 
@@ -1322,7 +1334,8 @@ def train_multihopkg(
     data_partitions: DataPartitions,
     replay_buffer: QuestionReplayBuffer,
     bart_pad_token_id: int,
-    mbatches_b4_eval: int,
+    ann_index_manager_ent: ANN_IndexMan,
+    ann_index_manager_rel: ANN_IndexMan,
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
     num_batches_till_eval: int,
@@ -1368,12 +1381,7 @@ def train_multihopkg(
     tau = 0.005
     bert_dim = replay_buffer.get_question_bert_emb_dim()
     gamma = nav_agent.gamma
-    hydration_interval = (
-        max(1, num_update_steps // 4)
-        if num_update_steps is not None and num_update_steps > 0
-        else 1
-    )
-    hydration_rollouts = max(1, num_simulations_per_ques)
+    hydration_interval = int(num_update_steps * 0.005)
     updates_since_hydration = 0
     train_df = data_partitions.train
     question_ids = train_df.index.values.tolist()
@@ -1586,7 +1594,6 @@ def train_multihopkg(
                     hunch_llm=hunch_llm,
                     replay_buffer=replay_buffer,
                     train_df=train_df,
-                    traindf_question_ids=question_ids,
                     pad_token_id=pad_token_id,
                 )
                 if added:
@@ -1631,6 +1638,8 @@ def train_multihopkg(
         if total_gradient_updates - last_eval_updates >= eval_interval_updates:
             evaluate_seq2seq_outputs(
                 env=env,
+                ann_index_manager_ent=ann_index_manager_ent,
+                ann_index_manager_rel=ann_index_manager_rel,
                 nav_agent=nav_agent,
                 hunch_llm=hunch_llm,
                 dataset=data_partitions.validation,
@@ -1877,13 +1886,8 @@ def main():
     #     for enc_ques in train_ques_list
     # ]
 
-    # Get the Module for Approximate Nearest Neighbor Search
-    ########################################
-    # Setup the ann index.
-    # Will be needed for obtaining observations.
-    ########################################
-
-    logger.info(":: Setting up the ANN Index")
+    # TODO: Check if the model loaded is anything but TransE (and halt if so)
+    # We currently dont support anything but TransE
 
     ########################################
     # Setup the Vector Searchers
@@ -2041,20 +2045,29 @@ def main():
     ).to(args.device)
 
     # # DEBUG: Again, remove this after
+    # local_time = time.localtime()
+    # timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
+    # writer = SummaryWriter(
+    #     log_dir=f"runs/rl_sac/{env.knowledge_graph.model_name.lower()}/{timestamp}/"
+    # )
     # evaluate_seq2seq_outputs(
     #     env=env,
+    #     ann_index_manager_ent=ann_index_manager_ent,
+    #     ann_index_manager_rel=ann_index_manager_rel,
     #     nav_agent=nav_agent,
     #     hunch_llm=hunch_llm,
     #     dataset=data_partitions.validation,
     #     question_tokenizer=gtllm_tokenizer,
     #     answer_tokenizer=gtllm_tokenizer,
     #     batch_size=args.batch_size_dev,
-    #     max_env_steps=replay_buffer.max_env_steps,
     #     bert_dim=replay_buffer.get_question_bert_emb_dim(),
+    #     max_env_steps=replay_buffer.max_env_steps,
     #     bart_pad_token_id=PATH_PADDING_VALUE,
     #     global_step=1,
     #     prefix="dev",
+    #     writer=writer
     # )
+    # exit()
     train_multihopkg(
         epochs=args.epochs,
         batch_size=args.batch_size,
@@ -2066,7 +2079,8 @@ def main():
         data_partitions=data_partitions,
         replay_buffer=replay_buffer,
         bart_pad_token_id=BART_PADDING_VALUE,
-        mbatches_b4_eval=args.batches_b4_eval,
+        ann_index_manager_ent=ann_index_manager_ent,
+        ann_index_manager_rel=ann_index_manager_rel,
         question_tokenizer=gtllm_tokenizer,
         answer_tokenizer=gtllm_tokenizer,
         num_batches_till_eval=args.num_batches_till_eval,
