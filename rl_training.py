@@ -975,8 +975,6 @@ def hydrate_replay_buffer(
 
     return path_states.shape[0]
 
-
-
 @torch.no_grad()
 def evaluate_seq2seq_outputs(
     env: ReinforcedUnsupervisedEnv,
@@ -994,6 +992,10 @@ def evaluate_seq2seq_outputs(
     global_step: int,
     prefix: str,
     writer: SummaryWriter,
+    eid2qid: Dict[int, str],
+    eid2pid: Dict[int, str],
+    qid_to_title: Dict[str, str],
+    pid_to_title: Dict[str, str],
     num_samples_to_log: int = 5,
 ) -> Dict[str, float]:
     """Run policy evaluation on a dataset and log seq2seq decoder outputs."""
@@ -1305,13 +1307,35 @@ def evaluate_seq2seq_outputs(
         idx = sample["dataset_id"]
         predicted_text = sample["predicted_texts"]
         reference_text = sample["reference_texts"]
+
+        # Now the piece of resistance: Ann Finding
+        step_counter = sample["step_counter"]
+        paths = sample["path_states"][:(step_counter*2+3),:]
+        entities = paths[0::2,:]
+        relations = paths[1::2,:]
+        # use 
+        _, entity_indices = ann_index_manager_ent.search(entities,3)
+        _, rel_indices = ann_index_manager_rel.search(relations,3)
+        firstrank_qids = [eid2qid[ei[0]] for ei in entity_indices]
+        firstrank_pids = [eid2pid[ei[0]] for ei in rel_indices]
+        ent_titles = [qid_to_title[fq] for fq in firstrank_qids]
+        rel_titles = [pid_to_title[fp] for fp in firstrank_pids]
+        final_path_titles = []
+        for i in range(len(ent_titles) + len(rel_titles)):
+            if i % 2 == 0:
+                final_path_titles += [ent_titles[i//2]]
+            else:
+                final_path_titles += [rel_titles[i//2]]
+
         logger.info(
             "----------------------------------------\n"
             f"The following is the {idx}th sample.\n"
             f"Reference Text is {reference_text}\n"
             f"Predicted Text is {predicted_text}\n"
+            f"Predicted Path is {final_path_titles}\n"
             "----------------------------------------\n"
         )
+        print("Done")
 
     nav_agent.train()
     hunch_llm.train()
@@ -1346,6 +1370,10 @@ def train_multihopkg(
     critic_q1: GraphCriticQ,
     critic_q2: GraphCriticQ,
     value_net: GraphCriticV,
+    eid2qid: Dict[int, str],
+    eid2pid: Dict[int, str],
+    qid_to_title: Dict[str, str],
+    pid_to_title: Dict[str, str],
 ):
     if answer_tokenizer.pad_token_id is None:
         raise ValueError(
@@ -1652,7 +1680,10 @@ def train_multihopkg(
                 global_step=total_gradient_updates,
                 prefix="dev",
                 writer=writer,
-                num_samples_to_log=1,
+                eid2qid = eid2qid,
+                eid2pid = eid2pid,
+                qid_to_title = qid_to_title,
+                pid_to_title = pid_to_title,
             )
 
             # evaluate_seq2seq_outputs(
@@ -1863,6 +1894,10 @@ def main():
     # Load the KGE Dictionaries
     id2ent, ent2id, id2rel, rel2id = data_utils.load_dictionaries(qna_data_path)
 
+    # Load the Entity-Rel Info
+    entities_info: Dict[str, str] = pd.read_csv(args.path_entities_info, index_col=0)["Title"].to_dict()
+    relations_info: Dict[str, str]= pd.read_csv(args.path_relations_info, index_col=0)["Title"].to_dict()
+
     ########################################
     # Load the QA Dataset
     ########################################
@@ -2044,7 +2079,7 @@ def main():
         ques_emb_dim=bert_emb_dim,
     ).to(args.device)
 
-    # # DEBUG: Again, remove this after
+    # DEBUG: Again, remove this after
     # local_time = time.localtime()
     # timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
     # writer = SummaryWriter(
@@ -2065,6 +2100,10 @@ def main():
     #     bart_pad_token_id=PATH_PADDING_VALUE,
     #     global_step=1,
     #     prefix="dev",
+    #     eid2qid=id2ent,
+    #     eid2pid=id2rel,
+    #     qid_to_title=entities_info,
+    #     pid_to_title=relations_info,
     #     writer=writer
     # )
     # exit()
@@ -2091,6 +2130,10 @@ def main():
         critic_q1=critic_q1,
         critic_q2=critic_q2,
         value_net=value_net,
+        eid2qid=id2ent,
+        eid2pid=id2rel,
+        qid_to_title=entities_info,
+        pid_to_title=relations_info,
     )
     logger.info("Done with everything. Exiting...")
 

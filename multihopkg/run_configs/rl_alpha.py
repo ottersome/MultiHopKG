@@ -87,6 +87,8 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--cached_QAMetaData_path', type=str, default="./.cache/mquake_aligned/mquake.json", help="Path to cached tokenized QA metadata JSON file")
     ap.add_argument('--force_data_prepro', '-f', action="store_true", help="Force re-processing of QA data, even if cache exists")
     ap.add_argument('--use_kge_question_embedding', '-kq', action="store_true", help="Use entity and relation embedding as the questions instead of textual question. Only valid for single-hop task. (default: False)")
+    ap.add_argument('--path_entities_info', default="data/mquake/entities_info.csv", type=str, help="CSV mapping Qids to more human-tangible info")
+    ap.add_argument('--path_relations_info', default="data/mquake/relations_info.csv", type=str, help="CSV mapping Pids to more human-tangible info")
     #TODO: Add the override_split option here
 
     # GTLLm Parameters
