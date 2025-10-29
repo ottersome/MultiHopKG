@@ -1026,6 +1026,10 @@ def evaluate_seq2seq_outputs(
     mse_alignment_sum = 0.0
     mse_alignment_count = 0
 
+    # Samples for Humans
+    samples_idxs = np.random.choice(len(dataset), 4, replace=False)
+    samples_for_humans = []
+
     sample_logs: List[str] = []
 
     seq_positions = torch.arange(max_path_len, device=device).unsqueeze(0)
@@ -1253,6 +1257,21 @@ def evaluate_seq2seq_outputs(
         exact_match_count += sum(
             1 for pred, ref in zip(pred_texts, ref_texts) if pred.strip() == ref.strip()
         )
+
+        # Samples For Humans collections
+        # Pop idxs to set apart
+        # Peek into deque if the id is mini_batch ids
+        if len(samples_idxs) > 0:
+            while samples_idxs[0] in mini_batch.index:
+                sidx = samples_idxs.popleft()
+                _local_sidxs = sidx % batch_size
+                samples_for_humans.append({
+                    "path_states": path_trace[_local_sidxs,:, :],
+                    "step_counter": step_counter[_local_sidxs],
+                    "predicted_texts": pred_texts[_local_sidxs],
+                    "reference_texts": ref_texts[_local_sidxs],
+                })
+
 
     # TODO: reimplement
     metrics: Dict[str, float] = {}
