@@ -1493,15 +1493,13 @@ def train_multihopkg(
     local_time = time.localtime()
     timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
     writer = SummaryWriter(
-        log_dir=f"runs/rl/{env.knowledge_graph.model_name.lower()}/{timestamp}/"
+        log_dir=f"runs/rl_sac/{env.knowledge_graph.model_name.lower()}/{timestamp}/"
     )
     writer.add_scalar("train_config/hydration_interval", hydration_interval, 0)
-    writer.add_scalar("train_config/hydration_rollouts", hydration_rollouts, 0)
     if wandb_on:
         wandb.log(
             {
                 "train_config/hydration_interval": hydration_interval,
-                "train_config/hydration_rollouts": hydration_rollouts,
             },
             step=0,
         )
@@ -1561,6 +1559,7 @@ def train_multihopkg(
             updates_since_hydration += 1
 
             if updates_since_hydration >= hydration_interval:
+                logger.info( f"Hydrating replay buffer with {num_hydration_samples} transitions")
                 added = hydrate_replay_buffer(
                     num_hydration_samples=num_hydration_samples,
                     env=env,
