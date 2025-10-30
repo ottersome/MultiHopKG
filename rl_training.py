@@ -913,21 +913,24 @@ def train_multihopkg(
 
         alpha = log_alpha.exp()
 
+        _batch_size = states_path.shape[0]
+        _max_path_len = states_path.shape[1]
+        batch_idxs = torch.arange(_batch_size, device=device)
         ########################################
         # Prepare States and corresp. Masks
         ########################################
         # For cur_state, action, next_state
         next_states_path = states_path.clone()
-        next_states_path[:, 2*step_counter + 1, : ] = actions
-        next_states_path[:, 2*step_counter + 2, : ] = next_states
+        next_states_path[batch_idxs, 2*step_counter + 1, : ] = actions
+        next_states_path[batch_idxs, 2*step_counter + 2, : ] = next_states
         
         # For cur_state, action
         qa_state = states_path.clone()
-        qa_state[:, 2*step_counter + 1, : ] = actions
+        qa_state[batch_idxs, 2*step_counter + 1, : ] = actions
 
         # Masking
-        graph_state_mask = torch.zeros((states_path.shape[0], states_path.shape[1]), dtype=torch.bool).to(device)
-        graph_nextState_mask = torch.zeros((states_path.shape[0], states_path.shape[1]), dtype=torch.bool).to(device)
+        graph_state_mask = torch.zeros((_batch_size, _max_path_len), dtype=torch.bool).to(device)
+        graph_nextState_mask = torch.zeros((_batch_size, _max_path_len), dtype=torch.bool).to(device)
         for i in range(graph_state_mask.shape[0]):
             graph_state_mask[i, : 2 * step_counter[i] + 3] = True
             graph_nextState_mask[i, : 2 * step_counter[i] + 2] = True
@@ -957,7 +960,7 @@ def train_multihopkg(
             context_quest_bert_emb=bert_quest_emb,
         )
         policy_state = states_path.clone()
-        policy_state[:, 2 * step_counter + 1, :] = policy_actions
+        policy_state[batch_idxs, 2 * step_counter + 1, :] = policy_actions
 
         q1_pi = critic_q1(policy_state, graph_nextState_mask, bert_quest_emb)
         q2_pi = critic_q2(policy_state, graph_nextState_mask, bert_quest_emb)
