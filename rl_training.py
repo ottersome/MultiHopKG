@@ -869,10 +869,8 @@ def train_multihopkg(
     # For moving average stabilization
     target_value_net: GraphCriticV = copy.deepcopy(value_net)
 
-    critic_optimizer = torch.optim.Adam(
-        list(critic_q1.parameters()) + list(critic_q2.parameters()),
-        lr=learning_rate,
-    )
+    q1_optimizer = torch.optim.Adam(critic_q1.parameters(), lr=learning_rate)
+    q2_optimizer = torch.optim.Adam(critic_q2.parameters(), lr=learning_rate)
     value_optimizer = torch.optim.Adam(value_net.parameters(), lr=learning_rate)
     policy_optimizer = torch.optim.Adam(nav_agent.parameters(), lr=learning_rate)
 
@@ -948,11 +946,15 @@ def train_multihopkg(
 
         q1_pred = critic_q1(qa_state, graph_nextState_mask, bert_quest_emb).squeeze()
         q2_pred = critic_q2(qa_state, graph_nextState_mask, bert_quest_emb).squeeze()
-        critic_loss = F.mse_loss(q1_pred, q_target) + F.mse_loss(q2_pred, q_target)
+        q1_loss = F.mse_loss(q1_pred, q_target)
+        q2_loss = F.mse_loss(q2_pred, q_target)
 
-        critic_optimizer.zero_grad()
-        critic_loss.backward()
-        critic_optimizer.step()
+        q1_optimizer.zero_grad()
+        q2_optimizer.zero_grad()
+        q1_loss.backward()
+        q2_loss.backward()
+        q1_optimizer.step()
+        q2_optimizer.step()
 
         policy_actions, log_probs, entropy, _, _ = nav_agent(
             states_path,
@@ -998,7 +1000,8 @@ def train_multihopkg(
         mask_token_counts = graph_nextState_mask.squeeze(1).squeeze(1).sum(dim=-1).float()
 
         return {
-            "critic_loss": critic_loss.item(),
+            "q1_loss": q1_loss.item(),
+            "q2_loss": q2_loss.item(),
             "value_loss": value_loss.item(),
             "policy_loss": policy_loss.item(),
             "alpha_loss": alpha_loss.item(),
