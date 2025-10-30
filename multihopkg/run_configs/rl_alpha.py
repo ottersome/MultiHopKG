@@ -26,13 +26,13 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--replay_min_usable_size', type=int, default=10000, help="Minium number of transitions necessary in the Replay Buffer deemed sufficient to train the model.")
     ap.add_argument('--replay_buffer_cache_path', type=str, default=".cache/replay_buffer/replay_buffer.pkl", help="Minium number of transitions necessary in the Replay Buffer deemed sufficient to train the model.")
     ap.add_argument('--force_replaybuffer_recompute', action="store_true", help="Whether to recomptue the replay buffer.")
-    ap.add_argument('--num_hydration_samples', default=64, type=int, help="How many samples to hydrate on the replay buffer after updates.")
+    ap.add_argument('--num_hydration_samples', default=256, type=int, help="How many samples to hydrate on the replay buffer after updates.")
 
     # Environment
     ap.add_argument('--max_env_steps', type=int, default=8, help="Maximum number of steps to collect from an initial configuration")
     # TODO: Empirically determine this value.
     ap.add_argument('--reached_destination_threshold', type=float, default=0.001, help="Threshold used to determine whethere or not we have reached the destination.")
-    ap.add_argument('--experiences_per_question', type=int, default=8, help="How many experiences to collect per question in the replay buffer.")
+    ap.add_argument('--experiences_per_question', type=int, default=4, help="How many experiences to collect per question in the replay buffer.")
     ap.add_argument('--num_simulations_per_ques', type=int, default=100, help="How many experiences to collect per question in the replay buffer.")
 
     # Agent
@@ -52,7 +52,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--critic_v_hiddim', type=float, default=256)
 
     # Learning Hyperparameters
-    ap.add_argument('--learning_rate', type=float, default=0.00001, help='Learning rate for optimizer (default: 1e-5)')
+    ap.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for optimizer (default: 1e-5)')
     ap.add_argument('--beta', type=float, default=0.0, help='Entropy regularization coefficient (default: 0.0)') # TODO: Check if this is still used.
     ap.add_argument('--gamma', type=float, default=12, help='Margin or scaling factor used by the knowledge graph embedding model.' \
                             'Not actually used during flexible translation (default: 12)') # TODO: Force load this value from the state_dict instead. 

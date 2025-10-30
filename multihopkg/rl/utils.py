@@ -66,7 +66,10 @@ class QuestionReplayBuffer:
         return self.bert_emb_dim
 
     def get_max_path_len(self):
-        return self.max_env_steps * 2 - 1
+        return self.max_env_steps * 2 + 1
+
+    def get_experiences_per_question(self):
+        return self.experiences_per_question
 
     def add_transitions(
         self,
@@ -96,7 +99,7 @@ class QuestionReplayBuffer:
             torch.arange(qid_count, device=device)      # [N]
             for qid_count in qids_count
         ]) 
-        exp_ids = start_tiled + arange_N % cap
+        exp_ids = (start_tiled + arange_N) % cap
 
         # Write into buffer (parallelized)
         # TODO: We will likely want to remove cur_states as it may covered by path_states
@@ -202,7 +205,7 @@ class QuestionReplayBuffer:
         cap = self.experiences_per_question
         for qid, qid_count in zip(qids, qid_counts):
             qids_idxs += [qid] * qid_count
-            _exp_idxs = torch.arange(self.write_ptr[qid].item(), (self.write_ptr[qid].item() + qid_count) % cap)
+            _exp_idxs = torch.arange(self.write_ptr[qid].item(), (self.write_ptr[qid].item() + qid_count)) % cap
             exp_idxs.append(_exp_idxs)
         experiences_idxs = torch.concat(exp_idxs)
         qids_idxs = torch.Tensor(qids_idxs).to(torch.long)

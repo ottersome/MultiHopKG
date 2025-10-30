@@ -1,4 +1,4 @@
 pretrained_gtllm_path: "./models/gtllm_bert_aligned/flagship.pt"
 nav_start_emb_type: "centroid"
-batch_size: 32
+batch_size: 64
 batch_size_dev: 12

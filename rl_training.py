@@ -211,7 +211,7 @@ def prepopulate_replay_buffer(
         #.... reset
         init_states = env.reset(bert_quest_emb)
         # init_states = init_states.detach().to(cpu_device)
-        padded_path = torch.full([init_states.shape[0], max_env_steps*2 + 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float)
+        padded_path = torch.full([init_states.shape[0], max_env_steps*2 + 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float, device=gpu_device)
         padded_path[:,0,:] = init_states
 
         #.... Action
@@ -282,6 +282,8 @@ def hydrate_replay_buffer(
     replay_buffer: QuestionReplayBuffer,
     train_df: pd.DataFrame,
     pad_token_id: int,
+    summary_writer: SummaryWriter,
+    global_step:int, 
 ) -> int:
     """Generate new transitions by extending oldest trajectories in replay."""
 
@@ -294,10 +296,16 @@ def hydrate_replay_buffer(
     max_path_len = replay_buffer.path_states.shape[2]
     state_dim = replay_buffer.path_states.shape[-1]
     max_path_len =  replay_buffer.get_max_path_len()
-    max_steps = (max_path_len-1)//2
+    max_steps = (max_path_len + 1)//2
+    max_experiences_per_question = replay_buffer.get_experiences_per_question()
 
     # Get Samples
+    # TODO: Make sure question_counts does not exceed experiences_per_question
     question_counts = Counter(random.choices(train_df.index, k=num_hydration_samples))
+    question_counts = {
+        qid: min(count, max_experiences_per_question)
+        for qid, count in question_counts.items()
+    } # TODO: Not the perfect solution to overflow but for now I hope it will do
     (
         sampled_qidx,
         experiences_qids,
@@ -386,6 +394,7 @@ def hydrate_replay_buffer(
     )
 
     combined_reward = llm_reward.squeeze()# + extrinsic_reward.squeeze()
+    summary_writer.add_scalar("hydration_llm_reward", combined_reward.mean().item(), global_step)
 
     # path_states_updated = path_states.clone()
     # action_indices = 2 * current_steps + 1
@@ -712,11 +721,13 @@ def evaluate_seq2seq_outputs(
             sidx = samples_idxs.popleft()
             _local_sidxs = sidx % batch_size
             samples_for_humans.append({
+                "question": question_tokenizer.decode(padded_questions[_local_sidxs], skip_special_tokens=True),
                 "dataset_id" : sidx,
                 "path_states": path_trace[_local_sidxs,:, :],
                 "step_counter": step_counter[_local_sidxs],
                 "predicted_texts": pred_texts[_local_sidxs],
                 "reference_texts": ref_texts[_local_sidxs],
+                "ref_paths": mini_batch["triples_ints"].iloc[_local_sidxs]
             })
 
 
@@ -753,12 +764,16 @@ def evaluate_seq2seq_outputs(
         idx = sample["dataset_id"]
         predicted_text = sample["predicted_texts"]
         reference_text = sample["reference_texts"]
+        question = sample["question"]
 
         # Now the piece of resistance: Ann Finding
         step_counter = sample["step_counter"]
         paths = sample["path_states"][:(step_counter*2+3),:]
+        ref_path = sample["ref_paths"]
         entities = paths[0::2,:]
         relations = paths[1::2,:]
+        ref_entities = ref_path[0::2]
+        ref_relations = ref_path[1::2]
         # use 
         _, entity_indices = ann_index_manager_ent.search(entities,3)
         _, rel_indices = ann_index_manager_rel.search(relations,3)
@@ -766,6 +781,12 @@ def evaluate_seq2seq_outputs(
         firstrank_pids = [eid2pid[ei[0]] for ei in rel_indices]
         ent_titles = [qid_to_title[fq] for fq in firstrank_qids]
         rel_titles = [pid_to_title[fp] for fp in firstrank_pids]
+
+        ref_firstrank_qids = [eid2qid[ei] for ei in ref_entities]
+        ref_firstrank_pids = [eid2pid[ei] for ei in ref_relations]
+        ref_ent_titles = [qid_to_title[fq] for fq in ref_firstrank_qids]
+        ref_rel_titles = [pid_to_title[fp] for fp in ref_firstrank_pids]
+
         final_path_titles = []
         for i in range(len(ent_titles) + len(rel_titles)):
             if i % 2 == 0:
@@ -773,15 +794,23 @@ def evaluate_seq2seq_outputs(
             else:
                 final_path_titles += [rel_titles[i//2]]
 
+        ref_path_titles = []
+        for i in range(len(ref_path)):
+            if i % 2 == 0:
+                ref_path_titles += [ref_ent_titles[i//2]]
+            else:
+                ref_path_titles += [ref_rel_titles[i//2]]
+
         logger.info(
             "----------------------------------------\n"
             f"The following is the {idx}th sample.\n"
-            f"Reference Text is {reference_text}\n"
-            f"Predicted Text is {predicted_text}\n"
-            f"Predicted Path is {final_path_titles}\n"
+            f"Question is: {question}\n"
+            f"Reference Text is: {reference_text}\n"
+            f"Predicted Text is: {predicted_text}\n"
+            f"Predicted Path is: {final_path_titles}\n"
+            f"Ref Path Path is: {ref_path_titles}\n"
             "----------------------------------------\n"
         )
-        print("Done")
 
     nav_agent.train()
     hunch_llm.train()
@@ -1069,6 +1098,8 @@ def train_multihopkg(
                     replay_buffer=replay_buffer,
                     train_df=train_df,
                     pad_token_id=pad_token_id,
+                    summary_writer=writer,
+                    global_step=total_gradient_updates
                 )
                 if added:
                     if wandb_on:
@@ -1276,6 +1307,7 @@ def main():
         state_dict=pretrained_gtllm_metadata["gtllm_state_dict"],
         graph_embedding_dim=gtllm_graph_embedding_dim,
     ).to(args.device)
+    2025-10-30
 
     # Prepare all the paremters used to train the graph embedding model
     ge_params = pretrained_gtllm_metadata["embedding_training_metaparam"] # Graph embedding pretrained model parameters
