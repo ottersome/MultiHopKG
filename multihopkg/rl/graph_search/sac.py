@@ -142,7 +142,7 @@ class GraphCriticQ(nn.Module):
         for layer in self.encoder_layers:
             x = layer(x, graph_state_mask)
 
-        last_step_idxs = torch.sum(graph_state_mask.squeeze(), dim=-1)
+        last_step_idxs = torch.sum(graph_state_mask.squeeze(), dim=-1) - 1
         last_hidden_enc_state = x[torch.arange(last_step_idxs.shape[0]), last_step_idxs]
 
         x = torch.cat((last_hidden_enc_state, context_quest_bert_emb), dim=-1)
@@ -214,7 +214,7 @@ class GraphCriticV(nn.Module):
         x = self.dropout(x)
         for layer in self.encoder_layers:
             x = layer(x, graph_state_mask)
-        last_step_idxs = torch.sum(graph_state_mask.squeeze(), dim=-1)
+        last_step_idxs = torch.sum(graph_state_mask.squeeze(), dim=-1) - 1
         last_hidden_enc_state = x[torch.arange(last_step_idxs.shape[0]), last_step_idxs]
         cat_input = torch.cat((last_hidden_enc_state, context_quest_bert_emb), dim=-1)
 
