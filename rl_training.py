@@ -927,25 +927,28 @@ def train_multihopkg(
         qa_state[batch_idxs, 2*step_counter + 1, : ] = actions
 
         # Masking
-        graph_state_mask = torch.zeros((_batch_size, _max_path_len), dtype=torch.bool).to(device)
-        graph_nextState_mask = torch.zeros((_batch_size, _max_path_len), dtype=torch.bool).to(device)
-        for i in range(graph_state_mask.shape[0]):
-            graph_state_mask[i, : 2 * step_counter[i] + 3] = True
-            graph_nextState_mask[i, : 2 * step_counter[i] + 2] = True
-        graph_state_mask = graph_state_mask.unsqueeze(1).unsqueeze(2)
-        graph_nextState_mask = graph_nextState_mask.unsqueeze(1).unsqueeze(2)
+        graph_curState_mask = torch.zeros((_batch_size, _max_path_len), dtype=torch.bool).to(device)
+        graph_nextstate_mask = torch.zeros((_batch_size, _max_path_len), dtype=torch.bool).to(device)
+        graph_plusAction_mask = torch.zeros((_batch_size, _max_path_len), dtype=torch.bool).to(device)
+        for i in range(graph_nextstate_mask.shape[0]):
+            graph_curState_mask[i, : 2 * step_counter[i] + 1] = True
+            graph_plusAction_mask[i, : 2 * step_counter[i] + 2] = True
+            graph_nextstate_mask[i, : 2 * step_counter[i] + 3] = True
+        graph_curState_mask = graph_curState_mask.unsqueeze(1).unsqueeze(2)
+        graph_plusAction_mask = graph_plusAction_mask.unsqueeze(1).unsqueeze(2)
+        graph_nextstate_mask = graph_nextstate_mask.unsqueeze(1).unsqueeze(2)
 
         ########################################
         # Forward Propagation
         ########################################
         with torch.no_grad():
             target_values = target_value_net(
-                next_states_path, graph_state_mask, bert_quest_emb
+                next_states_path, graph_nextstate_mask, bert_quest_emb
             )
             q_target = rewards + (1.0 - dones.to(torch.float32)) * gamma * target_values.squeeze()
 
-        q1_pred = critic_q1(qa_state, graph_nextState_mask, bert_quest_emb).squeeze()
-        q2_pred = critic_q2(qa_state, graph_nextState_mask, bert_quest_emb).squeeze()
+        q1_pred = critic_q1(qa_state, graph_plusAction_mask, bert_quest_emb).squeeze()
+        q2_pred = critic_q2(qa_state, graph_plusAction_mask, bert_quest_emb).squeeze()
         q1_loss = F.mse_loss(q1_pred, q_target)
         q2_loss = F.mse_loss(q2_pred, q_target)
 
@@ -958,18 +961,18 @@ def train_multihopkg(
 
         policy_actions, log_probs, entropy, _, _ = nav_agent(
             states_path,
-            graph_state_mask=graph_nextState_mask,
+            graph_state_mask=graph_curState_mask,
             context_quest_bert_emb=bert_quest_emb,
         )
         policy_state = states_path.clone()
         policy_state[batch_idxs, 2 * step_counter + 1, :] = policy_actions
 
-        q1_pi = critic_q1(policy_state, graph_nextState_mask, bert_quest_emb)
-        q2_pi = critic_q2(policy_state, graph_nextState_mask, bert_quest_emb)
+        q1_pi = critic_q1(policy_state, graph_plusAction_mask, bert_quest_emb)
+        q2_pi = critic_q2(policy_state, graph_plusAction_mask, bert_quest_emb)
         min_q_pi = torch.min(q1_pi, q2_pi)
 
         value_target = (min_q_pi - alpha * log_probs.unsqueeze(-1)).detach()
-        value_pred = value_net(states_path, graph_nextState_mask, bert_quest_emb)
+        value_pred = value_net(states_path, graph_curState_mask, bert_quest_emb)
         value_loss = F.mse_loss(value_pred, value_target)
 
         value_optimizer.zero_grad()
@@ -997,7 +1000,7 @@ def train_multihopkg(
         value_pred_mean = value_pred.mean().item()
         log_prob_mean = log_probs.mean().item()
         log_prob_std = log_probs.float().std(unbiased=False).item()
-        mask_token_counts = graph_nextState_mask.squeeze(1).squeeze(1).sum(dim=-1).float()
+        mask_token_counts = graph_plusAction_mask.squeeze(1).squeeze(1).sum(dim=-1).float()
 
         return {
             "q1_loss": q1_loss.item(),
