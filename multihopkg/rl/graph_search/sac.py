@@ -121,7 +121,7 @@ class GraphCriticQ(nn.Module):
         self.encoder_layers = nn.ModuleList(
             [EncoderLayer(model_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
         )
-        self.pos_enc = PositionalEncoding(graph_obs_dim, max_seq_length)
+        self.pos_enc = PositionalEncoding(graph_obs_dim, max_seq_length + 2)
         self.dropout = nn.Dropout(enc_dropout)
         self.graph_ques_proj = nn.Linear(model_dim + ques_emb_dim, dim_hidden)
         self.graph_ques_proj = init_layer_uniform(self.graph_ques_proj)
@@ -191,7 +191,7 @@ class GraphCriticV(nn.Module):
         self.encoder_layers = nn.ModuleList(
             [EncoderLayer(model_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
         )
-        self.pos_enc = PositionalEncoding(obs_dim, max_seq_length)
+        self.pos_enc = PositionalEncoding(obs_dim, max_seq_length + 2)
         self.dropout = nn.Dropout(enc_dropout)
 
         self.graph_ques_proj = nn.Linear(ques_emb_dim + model_dim, dim_hidden)

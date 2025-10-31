@@ -134,7 +134,8 @@ class ContinuousPolicyGradient(nn.Module):
         self.encoder_layers = nn.ModuleList(
             [EncoderLayer(model_dim, encoder_num_heads, enc_ff_dim, enc_dropout) for _ in range(encoder_num_layers)]
         )
-        self.pos_enc = PositionalEncoding(model_dim, self.max_seq_length)
+        #NOTE + 2 takes into account the last steps action and step for the reward calcualtion
+        self.pos_enc = PositionalEncoding(model_dim, self.max_seq_length + 2)
         self.dropout = nn.Dropout(enc_dropout)
 
         readout_in_dim = model_dim + ques_emb_dim if ques_emb_dim > 0 else model_dim

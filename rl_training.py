@@ -296,7 +296,7 @@ def hydrate_replay_buffer(
     max_path_len = replay_buffer.path_states.shape[2]
     state_dim = replay_buffer.path_states.shape[-1]
     max_path_len =  replay_buffer.get_max_path_len()
-    max_steps = (max_path_len + 1)//2
+    max_num_steps = replay_buffer.get_max_env_steps()
     max_experiences_per_question = replay_buffer.get_experiences_per_question()
 
     # Get Samples
@@ -345,17 +345,18 @@ def hydrate_replay_buffer(
             device=device,
             dtype=path_states.dtype,
         )
-        new_paths[:, 0, :] = reset_states
+        new_paths[torch.arange(reset_states.shape[0], device=device), 0, :] = reset_states
         path_states[done_flags] = new_paths
         step_counter[done_flags] = 0
     else:
         notdone_flags = ~done_flags
         steps = step_counter[notdone_flags]
-        path_states[notdone_flags, ((steps+1)*2) + 1] = actions[notdone_flags]
-        path_states[notdone_flags, ((steps+1)*2) + 2] = next_states[notdone_flags]
+        path_states[notdone_flags, (steps*2) + 1] = actions[notdone_flags]
+        path_states[notdone_flags, (steps*2) + 2] = next_states[notdone_flags]
         # CHeck if its done
         step_counter[notdone_flags]  += 1
-        done_flags[notdone_flags] = steps == max_steps
+        steps = step_counter[notdone_flags]
+        done_flags[notdone_flags] = steps == (max_num_steps - 1) # TODO: Fix this. AFter it says done something should be done 
 
     valid_mask = torch.zeros((actual_num_experiences, max_path_len), dtype=torch.bool)
     for row_idx in range(step_counter.shape[0]):
@@ -382,8 +383,8 @@ def hydrate_replay_buffer(
 
     # Calculate Reward
     # TODO: Confirm this works well
-    next_state_path = path_states.clone()
-    next_state_path[row_idx, (step_counter + 1) * 2 + 1, :] = next_states
+    next_state_path = torch.cat([path_states.clone(), torch.zeros((path_states.shape[0], 2, path_states.shape[-1]), device=device)], dim=1)
+    next_state_path[row_idx, (step_counter + 1) * 2 + 1, :] = actions
     next_state_path[row_idx, (step_counter + 1) * 2 + 2, :] = next_states
     llm_reward, _ = calculate_llm_reward_supasoft(
         hunch_llm,
@@ -838,7 +839,7 @@ def train_multihopkg(
     ann_index_manager_rel: ANN_IndexMan,
     question_tokenizer: PreTrainedTokenizer,
     answer_tokenizer: PreTrainedTokenizer,
-    num_batches_till_eval: int,
+    num_gradupdates_till_eval: int,
     num_simulations_per_ques: int,
     wandb_on: bool,
     num_update_steps: int,
@@ -888,7 +889,7 @@ def train_multihopkg(
     train_df = data_partitions.train
     question_ids = train_df.index.values.tolist()
     assert isinstance(question_ids, List)
-    eval_interval_updates = max(1, num_batches_till_eval)
+    eval_interval_updates = max(1, num_gradupdates_till_eval)
     last_eval_updates = 0
 
     ########################################
@@ -913,18 +914,19 @@ def train_multihopkg(
         alpha = log_alpha.exp()
 
         _batch_size = states_path.shape[0]
-        _max_path_len = states_path.shape[1]
         batch_idxs = torch.arange(_batch_size, device=device)
         ########################################
         # Prepare States and corresp. Masks
         ########################################
         # For cur_state, action, next_state
-        next_states_path = states_path.clone()
+        longer_path = torch.cat([states_path.clone(), torch.full((states_path.shape[0], 2, states_path.shape[-1]), PATH_PADDING_VALUE, device=device)], dim=1)
+        _max_path_len = longer_path.shape[1]
+        next_states_path = longer_path.clone()
         next_states_path[batch_idxs, 2*step_counter + 1, : ] = actions
         next_states_path[batch_idxs, 2*step_counter + 2, : ] = next_states
         
         # For cur_state, action
-        qa_state = states_path.clone()
+        qa_state = longer_path.clone()
         qa_state[batch_idxs, 2*step_counter + 1, : ] = actions
 
         # Masking
@@ -1128,9 +1130,8 @@ def train_multihopkg(
                 break
 
         logger.info(
-            "Epoch %d completed | replay_size=%d | gradient_updates=%d | coverage_cycles=%d",
+            "Epoch %d completed | gradient_updates=%d | coverage_cycles=%d",
             epoch_id,
-            len(replay_buffer),
             total_gradient_updates,
             coverage_sampler.cycles_completed,
         )
@@ -1151,6 +1152,7 @@ def train_multihopkg(
         )
 
         if total_gradient_updates - last_eval_updates >= eval_interval_updates:
+            logger.info(f"Evaluating at epoch {epoch_id} with total_gradient_updates={total_gradient_updates}. We do so at intervals of {eval_interval_updates}")
             evaluate_seq2seq_outputs(
                 env=env,
                 ann_index_manager_ent=ann_index_manager_ent,
@@ -1610,7 +1612,7 @@ def main():
         ann_index_manager_rel=ann_index_manager_rel,
         question_tokenizer=gtllm_tokenizer,
         answer_tokenizer=gtllm_tokenizer,
-        num_batches_till_eval=args.num_batches_till_eval,
+        num_gradupdates_till_eval=args.num_gradupdates_till_eval,
         num_simulations_per_ques=args.experiences_per_question,
         wandb_on=args.wandb,
         num_update_steps=args.num_update_steps,

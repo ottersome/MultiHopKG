@@ -68,6 +68,9 @@ class QuestionReplayBuffer:
     def get_max_path_len(self):
         return self.max_env_steps * 2 + 1
 
+    def get_max_env_steps(self):
+        return self.max_env_steps
+
     def get_experiences_per_question(self):
         return self.experiences_per_question
 
