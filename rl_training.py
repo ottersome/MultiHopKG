@@ -316,6 +316,7 @@ def hydrate_replay_buffer(
         step_counter,
         done_flags,
     ) = replay_buffer.get_oldest_experiences(question_counts, device)
+    actual_num_experiences = sum(list(question_counts.values()))
     sampled_question_idxs = sampled_qidx.to(cpu_device).numpy().tolist()
 
     mini_batch = train_df.loc[sampled_question_idxs]
@@ -356,7 +357,7 @@ def hydrate_replay_buffer(
         step_counter[notdone_flags]  += 1
         done_flags[notdone_flags] = steps == max_steps
 
-    valid_mask = torch.zeros((num_hydration_samples, max_path_len), dtype=torch.bool)
+    valid_mask = torch.zeros((actual_num_experiences, max_path_len), dtype=torch.bool)
     for row_idx in range(step_counter.shape[0]):
         valid_mask[row_idx, :step_counter[row_idx] + 1] = True
     graph_state_mask = valid_mask.unsqueeze(1).unsqueeze(2).to(device)
@@ -368,7 +369,7 @@ def hydrate_replay_buffer(
         context_quest_bert_emb=bert_quest,
     )
 
-    row_idx = torch.arange(num_hydration_samples, device=device)
+    row_idx = torch.arange(actual_num_experiences, device=device)
     current_states = path_states[row_idx, valid_counts, :]
 
     observation = ReinforcedUnsupervisedEnv.RUE_Observation(
