@@ -27,7 +27,6 @@ import debugpy
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from transformers.models.bart.modeling_bart import BART_GENERATION_EXAMPLE
 from multihopkg.datasets import GraphEmbeddingDataset
 from multihopkg.utils.data_structures import DataPartitions
 from multihopkg.utils.ops import ensure_list_of_ints
