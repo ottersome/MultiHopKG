@@ -32,7 +32,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--max_env_steps', type=int, default=4, help="Maximum number of steps to collect from an initial configuration")
     # TODO: Empirically determine this value.
     ap.add_argument('--reached_destination_threshold', type=float, default=0.001, help="Threshold used to determine whethere or not we have reached the destination.")
-    ap.add_argument('--experiences_per_question', type=int, default=2, help="How many experiences to collect per question in the replay buffer.")
+    ap.add_argument('--experiences_per_question', type=int, default=4, help="How many experiences to collect per question in the replay buffer.")
     ap.add_argument('--num_simulations_per_ques', type=int, default=100, help="How many experiences to collect per question in the replay buffer.")
 
     # Agent
@@ -73,7 +73,7 @@ def get_args() -> argparse.Namespace:
     # Training Duration & Rollout
     ap.add_argument('--epochs',type=int,default=200, help='Total number of training epochs (default: 200)')
     ap.add_argument('--start_epoch', type=int, default=0, help='Epoch to start training instead of just observing (default: 0)') # TODO: Implement this.
-    ap.add_argument('--num_update_steps', type=int, default=10000, help='Amount of graident updates to run in this training.')
+    ap.add_argument('--num_update_steps', type=int, default=100000, help='Amount of graident updates to run in this training.')
 
     # Batch Settings
     ap.add_argument('--batch_size', type=int, default=256, help='Training mini-batch size (default: 256)')

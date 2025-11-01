@@ -336,6 +336,9 @@ def hydrate_replay_buffer(
     answer_ids = [path[-1] for path in mini_batch["triples_ints"].tolist()]
     answer_ids_tensor = torch.tensor(answer_ids, dtype=torch.long, device=device)
 
+    if torch.max(step_counter).item() == 3:
+        debugpy.breakpoint()
+
     if done_flags.any():
         reset_states = env.reset(bert_quest[done_flags])
         new_paths = torch.full(
@@ -356,6 +359,9 @@ def hydrate_replay_buffer(
         step_counter[notdone_flags]  += 1
         steps = step_counter[notdone_flags]
         done_flags[notdone_flags] = steps == (max_num_steps - 1) # TODO: Fix this. AFter it says done something should be done 
+
+    # if torch.max(step_counter) >= 3:
+    #     debugpy.breakpoint()
 
     valid_mask = torch.zeros((actual_num_experiences, max_path_len), dtype=torch.bool)
     for row_idx in range(step_counter.shape[0]):
@@ -379,6 +385,7 @@ def hydrate_replay_buffer(
 
     # Take a Step
     next_states, extrinsic_reward, done = env.step(observation, actions)
+    done = done_flags | done.squeeze()
 
     # Calculate Reward
     # TODO: Confirm this works well
@@ -880,10 +887,12 @@ def train_multihopkg(
     )
     alpha_optimizer = torch.optim.Adam([log_alpha], lr=learning_rate)
     target_entropy = -float(action_shape[0])
-    tau = 0.005
+    # tau = 0.005
+    tau = 0.1
     bert_dim = replay_buffer.get_question_bert_emb_dim()
     gamma = nav_agent.gamma
-    hydration_interval = int(num_update_steps * 0.005)
+    # hydration_interval = int(num_update_steps * 0.005)
+    hydration_interval = 10
     updates_since_hydration = 0
     train_df = data_partitions.train
     question_ids = train_df.index.values.tolist()
@@ -918,14 +927,14 @@ def train_multihopkg(
         # Prepare States and corresp. Masks
         ########################################
         # For cur_state, action, next_state
-        longer_path = torch.cat([states_path.clone(), torch.full((states_path.shape[0], 2, states_path.shape[-1]), PATH_PADDING_VALUE, device=device)], dim=1)
-        _max_path_len = longer_path.shape[1]
-        next_states_path = longer_path.clone()
+        _states_path = torch.cat([states_path.clone(), torch.full((states_path.shape[0], 2, states_path.shape[-1]), PATH_PADDING_VALUE, device=device)], dim=1)
+        _max_path_len = _states_path.shape[1]
+        next_states_path = _states_path.clone()
         next_states_path[batch_idxs, 2*step_counter + 1, : ] = actions
         next_states_path[batch_idxs, 2*step_counter + 2, : ] = next_states
         
         # For cur_state, action
-        qa_state = longer_path.clone()
+        qa_state = _states_path.clone()
         qa_state[batch_idxs, 2*step_counter + 1, : ] = actions
 
         # Masking
@@ -962,11 +971,11 @@ def train_multihopkg(
         q2_optimizer.step()
 
         policy_actions, log_probs, entropy, _, _ = nav_agent(
-            states_path,
+            _states_path,
             graph_state_mask=graph_curState_mask,
             context_quest_bert_emb=bert_quest_emb,
         )
-        policy_state = states_path.clone()
+        policy_state = _states_path.clone()
         policy_state[batch_idxs, 2 * step_counter + 1, :] = policy_actions
 
         q1_pi = critic_q1(policy_state, graph_plusAction_mask, bert_quest_emb)
@@ -974,7 +983,7 @@ def train_multihopkg(
         min_q_pi = torch.min(q1_pi, q2_pi)
 
         value_target = (min_q_pi - alpha * log_probs.unsqueeze(-1)).detach()
-        value_pred = value_net(states_path, graph_curState_mask, bert_quest_emb)
+        value_pred = value_net(_states_path, graph_curState_mask, bert_quest_emb)
         value_loss = F.mse_loss(value_pred, value_target)
 
         value_optimizer.zero_grad()
