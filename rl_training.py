@@ -34,11 +34,11 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 from rich import traceback
+from aim import Run
 
 # PCA
 from sklearn.decomposition import PCA
 from torch import nn
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from transformers import (
     AutoModel,
@@ -73,6 +73,45 @@ wandb_run = None
 
 PATH_PADDING_VALUE = 1
 BART_PADDING_VALUE = 1 # TODO:  Need to remove hardcoding on this later
+
+
+class AimWriter:
+    """Minimal adapter to use Aim like TensorBoard's SummaryWriter."""
+
+    def __init__(
+        self,
+        *,
+        repo: str,
+        experiment: Optional[str] = None,
+        run_name: Optional[str] = None,
+    ) -> None:
+        os.makedirs(repo, exist_ok=True)
+        self._run = Run(repo=repo, experiment=experiment)
+        if run_name:
+            self._run.name = run_name
+
+    def add_scalar(self, metric_name: str, value: float, step: int) -> None:
+        if isinstance(value, torch.Tensor):
+            value = value.item()
+        elif isinstance(value, np.generic):
+            value = value.item()
+        context: Dict[str, str] = {}
+        aim_metric = metric_name
+        if "/" in metric_name:
+            prefix, aim_metric = metric_name.split("/", 1)
+            if prefix:
+                context["subset"] = prefix
+        if context:
+            self._run.track(value, aim_metric, step=step, context=context)
+        else:
+            self._run.track(value, aim_metric, step=step)
+
+    def close(self) -> None:
+        self._run.close()
+
+    @property
+    def run(self) -> Run:
+        return self._run
 
 
 def initialize_model_directory(args, random_seed=None):
@@ -281,7 +320,7 @@ def hydrate_replay_buffer(
     replay_buffer: QuestionReplayBuffer,
     train_df: pd.DataFrame,
     pad_token_id: int,
-    summary_writer: SummaryWriter,
+    summary_writer: AimWriter,
     global_step:int, 
 ) -> int:
     """Generate new transitions by extending oldest trajectories in replay."""
@@ -454,7 +493,7 @@ def evaluate_seq2seq_outputs(
     bart_pad_token_id: int,
     global_step: int,
     prefix: str,
-    writer: SummaryWriter,
+    writer: AimWriter,
     eid2qid: Dict[int, str],
     eid2pid: Dict[int, str],
     qid_to_title: Dict[str, str],
@@ -1042,8 +1081,16 @@ def train_multihopkg(
 
     local_time = time.localtime()
     timestamp = time.strftime("%m%d%Y_%H%M%S", local_time)
-    writer = SummaryWriter(
-        log_dir=f"runs/rl_sac/{env.knowledge_graph.model_name.lower()}/{timestamp}/"
+    log_dir = os.path.join(
+        "runs",
+        "rl_sac",
+        env.knowledge_graph.model_name.lower(),
+        timestamp,
+    )
+    writer = AimWriter(
+        repo=log_dir,
+        experiment=f"rl_sac/{env.knowledge_graph.model_name.lower()}",
+        run_name=f"{env.knowledge_graph.model_name.lower()}-{timestamp}",
     )
     writer.add_scalar("train_config/hydration_interval", hydration_interval, 0)
     if wandb_on:
