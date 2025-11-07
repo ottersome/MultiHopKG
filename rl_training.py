@@ -86,7 +86,7 @@ class AimWriter:
         run_name: Optional[str] = None,
     ) -> None:
         os.makedirs(repo, exist_ok=True)
-        self._run = Run(repo=repo, experiment=experiment)
+        self._run = Run(experiment=experiment)
         if run_name:
             self._run.name = run_name
 
@@ -880,6 +880,7 @@ def train_multihopkg(
     data_partitions: DataPartitions,
     replay_buffer: QuestionReplayBuffer,
     bart_pad_token_id: int,
+    run_name: str,
     ann_index_manager_ent: ANN_IndexMan,
     ann_index_manager_rel: ANN_IndexMan,
     question_tokenizer: PreTrainedTokenizer,
@@ -995,7 +996,8 @@ def train_multihopkg(
             target_values = target_value_net(
                 next_states_path, graph_nextstate_mask, bert_quest_emb
             )
-            q_target = rewards + (1.0 - dones.to(torch.float32)) * gamma * target_values.squeeze()
+            # q_target = rewards + (1.0 - dones.to(torch.float32)) * gamma * target_values.squeeze()
+            q_target = rewards + 1.0 * gamma * target_values.squeeze()
 
         q1_pred = critic_q1(qa_state, graph_plusAction_mask, bert_quest_emb).squeeze()
         q2_pred = critic_q2(qa_state, graph_plusAction_mask, bert_quest_emb).squeeze()
@@ -1021,7 +1023,8 @@ def train_multihopkg(
         q2_pi = critic_q2(policy_state, graph_plusAction_mask, bert_quest_emb)
         min_q_pi = torch.min(q1_pi, q2_pi)
 
-        value_target = (min_q_pi - alpha * log_probs.unsqueeze(-1)).detach()
+        # value_target = (min_q_pi - alpha * log_probs.unsqueeze(-1)).detach()
+        value_target = (min_q_pi - log_probs.unsqueeze(-1)).detach()
         value_pred = value_net(_states_path, graph_curState_mask, bert_quest_emb)
         value_loss = F.mse_loss(value_pred, value_target)
 
@@ -1029,15 +1032,17 @@ def train_multihopkg(
         value_loss.backward()
         value_optimizer.step()
 
-        policy_loss = (alpha * log_probs.unsqueeze(-1) - min_q_pi).mean()
+        # policy_loss = (alpha * log_probs.unsqueeze(-1) - min_q_pi).mean()
+        policy_loss = (log_probs.unsqueeze(-1) - min_q_pi).mean()
         policy_optimizer.zero_grad()
         policy_loss.backward()
         policy_optimizer.step()
 
-        alpha_loss = -(log_alpha * (log_probs.detach() + target_entropy)).mean()
-        alpha_optimizer.zero_grad()
-        alpha_loss.backward()
-        alpha_optimizer.step()
+        # alpha_loss = -(log_alpha * (log_probs.detach() + target_entropy)).mean()
+        # alpha_loss = -(log_probs.detach() + target_entropy).mean()
+        # alpha_optimizer.zero_grad()
+        # alpha_loss.backward()
+        # alpha_optimizer.step()
 
         soft_update(value_net, target_value_net, tau)
 
@@ -1057,7 +1062,7 @@ def train_multihopkg(
             "q2_loss": q2_loss.item(),
             "value_loss": value_loss.item(),
             "policy_loss": policy_loss.item(),
-            "alpha_loss": alpha_loss.item(),
+            # "alpha_loss": alpha_loss.item(),
             "alpha": alpha.item(),
             "entropy": entropy.mean().item(),
             "log_prob_mean": log_prob_mean,
@@ -1089,8 +1094,8 @@ def train_multihopkg(
     )
     writer = AimWriter(
         repo=log_dir,
-        experiment=f"rl_sac/{env.knowledge_graph.model_name.lower()}",
-        run_name=f"{env.knowledge_graph.model_name.lower()}-{timestamp}",
+        # experiment=f"rl_sac/{env.knowledge_graph.model_name.lower()}",
+        run_name=f"{run_name}-{timestamp}",
     )
     writer.add_scalar("train_config/hydration_interval", hydration_interval, 0)
     if wandb_on:
@@ -1341,11 +1346,11 @@ def main():
     # initialize_model_directory(args, args.seed)
     if args.wandb:
         logger.info(
-            f"🪄 Initializing Weights and Biases. Under project name {args.wandb_project_name} and run name {args.wr_name}"
+            f"🪄 Initializing Weights and Biases. Under project name {args.wandb_project_name} and run name {args.run_name}"
         )
         wandb_run = wandb.init(
             project=args.wandb_project_name,
-            name=args.wr_name,
+            name=args.run_name,
             config=vars(args),
             notes=args.wr_notes,
         )
@@ -1663,6 +1668,7 @@ def main():
         data_partitions=data_partitions,
         replay_buffer=replay_buffer,
         bart_pad_token_id=BART_PADDING_VALUE,
+        run_name=args.run_name,
         ann_index_manager_ent=ann_index_manager_ent,
         ann_index_manager_rel=ann_index_manager_rel,
         question_tokenizer=gtllm_tokenizer,
