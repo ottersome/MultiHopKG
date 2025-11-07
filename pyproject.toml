@@ -3,12 +3,12 @@ name = "multihopkg"
 version = "0.1.0"
 description = "MultiHopKG attempts to create a navigator on graph embeddings for more explainability on language models."
 readme = "README.md"
-requires-python = "^3.11"
+requires-python = ">=3.11, <3.15"
 license = "LicenseRef-AcademicOnly"
 package-mode = false
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = ">=3.11, <3.15"
 # networkx = "^3.2.1"
 matplotlib = "^3.9.4"
 tqdm = "^4.67.1"
@@ -22,6 +22,7 @@ dataloader = "^2.0"
 tensorboard = "^2.19.0"
 # pygraphviz = "^1.11"
 torch = { version = "^2.7.1", source = "pytorch_gpu" }
+aim = "^3.29.1"
 
 
 [build-system]
