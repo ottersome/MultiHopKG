@@ -1023,8 +1023,10 @@ def train_multihopkg(
         q2_pi = critic_q2(policy_state, graph_plusAction_mask, bert_quest_emb)
         min_q_pi = torch.min(q1_pi, q2_pi)
 
-        # value_target = (min_q_pi - alpha * log_probs.unsqueeze(-1)).detach()
-        value_target = (min_q_pi - log_probs.unsqueeze(-1)).detach()
+        # Min_Q_Pi needs a different sort of action
+
+        value_target = (min_q_pi - alpha * log_probs.unsqueeze(-1)).detach()
+        # value_target = (min_q_pi - log_probs.unsqueeze(-1)).detach()
         value_pred = value_net(_states_path, graph_curState_mask, bert_quest_emb)
         value_loss = F.mse_loss(value_pred, value_target)
 
@@ -1032,17 +1034,17 @@ def train_multihopkg(
         value_loss.backward()
         value_optimizer.step()
 
-        # policy_loss = (alpha * log_probs.unsqueeze(-1) - min_q_pi).mean()
-        policy_loss = (log_probs.unsqueeze(-1) - min_q_pi).mean()
+        policy_loss = (alpha * log_probs.unsqueeze(-1) - min_q_pi).mean()
+        # policy_loss = (log_probs.unsqueeze(-1) - min_q_pi).mean()
         policy_optimizer.zero_grad()
         policy_loss.backward()
         policy_optimizer.step()
 
-        # alpha_loss = -(log_alpha * (log_probs.detach() + target_entropy)).mean()
-        # alpha_loss = -(log_probs.detach() + target_entropy).mean()
-        # alpha_optimizer.zero_grad()
-        # alpha_loss.backward()
-        # alpha_optimizer.step()
+        alpha_loss = -(log_alpha * (log_probs.detach() + target_entropy)).mean()
+        alpha_loss = -(log_probs.detach() + target_entropy).mean()
+        alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        alpha_optimizer.step()
 
         soft_update(value_net, target_value_net, tau)
 

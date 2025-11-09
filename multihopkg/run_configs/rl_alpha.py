@@ -52,7 +52,7 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--critic_v_hiddim', type=float, default=256)
 
     # Learning Hyperparameters
-    ap.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for optimizer (default: 1e-5)')
+    ap.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimizer (default: 1e-5)')
     ap.add_argument('--beta', type=float, default=0.0, help='Entropy regularization coefficient (default: 0.0)') # TODO: Check if this is still used.
     ap.add_argument('--gamma', type=float, default=12, help='Margin or scaling factor used by the knowledge graph embedding model.' \
                             'Not actually used during flexible translation (default: 12)') # TODO: Force load this value from the state_dict instead. 
@@ -113,11 +113,13 @@ def get_args() -> argparse.Namespace:
     # TODO: Replace the redundant models here (question_tokenizer_name vs question_embedding_model) and (answer_tokenizer_name vs pretrained_llm_for_hunch)
     
 
-    'Logging and Experiment Tracking'
+    # Logging and Experiment Tracking
     ap.add_argument("-w", "--wandb", action="store_true", help="Enable Weights & Biases experiment tracking")
     ap.add_argument("--wandb_project_name", type=str, help="wandb: Project name to group runs")
-    ap.add_argument("--wr_name", type=str, help="wandb: Unique name for this run")
     ap.add_argument("--wr_notes", type=str, help="wandb: Additional notes for this run")
+
+    # Simple universal run name for any tracking
+    ap.add_argument("--run_name", type=str, help="Run name to distinguish it when comparing logs.")
 
     return ap.parse_args()
 
