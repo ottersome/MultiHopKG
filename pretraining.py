@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import time
 
 import debugpy
@@ -63,6 +63,128 @@ def collate_wrapper(pad_value:int) -> Callable:
         return collate_fn(batch, pad_value)
     return _collate_fn
 
+
+def _prepare_question_prompts(
+    qna_tokens: torch.Tensor,
+    ans_masks: torch.Tensor,
+    pad_token_id: int,
+    bos_token_id: Optional[int],
+) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
+    """
+    Extract only the question portion (prior to the first answer token) to use as decoder prompts.
+    """
+    prompts: List[torch.Tensor] = []
+    prompt_lengths: List[int] = []
+    device = qna_tokens.device
+    seq_len = qna_tokens.shape[1]
+
+    for seq, mask in zip(qna_tokens, ans_masks):
+        mask_list = mask.tolist()
+        seq_list = seq.tolist()
+        try:
+            answer_start = mask_list.index(1)
+        except ValueError:
+            answer_start = len(seq_list)
+        answer_start = min(answer_start, seq_len)
+        prompt = [token for token in seq_list[:answer_start] if token != pad_token_id]
+        if not prompt:
+            raise ValueError("Was expecting a prompt in evaluation")
+        prompts.append(torch.tensor(prompt, dtype=torch.long, device=device))
+        prompt_lengths.append(len(prompt))
+
+    decoder_input_ids = torch.nn.utils.rnn.pad_sequence(
+        prompts, batch_first=True, padding_value=pad_token_id
+    )
+    decoder_attention_mask = (decoder_input_ids != pad_token_id).long()
+
+    return decoder_input_ids, decoder_attention_mask, prompt_lengths
+
+
+def _run_generation_evaluation(
+    model: nn.Module,
+    tokenizer: BartTokenizer,
+    qna_tokens: torch.Tensor,
+    ans_masks: torch.Tensor,
+    graph_embeddings: torch.Tensor,
+    graphemb_attn_mask: torch.Tensor,
+) -> Optional[Dict[str, Any]]:
+    """
+    Run BART.generate() to obtain free-form answers and compute simple sequence-level metrics.
+    """
+    if not hasattr(model, "bart") or not hasattr(model, "embedding_translator"):
+        return None
+
+    pad_token_id = tokenizer.pad_token_id
+    assert isinstance(pad_token_id, int), "pad_token_id must be defined for generation evaluation"
+    decoder_input_ids, decoder_attention_mask, prompt_lengths = _prepare_question_prompts(
+        qna_tokens, ans_masks, pad_token_id, tokenizer.bos_token_id
+    )
+
+    translated_embeddings = model.embedding_translator(graph_embeddings)
+    encoder_attention_mask = graphemb_attn_mask.long()
+    max_prompt_len = max(prompt_lengths) if prompt_lengths else 0
+    max_generation_len = max(qna_tokens.shape[1], max_prompt_len + 1)
+
+    generated_ids = model.bart.generate(  # type: ignore[attr-defined]
+        inputs_embeds=translated_embeddings,
+        attention_mask=encoder_attention_mask,
+        decoder_input_ids=decoder_input_ids,
+        decoder_attention_mask=decoder_attention_mask,
+        max_length=max_generation_len,
+        num_beams=1,
+    )
+
+    eos_token_id = tokenizer.eos_token_id
+    predictions: List[str] = []
+    references: List[str] = []
+    question_texts: List[str] = []
+    generated_lengths: List[int] = []
+
+    batch_size = generated_ids.size(0)
+    for idx in range(batch_size):
+        prompt_len = prompt_lengths[idx]
+        generated_seq = generated_ids[idx]
+        answer_tokens = generated_seq[prompt_len:]
+
+        trimmed_tokens: List[int] = []
+        for token_id in answer_tokens.tolist():
+            if eos_token_id is not None and token_id == eos_token_id:
+                break
+            if token_id == pad_token_id:
+                continue
+            trimmed_tokens.append(token_id)
+
+        generated_lengths.append(len(trimmed_tokens))
+        predictions.append(tokenizer.decode(trimmed_tokens, skip_special_tokens=True).strip())
+        ref_answer_tokens = qna_tokens[idx][ans_masks[idx] == 1]
+        references.append(tokenizer.decode(ref_answer_tokens, skip_special_tokens=True).strip())
+        question_prompt = decoder_input_ids[idx][:prompt_len]
+        question_texts.append(tokenizer.decode(question_prompt, skip_special_tokens=True).strip())
+
+    exact_match = sum(1 for pred, ref in zip(predictions, references) if pred == ref)
+    avg_generated_len = (
+        sum(generated_lengths) / len(generated_lengths) if generated_lengths else 0.0
+    )
+
+    samples = []
+    for question, pred, ref in zip(question_texts, predictions, references):
+        if len(samples) >= 3:
+            break
+        samples.append(
+            {
+                "question": question,
+                "prediction": pred,
+                "reference": ref,
+            }
+        )
+
+    return {
+        "count": batch_size,
+        "exact_match": exact_match,
+        "avg_generated_length": avg_generated_len,
+        "samples": samples,
+    }
+
 def validation_loop(
     model: nn.Module,
     val_dataloader: DataLoader,
@@ -77,7 +199,9 @@ def validation_loop(
         "valid/loss" : [],
         "valid/cf-loss" : [],
         "valid/alignment_loss_w_emb" : [],
-        "valid/alignment_loss_wo_emb" : []
+        "valid/alignment_loss_wo_emb" : [],
+        "valid/exact_match": [],
+        "valid/avg_generated_length": [],
     }
     model.eval()
     with torch.no_grad():
@@ -139,6 +263,28 @@ def validation_loop(
                     logger.debug(f"\n\t- Q: {q}\n\t - A:{a}\n\t - I: {i}\n\t - F: {n}\n")
                 logger.debug(f"CounterFactual ration {loss/n_loss}")
                 logger.debug("----------------------------------------\n\n")
+
+            generation_report = _run_generation_evaluation(
+                model,
+                tokenizer,
+                qna_tokens,
+                ans_masks,
+                graph_embeddings,
+                graphemb_attn_mask,
+            )
+            if generation_report is not None:
+                count = max(generation_report["count"], 1)
+                validation_metrics["valid/exact_match"].append(
+                    generation_report["exact_match"] / count
+                )
+                validation_metrics["valid/avg_generated_length"].append(
+                    generation_report["avg_generated_length"]
+                )
+                if verbose and generation_report["samples"]:
+                    for sample in generation_report["samples"]:
+                        logger.debug(
+                            f"[GEN] Q: {sample['question']} | Pred: {sample['prediction']} | Ref: {sample['reference']}"
+                        )
     model.train()
     _validation_metrics = {}
     for k,v in  validation_metrics.items():

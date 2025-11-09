@@ -1,9 +1,9 @@
 # -------------------- General Parameters --------------------
 seed: 42
-epochs: 30
-batch_size: 128
+epochs: 200
+batch_size: 64
 val_every_n_batches: 50
-num_warmup_steps: 300
+num_warmup_steps: 200
     
 # -------------------- General Data Parameters --------------------
 path_mquake_data: "./data/mquake/"
