@@ -417,7 +417,7 @@ def train_loop(
                 final_loss = gtllm_loss + bert_loss
                 final_loss.backward()
                 optimizer.step()
-                scheduler.step()
+                # scheduler.step()
                 current_lr = scheduler.get_last_lr()[0]
                 loss_reports.append(gtllm_loss.item())
 
