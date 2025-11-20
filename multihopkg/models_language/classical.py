@@ -25,9 +25,7 @@ class HunchBart(nn.Module):
 
         self.embedding_translator = nn.Sequential(
             nn.Linear(graph_embedding_dim, self.bart_hidden_dim),
-            nn.LayerNorm(self.bart_hidden_dim),
             nn.ReLU(),
-            nn.Linear(self.bart_hidden_dim, self.bart_hidden_dim)
         )
         
         # Weird Idea but this is so it has a secondary output that tries to align with BERT
@@ -71,10 +69,14 @@ class HunchBart(nn.Module):
 
     def freeze_bart(self):
         """
-        Will freeze the BART model parameters, keeping only the embedding_translator trainable
+        Freeze only the decoder side of BART so the encoder keeps updating.
         """
-        for param in self.bart.parameters():
+        for param in self.bart.model.decoder.parameters():
             param.requires_grad = False
+        # Also freeze the LM head to keep generation weights in sync with frozen decoder.
+        if hasattr(self.bart, "lm_head"):
+            for param in self.bart.lm_head.parameters():
+                param.requires_grad = False
 
     @classmethod
     def from_pretrained(
@@ -508,6 +510,5 @@ def generate_mask(src: Optional[torch.Tensor], tgt: torch.Tensor, padding_id):
     )
     tgt_mask = tgt_mask & nopeak_mask
     return src_mask, tgt_mask.to(torch.int32)
-
 
 

@@ -335,7 +335,7 @@ def train_loop(
     train_dataloader = DataLoader(train_dataset, batch_size, collate_fn=collate_wrapper(pad_token_id))
     # Validation
     val_dataset = GraphEmbeddingDataset(dataset_partitions.validation, entity_embeddings, relation_embeddings, word_tokenizer, bert_emb_size, device)
-    val_dataloader = DataLoader(val_dataset, batch_size, collate_fn=collate_wrapper(pad_token_id))
+    val_dataloader = DataLoader(val_dataset, batch_size//2, collate_fn=collate_wrapper(pad_token_id))
 
     # DEBUG:: to check if the embeddings are being changed.
     ent_emb_backup = entity_embeddings.weight.clone()
