@@ -6,6 +6,7 @@ import time
 import debugpy
 import numpy as np
 import torch
+from aim import Run as AimRun, Text as AimText
 from rich import traceback
 from torch import nn
 from torch.nn import functional as F
@@ -190,6 +191,8 @@ def validation_loop(
     val_dataloader: DataLoader,
     tokenizer: BartTokenizer,
     verbose: bool,
+    aim_run: Optional[AimRun],
+    global_step: int,
 ) -> Dict[str, float]:
     # TODO: Implement some other more sophisticated validation metrics
     pad_token_id = tokenizer.pad_token_id
@@ -285,6 +288,18 @@ def validation_loop(
                         logger.debug(
                             f"[GEN] Q: {sample['question']} | Pred: {sample['prediction']} | Ref: {sample['reference']}"
                         )
+                if aim_run is not None and generation_report["samples"]:
+                    for sample in generation_report["samples"]:
+                        sample_text = (
+                            f"Q: {sample['question']} | "
+                            f"Pred: {sample['prediction']} | "
+                            f"Ref: {sample['reference']}"
+                        )
+                        aim_run.track(
+                            AimText(sample_text),
+                            name="valid/generation_samples",
+                            step=global_step,
+                        )
     model.train()
     _validation_metrics = {}
     for k,v in  validation_metrics.items():
@@ -308,6 +323,7 @@ def train_loop(
     # --- Validation Parameters -- #
     val_every_n_batches: int,
     verbose: bool,
+    aim_run: Optional[AimRun],
 ) -> nn.Module:
     device = next(bart_llm.parameters()).device
     ########################################
@@ -349,13 +365,27 @@ def train_loop(
 
                 # Validation
                 if cur_num_batches % val_every_n_batches == 0:
-                    val_report = validation_loop(bart_llm, val_dataloader, word_tokenizer, verbose)
+                    val_report = validation_loop(
+                        bart_llm,
+                        val_dataloader,
+                        word_tokenizer,
+                        verbose,
+                        aim_run,
+                        cur_num_batches,
+                    )
                     validation_reports.append((
                         cur_num_batches,
                         val_report,
                     ))
                     if wandb_on:
                         wandb.log(val_report)
+                    if aim_run is not None:
+                        for metric_name, metric_value in val_report.items():
+                            aim_run.track(
+                                metric_value,
+                                name=metric_name,
+                                step=cur_num_batches,
+                            )
 
                 cur_num_batches += 1
 
@@ -385,14 +415,23 @@ def train_loop(
                 final_loss.backward()
                 optimizer.step()
                 scheduler.step()
+                current_lr = scheduler.get_last_lr()[0]
                 loss_reports.append(gtllm_loss.item())
 
                 if wandb_on:
-                    wandb.log({
+                    wandb_payload = {
                         "loss_bart_train": gtllm_loss.item(),
                         "loss_bert_train": bert_loss.item(),
                         "final_loss_train": final_loss.item()
-                    })
+                    }
+                    wandb.log(wandb_payload)
+                if aim_run is not None:
+                    step_id = cur_num_batches
+                    aim_run.track(e, name="train/epoch", step=step_id)
+                    aim_run.track(gtllm_loss.item(), name="train/loss_bart_train", step=step_id)
+                    aim_run.track(bert_loss.item(), name="train/loss_bert_train", step=step_id)
+                    aim_run.track(final_loss.item(), name="train/final_loss_train", step=step_id)
+                    aim_run.track(current_lr, name="train/lr", step=step_id)
 
                 # Check for changes
                 change_in_embeddings = torch.dist(ent_emb_backup, train_dataset.id2ent.weight).sum()
@@ -400,7 +439,7 @@ def train_loop(
                 grad = train_dataset.id2ent.weight.grad
                 logger.debug(f"Repoerting on gradient of embedding: {grad}")
 
-                table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1]}", f"{scheduler.get_lr()}")
+                table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1]}", f"{current_lr}")
                 progress.update_table(table_reports)
                 progress.update(task_batch, advance=1)
                 time.sleep(0.1)
@@ -422,10 +461,14 @@ def main():
         wandb.init(
             project=f"{args.wandb_project}",
             config=vars(args),
-            name=f"{args.wr_name}-{timestamp}",
+            name=f"{args.run_name}-{timestamp}",
             notes=args.wr_notes
         )
     wandb_on = args.wandb_on
+    aim_run = AimRun(experiment=args.aim_experiment)
+    run_name = args.run_name if args.run_name is not None else "gtllm_pretraining"
+    aim_run.name = run_name
+    aim_run["hparams"] = vars(args)
 
     ########################################
     # Process the NLP components
@@ -524,12 +567,14 @@ def main():
         args.num_warmup_steps,
         args.val_every_n_batches,
         args.verbose,
+        aim_run,
     )
+    aim_run.close()
 
     logger.info("Training Finsihed")
     # Save the model under ./models/gtllm/date/
     timestamp = time.strftime("%m%d%Y_%H%M%S", time.localtime())
-    run_name = "gtllm_"+args.wr_name if args.wr_name is not None else "gtllm"
+    run_name = "gtllm_"+args.run_name if args.run_name is not None else "gtllm"
     model_path = os.path.join(args.outPath_save_model, f"{run_name}_{timestamp}.pt")
     print(f"The model_path directory is {os.path.dirname(model_path)}")
     os.makedirs(os.path.dirname(model_path), exist_ok = True)

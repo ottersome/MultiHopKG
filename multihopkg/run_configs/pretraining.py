@@ -30,7 +30,7 @@ def get_args() -> argparse.Namespace:
     # -------------------- Logging Parameters --------------------
     ap.add_argument("-W", "--wandb_on", action="store_true", help="Enable Weights & Biases experiment tracking")
     ap.add_argument("--wandb_project", type=str, default="gtllm_pretraining",help="wandb: Project name to group runs")
-    ap.add_argument("--wr_name", type=str, help="wandb: Unique name for this run")
+    ap.add_argument("--run_name", type=str, help="wandb: Unique name for this run")
     ap.add_argument("--wr_notes", type=str, help="wandb: Additional notes for this run")
 
     # -------------------- General Data Parameters --------------------
@@ -48,6 +48,8 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--bert_base_llm_tokenizer", type=str, default="bert-base-uncased")
     ap.add_argument("--baseline_lr", type=float, default=1e-3)
     ap.add_argument("--minimum_lr", type=float, default=1e-6)
+    ap.add_argument("--aim_repo", type=str, default="./.aim", help="Filesystem path where Aim logs will be stored")
+    ap.add_argument("--aim_experiment", type=str, default="gtllm_pretraining", help="Aim experiment name for grouping runs")
 
     args = ap.parse_args()
     # Some sanity checks/helps
