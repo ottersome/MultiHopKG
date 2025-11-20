@@ -70,6 +70,7 @@ def _prepare_question_prompts(
     ans_masks: torch.Tensor,
     pad_token_id: int,
     bos_token_id: Optional[int],
+    eos_token_id: Optional[int],
 ) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
     """
     Extract only the question portion (prior to the first answer token) to use as decoder prompts.
@@ -87,9 +88,10 @@ def _prepare_question_prompts(
         except ValueError:
             answer_start = len(seq_list)
         answer_start = min(answer_start, seq_len)
-        prompt = [token for token in seq_list[:answer_start] if token != pad_token_id]
+        prompt = [token for token in seq_list[:answer_start] if token != pad_token_id and token != bos_token_id and token != eos_token_id]
         if not prompt:
             raise ValueError("Was expecting a prompt in evaluation")
+        prompt.append(bos_token_id)
         prompts.append(torch.tensor(prompt, dtype=torch.long, device=device))
         prompt_lengths.append(len(prompt))
 
@@ -118,7 +120,7 @@ def _run_generation_evaluation(
     pad_token_id = tokenizer.pad_token_id
     assert isinstance(pad_token_id, int), "pad_token_id must be defined for generation evaluation"
     decoder_input_ids, decoder_attention_mask, prompt_lengths = _prepare_question_prompts(
-        qna_tokens, ans_masks, pad_token_id, tokenizer.bos_token_id
+        qna_tokens, ans_masks, pad_token_id, tokenizer.bos_token_id, tokenizer.eos_token_id
     )
 
     translated_embeddings = model.embedding_translator(graph_embeddings)
@@ -131,8 +133,9 @@ def _run_generation_evaluation(
         attention_mask=encoder_attention_mask,
         decoder_input_ids=decoder_input_ids,
         decoder_attention_mask=decoder_attention_mask,
+        min_length=0,
         max_length=max_generation_len,
-        num_beams=1,
+        num_beams=3,
     )
 
     eos_token_id = tokenizer.eos_token_id
