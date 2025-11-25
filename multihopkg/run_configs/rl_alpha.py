@@ -62,6 +62,12 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--supervised_adapter_scalar', default=0.5, type=float, help='Scalar for the supervised adapter loss (default: 0.0)') 
     ap.add_argument('--supervised_sigma_scalar', default=0.1, type=float, help='Scalar for the supervised sigma loss (default: 0.1)')
     ap.add_argument('--supervised_expected_sigma', default=0.1, type=float, help='Scalar for the supervised expected sigma value (default: 0.1)') 
+    ap.add_argument(
+        '--teacherforce_reg_lambda',
+        type=float,
+        default=0.0,
+        help='Weight applied to the teacher-forcing action regularization term (default: 0.0)',
+    )
 
 
     # Dropout Scheduling
@@ -122,4 +128,3 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--run_name", type=str, help="Run name to distinguish it when comparing logs.")
 
     return ap.parse_args()
-

@@ -167,7 +167,7 @@ class QuestionReplayBuffer:
             _exp_idxs = torch.randperm(self.experiences_per_question)[:qid_count].to(torch.long)
             exp_idxs.append(_exp_idxs)
         experiences_idxs = torch.concat(exp_idxs)
-        qids_idxs = torch.Tensor(qids_idxs).to(torch.long)
+        qids_idxs = torch.tensor(qids_idxs, dtype=torch.long)
 
         # Sample
         cur_states = self.cur_states[qids_idxs, experiences_idxs]
@@ -182,6 +182,7 @@ class QuestionReplayBuffer:
         step_counter = self.step_counter[qids_idxs, experiences_idxs]
 
         return (
+            qids_idxs,
             cur_states,
             quest_bert_emb,
             actions,

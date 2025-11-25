@@ -1131,6 +1131,7 @@ def train_multihopkg(
             }
 
             (
+                _sampled_qids,
                 _,
                 bert_quest_emb,
                 actions,
