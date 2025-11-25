@@ -11,6 +11,7 @@ from rich import traceback
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+import pandas as pd
 from transformers import (
     AutoTokenizer,  # type: ignore
 )
@@ -526,6 +527,20 @@ def main():
         train_df,
         dev_df,
         test_df
+    )
+
+    ########################################
+    # Expand training exposure
+    ########################################
+    previous_train_size = len(dataset_partitions.train)
+    dataset_partitions.train = pd.concat(
+        [dataset_partitions.train, dataset_partitions.validation, dataset_partitions.test],
+        ignore_index=True,
+    )
+    logger.info(
+        "Expanded training split from %d to %d examples by mixing all partitions",
+        previous_train_size,
+        len(dataset_partitions.train),
     )
 
     ########################################

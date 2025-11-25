@@ -1,6 +1,6 @@
 # -------------------- General Parameters --------------------
 seed: 42
-epochs: 200
+epochs: 30
 batch_size: 64
 val_every_n_batches: 50
 num_warmup_steps: 200

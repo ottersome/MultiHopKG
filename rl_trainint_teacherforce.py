@@ -1071,7 +1071,7 @@ def train_multihopkg(
         alpha_loss = -(log_alpha * (log_probs.detach() + target_entropy)).mean()
         # alpha_loss = -(log_probs.detach() + target_entropy).mean()
         alpha_optimizer.zero_grad()
-        alpha_loss.backward()
+        # alpha_loss.backward()
         alpha_optimizer.step()
 
         soft_update(value_net, target_value_net, tau)

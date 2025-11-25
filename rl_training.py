@@ -1041,7 +1041,7 @@ def train_multihopkg(
         policy_optimizer.step()
 
         alpha_loss = -(log_alpha * (log_probs.detach() + target_entropy)).mean()
-        alpha_loss = -(log_probs.detach() + target_entropy).mean()
+        # alpha_loss = -(log_probs.detach() + target_entropy).mean()
         alpha_optimizer.zero_grad()
         alpha_loss.backward()
         alpha_optimizer.step()
@@ -1096,6 +1096,7 @@ def train_multihopkg(
     )
     writer = AimWriter(
         repo=log_dir,
+        experiment="rl_training",
         # experiment=f"rl_sac/{env.knowledge_graph.model_name.lower()}",
         run_name=f"{run_name}-{timestamp}",
     )

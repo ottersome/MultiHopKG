@@ -71,9 +71,9 @@ def get_args() -> argparse.Namespace:
                          'dropout annealing is not used when the value is >= 1000.)') # TODO: Check if this is still used. Answer: Passed to NavigationAgent, but not used in the current implementation.
     
     # Training Duration & Rollout
-    ap.add_argument('--epochs',type=int,default=200, help='Total number of training epochs (default: 200)')
+    ap.add_argument('--epochs',type=int,default=2000, help='Total number of training epochs (default: 200)')
     ap.add_argument('--start_epoch', type=int, default=0, help='Epoch to start training instead of just observing (default: 0)') # TODO: Implement this.
-    ap.add_argument('--num_update_steps', type=int, default=100000, help='Amount of graident updates to run in this training.')
+    ap.add_argument('--num_update_steps', type=int, default=1000000, help='Amount of graident updates to run in this training.')
 
     # Batch Settings
     ap.add_argument('--batch_size', type=int, default=256, help='Training mini-batch size (default: 256)')
