@@ -188,6 +188,49 @@ class QuestionCoverageSampler:
 
         return self._cursor / len(self._question_ids)
 
+def _prepare_question_prompts(
+    qna_tokens: torch.Tensor,
+    ans_masks: torch.Tensor,
+    pad_token_id: int,
+    bos_token_id: Optional[int],
+    eos_token_id: Optional[int],
+) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
+    """
+    Extract only the question portion (prior to the first answer token) to use as decoder prompts.
+    """
+    prompts: List[torch.Tensor] = []
+    prompt_lengths: List[int] = []
+    device = qna_tokens.device
+    seq_len = qna_tokens.shape[1]
+
+    for seq, mask in zip(qna_tokens, ans_masks):
+        mask_list = mask.tolist()
+        seq_list = seq.tolist()
+        try:
+            answer_start = mask_list.index(1)
+        except ValueError:
+            answer_start = len(seq_list)
+        answer_start = min(answer_start, seq_len)
+        prompt = [
+            token
+            for token in seq_list[:answer_start]
+            if token != pad_token_id and token != bos_token_id and token != eos_token_id
+        ]
+        if not prompt:
+            raise ValueError("Was expecting a prompt in evaluation")
+        if bos_token_id is None:
+            raise ValueError("Decoder BOS token id must be defined for prompt preparation")
+        prompt.append(bos_token_id)
+        prompts.append(torch.tensor(prompt, dtype=torch.long, device=device))
+        prompt_lengths.append(len(prompt))
+
+    decoder_input_ids = torch.nn.utils.rnn.pad_sequence(
+        prompts, batch_first=True, padding_value=pad_token_id
+    )
+    decoder_attention_mask = (decoder_input_ids != pad_token_id).long()
+
+    return decoder_input_ids, decoder_attention_mask, prompt_lengths
+
 
 
 @torch.no_grad()
@@ -319,50 +362,37 @@ def get_ground_truth_paths(
     *,
     mini_batch: pd.DataFrame,
     env: ReinforcedUnsupervisedEnv,
-    max_path_len: int,
+    num_steps_per_row: torch.Tensor,
     device: torch.device,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> List[torch.Tensor]:
     """Return padded ground-truth entity/action trajectories for each question."""
 
     knowledge_graph = env.knowledge_graph
     entity_embeddings = knowledge_graph.entity_embedding
     relation_embeddings = knowledge_graph.relation_embedding
-    state_dim = entity_embeddings.shape[1]
 
-    batch_size = len(mini_batch)
-    gt_paths = torch.full(
-        (batch_size, max_path_len, state_dim),
-        PATH_PADDING_VALUE,
-        device=device,
-        dtype=entity_embeddings.dtype,
-    )
-    gt_step_counts = torch.zeros(batch_size, dtype=torch.long, device=device)
+    gt_paths_list = []
     triples_list = mini_batch["triples_ints"].tolist()
-    max_supported_steps = max(0, (max_path_len - 1) // 2)
 
     for row_idx, discrete_path in enumerate(triples_list):
 
+        _num_steps = int(num_steps_per_row[row_idx].item())
         entity_ids = torch.tensor(discrete_path[0::2], dtype=torch.long, device=device)
         relation_ids = torch.tensor(discrete_path[1::2], dtype=torch.long, device=device)
         entity_vecs = get_embeddings_from_indices(entity_embeddings, entity_ids)
 
-        _num_steps = max(0, entity_ids.numel() - 1)
-        if _num_steps > max_supported_steps:
-            raise RuntimeError(f"Error: No support for {_num_steps} steps found in triple_ints in the dataset. Maximum number of steps in this training is {max_supported_steps} ")
-        gt_step_counts[row_idx] = _num_steps
-        gt_paths[row_idx, 0, :] = entity_vecs[0]
+        path_tensor = torch.zeros(_num_steps * 2 + 1, entity_vecs.shape[-1])
+        path_tensor[0, :] = entity_vecs[0]
 
-        if _num_steps == 0 or relation_ids.numel() == 0:
-            raise ValueError("Got a sample with either no entities or no relations.")
+        if _num_steps > 0:
+            relation_vecs = get_embeddings_from_indices(relation_embeddings, relation_ids[:_num_steps])
+            for step in range(_num_steps):
+                path_tensor[2 * step + 1, :] = relation_vecs[step] # type: ignore
+                path_tensor[2 * step + 2, :] = entity_vecs[step + 1]
 
-        relation_vecs = get_embeddings_from_indices(
-            relation_embeddings, relation_ids[:_num_steps]
-        )
-        for step in range(_num_steps):
-            gt_paths[row_idx, 2 * step + 1, :] = relation_vecs[step]
-            gt_paths[row_idx, 2 * step + 2, :] = entity_vecs[step + 1]
+        gt_paths_list.append(path_tensor)
 
-    return gt_paths, gt_step_counts
+    return gt_paths_list
 
 
 @torch.no_grad()
@@ -414,19 +444,18 @@ def hydrate_replay_buffer(
 
     mini_batch = train_df.loc[sampled_question_idxs]
 
-    gt_paths, gt_step_counts = get_ground_truth_paths(
+    gt_paths_lists = get_ground_truth_paths(
         mini_batch=mini_batch,
         env=env,
-        max_path_len=max_path_len,
+        num_steps_per_row=step_counter,
         device=device,
     )
-    if gt_paths is not None:
-        assert step_counter != gt_step_counts, "Sample does not have the same amount of steps as necessary"
+    if gt_paths_lists is not None:
         # step_counter = torch.minimum(step_counter, gt_step_counts)
         prefix_lengths = step_counter * 2 + 1
         for row_idx in range(actual_num_experiences):
             fill_len = int(prefix_lengths[row_idx].item())
-            path_states[row_idx, :fill_len, :] = gt_paths[row_idx, :fill_len, :]
+            path_states[row_idx, :fill_len, :] = gt_paths_lists[row_idx]
 
     questions_tokens = [torch.Tensor(ques).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
     padded_questions_tokens = torch.nn.utils.rnn.pad_sequence(
@@ -621,10 +650,15 @@ def evaluate_seq2seq_outputs(
         question_tokens_list = [q for q in mini_batch["enc_questions"].tolist()]
         answer_tokens_list = [ans for ans in mini_batch["enc_answer"].tolist()]
         # TODO: Confirm that question_token_list has a `2` at the end (separator token)
-        question_tokens_list_tensor = [torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()]
-        padded_questions = torch.nn.utils.rnn.pad_sequence(question_tokens_list_tensor, batch_first=True, padding_value=bart_pad_token_id).to(device)
-        bart_questions_mask = padded_questions != bart_pad_token_id
-        answer_tokens_list_tensor = [torch.tensor(ans, dtype=torch.long) for ans in mini_batch["enc_answer"].tolist()]
+        question_tokens_list_tensor = [
+            torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()
+        ]
+        padded_questions = torch.nn.utils.rnn.pad_sequence(
+            question_tokens_list_tensor, batch_first=True, padding_value=bart_pad_token_id
+        ).to(device)
+        answer_tokens_list_tensor = [
+            torch.tensor(ans, dtype=torch.long) for ans in mini_batch["enc_answer"].tolist()
+        ]
         # padded_answers = torch.nn.utils.rnn.pad_sequence(answer_tokens_list_tensor, batch_first=True, padding_value=bart_pad_token_id).to(device)
         # max_answer_len = max(len(ans) for ans in answer_tokens_list_tensor)
 
@@ -703,15 +737,22 @@ def evaluate_seq2seq_outputs(
         ########################################
         # TODO: Logit Loss Calculation
         ########################################
-        qna_tokens, answer_mask = GraphEmbeddingDataset._merge_questions_and_answers(
+        qna_tokens, answer_masks = GraphEmbeddingDataset._merge_questions_and_answers(
             question_tokens_list, answer_tokens_list, bart_pad_token_id
         )
-        qna_tokens_tensor = [ torch.tensor(qna_token, dtype=torch.long, device=device) for qna_token in qna_tokens ]
+        qna_tokens_tensor = [
+            torch.tensor(qna_token, dtype=torch.long, device=device) for qna_token in qna_tokens
+        ]
         padded_qna_tokens = torch.nn.utils.rnn.pad_sequence(
             qna_tokens_tensor, batch_first=True, padding_value=bart_pad_token_id
         )
-        decoder_attention_mask = torch.ones_like(padded_qna_tokens, dtype=torch.long, device=device)
-        decoder_attention_mask[qna_tokens == bart_pad_token_id] = 0
+        answer_mask_tensors = [
+            torch.tensor(mask, dtype=torch.long, device=device) for mask in answer_masks
+        ]
+        padded_answer_masks = torch.nn.utils.rnn.pad_sequence(
+            answer_mask_tensors, batch_first=True, padding_value=0
+        )
+        decoder_attention_mask = (padded_qna_tokens != bart_pad_token_id).long()
         bart_outputs = hunch_llm.bart( # type:ignore
             inputs_embeds=translated_embeddings,
             attention_mask=encoder_attention_mask,
@@ -726,7 +767,9 @@ def evaluate_seq2seq_outputs(
         shapes_for_reconstruction = []
         debug_meep = []
         for i, logit in enumerate(logits):
-            ans_pred_ids = torch.nonzero(torch.tensor(answer_mask[i])).squeeze() - 1
+            ans_pred_ids = (
+                torch.nonzero(padded_answer_masks[i], as_tuple=False).squeeze(-1) - 1
+            )
             selected_logits = logit[ans_pred_ids]
             if len(selected_logits.shape) == 1:
                 selected_logits = selected_logits.unsqueeze(0)
@@ -769,14 +812,12 @@ def evaluate_seq2seq_outputs(
         # We need to look for the logic in pretraining
         # Prep questions
         generated_ids = hunch_llm.bart.generate( # type: ignore
-            decoder_input_ids=padded_questions,
+            decoder_input_ids=decoder_prompt_ids,
             inputs_embeds=translated_embeddings,
             attention_mask=encoder_attention_mask,
-            decoder_attention_mask=bart_questions_mask,
-            # decoder_start_token_id=answer_tokenizer.bos_token_id,
-            # eos_token_id=answer_tokenizer.eos_token_id,
-            # pad_token_id=pad_token_id,
-            max_length=100,
+            decoder_attention_mask=decoder_prompt_attention_mask,
+            min_length=0,
+            max_length=max_generation_len,
             num_beams=3,
         )
 
