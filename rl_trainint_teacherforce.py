@@ -196,7 +196,6 @@ def prepopulate_replay_buffer(
     env: ReinforcedUnsupervisedEnv,
     actor: ContinuousPolicyGradient,
     hunch_llm: nn.Module,
-    kge_model: KGEModel,
     replay_buffer: QuestionReplayBuffer,
     train_df: pd.DataFrame,
     num_simulations_per_question: int, # Simulations ~= Transitions  
@@ -209,10 +208,9 @@ def prepopulate_replay_buffer(
     BATCH_SIZE=64 # TODO: Parameterize later
     gpu_device = next(actor.parameters()).device
     cpu_device = replay_buffer.cur_states.device
-    entity_embeddings = kge_model.entity_embedding
     # Lets Initiate sub buffers for each question
 
-    for i in tqdm(range(0, len(train_df), BATCH_SIZE), "Populating the replay buffer"):
+    for i in tqdm(range(0, len(train_df), BATCH_SIZE), f"Populating the replay buffer"):
         mini_batch = train_df.iloc[i : i + BATCH_SIZE]
         _inner_batch_size = len(mini_batch)
 
@@ -316,20 +314,56 @@ def prepopulate_replay_buffer(
 
     return replay_buffer
 
-def get_ground_truth_past(
+@torch.no_grad()
+def get_ground_truth_paths(
+    *,
     mini_batch: pd.DataFrame,
-    hunch_llm: nn.Module,
-    step_counter: torch.Tensor,
-    action_emb_matrix: nn.Module,
-):
+    env: ReinforcedUnsupervisedEnv,
+    max_path_len: int,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Return padded ground-truth entity/action trajectories for each question."""
 
-    paths = mini_batch["triple_ints"].values.tolist()
-    for i, path in enumerate(paths):
-        path_num_steps = (len(path) - 1) // 2
-        is_done = path_num_steps + 1 >= step_counter[i]
-        next_actions = action_emb_matrix
-    return 
-    
+    knowledge_graph = env.knowledge_graph
+    entity_embeddings = knowledge_graph.entity_embedding
+    relation_embeddings = knowledge_graph.relation_embedding
+    state_dim = entity_embeddings.shape[1]
+
+    batch_size = len(mini_batch)
+    gt_paths = torch.full(
+        (batch_size, max_path_len, state_dim),
+        PATH_PADDING_VALUE,
+        device=device,
+        dtype=entity_embeddings.dtype,
+    )
+    gt_step_counts = torch.zeros(batch_size, dtype=torch.long, device=device)
+    triples_list = mini_batch["triples_ints"].tolist()
+    max_supported_steps = max(0, (max_path_len - 1) // 2)
+
+    for row_idx, discrete_path in enumerate(triples_list):
+
+        entity_ids = torch.tensor(discrete_path[0::2], dtype=torch.long, device=device)
+        relation_ids = torch.tensor(discrete_path[1::2], dtype=torch.long, device=device)
+        entity_vecs = get_embeddings_from_indices(entity_embeddings, entity_ids)
+
+        _num_steps = max(0, entity_ids.numel() - 1)
+        if _num_steps > max_supported_steps:
+            raise RuntimeError(f"Error: No support for {_num_steps} steps found in triple_ints in the dataset. Maximum number of steps in this training is {max_supported_steps} ")
+        gt_step_counts[row_idx] = _num_steps
+        gt_paths[row_idx, 0, :] = entity_vecs[0]
+
+        if _num_steps == 0 or relation_ids.numel() == 0:
+            raise ValueError("Got a sample with either no entities or no relations.")
+
+        relation_vecs = get_embeddings_from_indices(
+            relation_embeddings, relation_ids[:_num_steps]
+        )
+        for step in range(_num_steps):
+            gt_paths[row_idx, 2 * step + 1, :] = relation_vecs[step]
+            gt_paths[row_idx, 2 * step + 2, :] = entity_vecs[step + 1]
+
+    return gt_paths, gt_step_counts
+
 
 @torch.no_grad()
 def hydrate_replay_buffer(
@@ -380,12 +414,19 @@ def hydrate_replay_buffer(
 
     mini_batch = train_df.loc[sampled_question_idxs]
 
-    # TODO: FInish this
-    # Get Ground Truth Past
-    # (
-    #     gt_actions, 
-    #     gt_states,
-    # ) = get_ground_truth_past(mini_batch, hunch_llm)
+    gt_paths, gt_step_counts = get_ground_truth_paths(
+        mini_batch=mini_batch,
+        env=env,
+        max_path_len=max_path_len,
+        device=device,
+    )
+    if gt_paths is not None:
+        assert step_counter != gt_step_counts, "Sample does not have the same amount of steps as necessary"
+        # step_counter = torch.minimum(step_counter, gt_step_counts)
+        prefix_lengths = step_counter * 2 + 1
+        for row_idx in range(actual_num_experiences):
+            fill_len = int(prefix_lengths[row_idx].item())
+            path_states[row_idx, :fill_len, :] = gt_paths[row_idx, :fill_len, :]
 
     questions_tokens = [torch.Tensor(ques).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
     padded_questions_tokens = torch.nn.utils.rnn.pad_sequence(
@@ -925,6 +966,7 @@ def train_multihopkg(
     eid2pid: Dict[int, str],
     qid_to_title: Dict[str, str],
     pid_to_title: Dict[str, str],
+    teacherforce_reg_lambda: float,
 ):
     if answer_tokenizer.pad_token_id is None:
         raise ValueError(
@@ -965,6 +1007,18 @@ def train_multihopkg(
     train_df = data_partitions.train
     question_ids = train_df.index.values.tolist()
     assert isinstance(question_ids, List)
+    teacher_relation_targets: Dict[int, List[int]] = {}
+    for qid, path in train_df["triples_ints"].items():
+        if not isinstance(path, Sequence):
+            continue
+        relations = [int(rel) for rel in path[1::2]]
+        if relations:
+            teacher_relation_targets[int(qid)] = relations
+    default_relation_idx = 0
+    if teacher_relation_targets:
+        sample_relations = next(iter(teacher_relation_targets.values()))
+        if sample_relations:
+            default_relation_idx = int(sample_relations[0])
     eval_interval_updates = max(1, num_gradupdates_till_eval)
     last_eval_updates = 0
 
@@ -976,7 +1030,32 @@ def train_multihopkg(
             target_param.data.mul_(1.0 - tau)
             target_param.data.add_(tau * param.data)
 
+    def get_teacher_action_embeddings(
+        question_ids_tensor: torch.Tensor, step_counts: torch.Tensor
+    ) -> Optional[torch.Tensor]:
+        if not teacher_relation_targets:
+            return None
+        relation_indices: List[int] = []
+        qid_list = question_ids_tensor.detach().cpu().tolist()
+        step_list = step_counts.detach().cpu().tolist()
+        for qid_value, step_value in zip(qid_list, step_list):
+            relations = teacher_relation_targets.get(int(qid_value))
+            if not relations:
+                relation_indices.append(default_relation_idx)
+                continue
+            relation_pos = min(int(step_value), len(relations) - 1)
+            relation_indices.append(relations[relation_pos])
+        if not relation_indices:
+            return None
+        relation_idx_tensor = torch.tensor(
+            relation_indices, dtype=torch.long, device=device
+        )
+        return get_embeddings_from_indices(
+            env.knowledge_graph.relation_embedding, relation_idx_tensor
+        ).to(device)
+
     def sac_update_step(
+        question_ids: torch.Tensor,
         bert_quest_emb: torch.Tensor,
         states_path: torch.Tensor,
         actions: torch.Tensor,
@@ -1047,6 +1126,23 @@ def train_multihopkg(
         policy_state = _states_path.clone()
         policy_state[batch_idxs, 2 * step_counter + 1, :] = policy_actions
 
+        teacher_targets = get_teacher_action_embeddings(question_ids, step_counter)
+        policy_alignment_metric = 0.0
+        buffer_alignment_metric = 0.0
+
+        if teacher_targets is not None:
+            teacher_targets = teacher_targets.to(policy_actions.dtype)
+            buffer_alignment_metric = (
+                F.mse_loss(
+                    actions,
+                    teacher_targets.detach(),
+                    reduction="none",
+                )
+                .mean(dim=-1)
+                .mean()
+                .item()
+            )
+
         q1_pi = critic_q1(policy_state, graph_plusAction_mask, bert_quest_emb)
         q2_pi = critic_q2(policy_state, graph_plusAction_mask, bert_quest_emb)
         min_q_pi = torch.min(q1_pi, q2_pi)
@@ -1064,6 +1160,12 @@ def train_multihopkg(
 
         policy_loss = (alpha * log_probs.unsqueeze(-1) - min_q_pi).mean()
         # policy_loss = (log_probs.unsqueeze(-1) - min_q_pi).mean()
+        if teacher_targets is not None and teacherforce_reg_lambda > 0:
+            reg_component = F.mse_loss(
+                policy_actions, teacher_targets, reduction="none"
+            ).mean(dim=-1)
+            policy_loss = policy_loss + teacherforce_reg_lambda * reg_component.mean()
+            policy_alignment_metric = reg_component.mean().item()
         policy_optimizer.zero_grad()
         policy_loss.backward()
         policy_optimizer.step()
@@ -1071,7 +1173,7 @@ def train_multihopkg(
         alpha_loss = -(log_alpha * (log_probs.detach() + target_entropy)).mean()
         # alpha_loss = -(log_probs.detach() + target_entropy).mean()
         alpha_optimizer.zero_grad()
-        # alpha_loss.backward()
+        alpha_loss.backward()
         alpha_optimizer.step()
 
         soft_update(value_net, target_value_net, tau)
@@ -1107,6 +1209,8 @@ def train_multihopkg(
             "value_pred_mean": value_pred_mean,
             "step_counter_mean": step_counter.float().mean().item(),
             "mask_tokens_mean": mask_token_counts.mean().item(),
+            "teacherforce_policy_alignment": policy_alignment_metric,
+            "teacherforce_buffer_alignment": buffer_alignment_metric,
         }
 
     coverage_sampler = QuestionCoverageSampler(question_ids)
@@ -1124,6 +1228,7 @@ def train_multihopkg(
     )
     writer = AimWriter(
         repo=log_dir,
+        experiment="rl_training",
         # experiment=f"rl_sac/{env.knowledge_graph.model_name.lower()}",
         run_name=f"{run_name}-{timestamp}",
     )
@@ -1158,6 +1263,7 @@ def train_multihopkg(
             }
 
             (
+                sampled_qids,
                 _,
                 bert_quest_emb,
                 actions,
@@ -1171,6 +1277,7 @@ def train_multihopkg(
             ) = replay_buffer.sample_transitions(question_counts)
 
             update_metrics = sac_update_step(
+                sampled_qids,
                 bert_quest_emb.to(device),
                 path_states.to(device),
                 actions.to(device),
@@ -1591,7 +1698,6 @@ def main():
             actor=nav_agent,
             hunch_llm=hunch_llm,
             replay_buffer=replay_buffer,
-            kge_model=kge_model,
             train_df=train_df,
             num_simulations_per_question=args.experiences_per_question,
             max_env_steps=args.max_env_steps,
@@ -1715,6 +1821,7 @@ def main():
         eid2pid=id2rel,
         qid_to_title=entities_info,
         pid_to_title=relations_info,
+        teacherforce_reg_lambda=args.teacherforce_reg_lambda,
     )
     logger.info("Done with everything. Exiting...")
 
