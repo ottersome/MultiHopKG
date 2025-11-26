@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional, Sequence, Tuple
 import pandas as pd
+from multihopkg.logging import setup_logger
 
 import torch
 
@@ -62,6 +63,13 @@ class QuestionReplayBuffer:
         self.entropy = torch.zeros((self.num_questions, self.experiences_per_question))
         self.step_counter = torch.zeros((self.num_questions, self.experiences_per_question), dtype=torch.long)
 
+        # Mostly for teacher forcing
+        # SO that algo can enforce a maximum path length
+        self.max_nominal_path_lens = torch.zeros((self.num_questions), dtype=torch.long)
+
+    def get_max_nominal_pathlen(self):
+        return self.max_nominal_path_lens
+
     def get_question_bert_emb_dim(self):
         return self.bert_emb_dim
 
@@ -87,6 +95,8 @@ class QuestionReplayBuffer:
         log_probs: torch.Tensor,             # [E]
         entropies: torch.Tensor,             # [E]
         step_counter:  torch.Tensor,         # [E]
+        logger: Optional[logging.Logger] = None,
+        nominal_max_path_len: Optional[torch.Tensor] = None
         # Where E indexes experience, T indexes path length, and A is action/state shape. B is Bert Pooled Embedding Dim
     ):
         """
@@ -96,6 +106,11 @@ class QuestionReplayBuffer:
         cap = self.experiences_per_question
 
         qids, qids_count = torch.unique(questions_ids, return_counts=True)
+        if logger is not None:
+            logger.info(f"Adding {qids_count} transitions to replay buffer")
+            logger.info(f"We are writing into write_ptrs {self.write_ptr[qids]} with qids {qids}")
+            for h in logger.handlers:
+                h.flush()
         start = self.write_ptr[qids] # [E]
         start_tiled = self.write_ptr[questions_ids] # [E]
         arange_N = torch.concat([
@@ -103,6 +118,10 @@ class QuestionReplayBuffer:
             for qid_count in qids_count
         ]) 
         exp_ids = (start_tiled + arange_N) % cap
+        if logger is not None:
+            logger.info(f"We will be adding experiences into exp_ids {exp_ids}")
+            for h in logger.handlers:
+                h.flush()
 
         # Write into buffer (parallelized)
         # TODO: We will likely want to remove cur_states as it may covered by path_states
@@ -116,6 +135,9 @@ class QuestionReplayBuffer:
         self.log_prob[questions_ids, exp_ids] = log_probs.to(device)
         self.entropy[questions_ids, exp_ids] = entropies.to(device)
         self.step_counter[questions_ids, exp_ids] = step_counter.to(device)
+
+        if nominal_max_path_len is not None:
+            self.max_nominal_path_lens[qids] = nominal_max_path_len
 
         # Advance write pointer
         self.write_ptr[qids] = (start + qids_count) % cap
@@ -196,7 +218,7 @@ class QuestionReplayBuffer:
         )
 
     def get_oldest_experiences(self, question_counts: Dict[int, int], device: torch.device)\
-            -> Tuple[torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,]:
+            -> Tuple[torch.Tensor, torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,]:
         
         # Ensure we don't get more requests then we can serve
         qids, qid_counts = zip(*question_counts.items())
@@ -215,8 +237,7 @@ class QuestionReplayBuffer:
         qids_idxs = torch.Tensor(qids_idxs).to(torch.long)
 
         return (
-            qids_idxs.to(device),
-            experiences_idxs.to(device),
+            qids_idxs,
             self.quest_bert_emb[qids_idxs, experiences_idxs].clone().to(device),
             self.path_states[qids_idxs, experiences_idxs].clone().to(device),
             self.actions[qids_idxs, experiences_idxs].clone().to(device),

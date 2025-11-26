@@ -30,6 +30,7 @@ import pandas as pd
 from multihopkg.datasets import GraphEmbeddingDataset
 from multihopkg.utils.data_structures import DataPartitions
 from multihopkg.utils.ops import ensure_list_of_ints
+from multihopkg.logging import setup_logger
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -67,6 +68,12 @@ from multihopkg.utils.setup import set_seeds
 from multihopkg.utils.wandb import histogram_all_modules
 from multihopkg.utils_debug.dump_evals import dump_evaluation_metrics
 from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
+
+# torch.backends.cuda.matmul.allow_tf32 = False
+# torch.backends.cudnn.allow_tf32 = False
+# torch.autograd.set_detect_anomaly(True)
+# torch.cuda.set_sync_debug_mode(1)
+
 
 traceback.install()
 wandb_run = None
@@ -229,6 +236,9 @@ def prepopulate_replay_buffer(
         answer_graphemb_idxs = torch.LongTensor([path[-1] for path in paths]).to(gpu_device) # TODO: see if we can remove device
         answer_graphemb_idxs = answer_graphemb_idxs.unsqueeze(1).repeat(1,num_simulations_per_question).view(-1).to(gpu_device)
 
+        # This bit is mostly for teacher forcing so that we have a max length to work with 
+        nominal_max_path_len = torch.LongTensor([len(path) for path in paths])
+
         bert_emb_dim = replay_buffer.get_question_bert_emb_dim()
 
         # Question Bert Embedding
@@ -252,7 +262,7 @@ def prepopulate_replay_buffer(
         # init_states = env.reset(bert_quest_emb)
         # init_states = init_states.detach().to(cpu_device)
         init_states = starting_point_graphemb_idxs
-        init_states = get_embeddings_from_indices(entity_embeddings, init_states)
+        init_states = get_embeddings_from_indices(env.knowledge_graph.entity_embedding, init_states)
         padded_path = torch.full([init_states.shape[0], max_env_steps*2 + 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float, device=gpu_device)
         padded_path[:,0,:] = init_states
 
@@ -306,6 +316,8 @@ def prepopulate_replay_buffer(
             log_probs = torch.ones_like(llm_reward, dtype=torch.float), # TODO: make sure we handle this place holder value properly later
             entropies = torch.full_like(llm_reward, -1.0),
             step_counter = step_counter,
+            logger = logger,
+            nominal_max_path_len= nominal_max_path_len,
         )
         del bert_quest_emb, answer_graphemb_idxs, answer_bert_heuristics, init_states, next_state, llm_reward, combined_reward, action, padded_path
         torch.cuda.empty_cache()
@@ -385,22 +397,21 @@ def hydrate_replay_buffer(
     device = next(actor.parameters()).device
     cpu_device = replay_buffer.cur_states.device
     bert_embed_dim = replay_buffer.get_question_bert_emb_dim()
-    max_path_len = replay_buffer.path_states.shape[2]
-    state_dim = replay_buffer.path_states.shape[-1]
+    # max_path_len = replay_buffer.path_states.shape[2] # TOREM: redundant
+    state_dim = replay_buffer.path_states.shape[-1] #TODO: CHECK INDEXING
     max_path_len =  replay_buffer.get_max_path_len()
-    max_num_steps = replay_buffer.get_max_env_steps()
+    all_max_num_steps = ((replay_buffer.get_max_nominal_pathlen() - 1 ) // 2).to(device)
     max_experiences_per_question = replay_buffer.get_experiences_per_question()
 
 
     # Get Samples
     question_counts = Counter(random.choices(train_df.index, k=num_hydration_samples))
-    question_counts = {
+    question_counts = { #TODO: CHECK INDEXING, frankly this might be the culprit. This has added a level of non-determism that is scary
         qid: min(count, max_experiences_per_question)
         for qid, count in question_counts.items()
     } 
     (
         sampled_qidx,
-        experiences_qids,
         bert_quest,
         path_states,
         actions,
@@ -409,23 +420,19 @@ def hydrate_replay_buffer(
         done_flags,
     ) = replay_buffer.get_oldest_experiences(question_counts, device)
     actual_num_experiences = sum(list(question_counts.values()))
-    sampled_question_idxs = sampled_qidx.to(cpu_device).numpy().tolist()
+    sampled_question_idxs = sampled_qidx.numpy().tolist()
 
     mini_batch = train_df.loc[sampled_question_idxs]
+    
+    max_num_steps = all_max_num_steps[mini_batch.index]
 
-    gt_paths, gt_step_counts = get_ground_truth_paths(
-        mini_batch=mini_batch,
-        env=env,
-        max_path_len=max_path_len,
-        device=device,
-    )
-    if gt_paths is not None:
-        assert step_counter != gt_step_counts, "Sample does not have the same amount of steps as necessary"
-        # step_counter = torch.minimum(step_counter, gt_step_counts)
-        prefix_lengths = step_counter * 2 + 1
-        for row_idx in range(actual_num_experiences):
-            fill_len = int(prefix_lengths[row_idx].item())
-            path_states[row_idx, :fill_len, :] = gt_paths[row_idx, :fill_len, :]
+    # if gt_paths is not None:
+    #     assert step_counter != gt_step_counts, "Sample does not have the same amount of steps as necessary"
+    #     # step_counter = torch.minimum(step_counter, gt_step_counts)
+    #     prefix_lengths = step_counter * 2 + 1
+    #     for row_idx in range(actual_num_experiences):
+    #         fill_len = int(prefix_lengths[row_idx].item())
+    #         path_states[row_idx, :fill_len, :] = gt_paths[row_idx, :fill_len, :]
 
     questions_tokens = [torch.Tensor(ques).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
     padded_questions_tokens = torch.nn.utils.rnn.pad_sequence(
@@ -440,14 +447,21 @@ def hydrate_replay_buffer(
         .to(device)
     )
 
-    answer_ids = [path[-1] for path in mini_batch["triples_ints"].tolist()]
+    initial_ids = []
+    answer_ids = []
+    for path in mini_batch["triples_ints"].tolist():
+        initial_ids = path[0]
+        answer_ids = path[-1]
+    initial_ids_tensor = torch.tensor(answer_ids, dtype=torch.long, device=device)
     answer_ids_tensor = torch.tensor(answer_ids, dtype=torch.long, device=device)
 
-    if torch.max(step_counter).item() == 3:
-        debugpy.breakpoint()
+    # if torch.max(step_counter).item() == 3:
+    #     debugpy.breakpoint()
 
-    if done_flags.any():
-        reset_states = env.reset(bert_quest[done_flags])
+    frozen_done_flags = done_flags.clone()
+    if frozen_done_flags.any():
+        # reset_states = env.reset(bert_quest[frozen_done_flags])
+        reset_states = env.knowledge_graph.entity_embedding[initial_ids_tensor]
         new_paths = torch.full(
             (reset_states.shape[0], max_path_len, state_dim),
             PATH_PADDING_VALUE,
@@ -455,17 +469,20 @@ def hydrate_replay_buffer(
             dtype=path_states.dtype,
         )
         new_paths[torch.arange(reset_states.shape[0], device=device), 0, :] = reset_states
-        path_states[done_flags] = new_paths
-        step_counter[done_flags] = 0
-    else:
+        path_states[frozen_done_flags] = new_paths
+        done_flags[done_flags] = False
+
+    notdone_flags = ~frozen_done_flags
+    if frozen_done_flags.any():
         notdone_flags = ~done_flags
-        steps = step_counter[notdone_flags]
-        path_states[notdone_flags, (steps*2) + 1] = actions[notdone_flags]
-        path_states[notdone_flags, (steps*2) + 2] = next_states[notdone_flags]
+        notdone_steps = step_counter[notdone_flags]
+        notdone_max_num_steps = max_num_steps[notdone_flags]
+        path_states[notdone_flags, (notdone_steps*2) + 1] = actions[notdone_flags]
+        path_states[notdone_flags, (notdone_steps*2) + 2] = next_states[notdone_flags]
         # CHeck if its done
         step_counter[notdone_flags]  += 1
-        steps = step_counter[notdone_flags]
-        done_flags[notdone_flags] = steps == (max_num_steps - 1) # TODO: Fix this. AFter it says done something should be done 
+        notdone_steps = step_counter[notdone_flags]
+        done_flags[notdone_flags] = notdone_steps == (notdone_max_num_steps - 1) # TODO: Fix this. AFter it says done something should be done 
 
     # if torch.max(step_counter) >= 3:
     #     debugpy.breakpoint()
@@ -511,6 +528,53 @@ def hydrate_replay_buffer(
     combined_reward = llm_reward.squeeze()# + extrinsic_reward.squeeze()
     summary_writer.add_scalar("hydration_llm_reward", combined_reward.mean().item(), global_step)
 
+    # TODO: Truth action and truth entity here
+    gt_action_id: List[int] = []
+    gt_entity_id: List[int] = [] 
+    entity_embeddings = env.knowledge_graph.entity_embedding
+    relation_embeddings = env.knowledge_graph.relation_embedding
+    entity_device = (
+        entity_embeddings.device
+        if isinstance(entity_embeddings, torch.Tensor)
+        else entity_embeddings.weight.device
+    )
+    relation_device = (
+        relation_embeddings.device
+        if isinstance(relation_embeddings, torch.Tensor)
+        else relation_embeddings.weight.device
+    )
+    for elem_idxs in range(len(mini_batch)):
+        if done_flags[elem_idxs]: # Just add somethign random. It wont be used
+            gt_action_id.append(0)
+            gt_entity_id.append(0)
+        else:
+            path = mini_batch["triples_ints"].iloc[elem_idxs]
+            path_step_counter = int(step_counter[elem_idxs].item())
+            action_pos = 2 * path_step_counter + 1 # assume: path_step_counter is not zero because it is always increased above by 1
+            entity_pos = action_pos + 1
+            if entity_pos >= len(path):
+                raise IndexError(
+                    f"Tried to access step {path_step_counter} for path of length {len(path)} (question idx {mini_batch.index[elem_idxs]})."
+                )
+            action_id = int(path[action_pos])
+            entity_id = int(path[entity_pos])
+            if action_id >= relation_embeddings.shape[0] or entity_id >= entity_embeddings.shape[0]:
+                debugpy.breakpoint()
+                raise IndexError(
+                    f"Tried to access action_id {action_id} or entity_id {entity_id} for path of length {len(path)} (question idx {mini_batch.index[elem_idxs]})."
+                )
+            gt_action_id.append(int(path[action_pos]))
+            gt_entity_id.append(int(path[entity_pos]))
+
+    entity_indices = torch.tensor(gt_entity_id, dtype=torch.long, device=entity_device)
+    relation_indices = torch.tensor(gt_action_id, dtype=torch.long, device=relation_device)
+    assert entity_indices.shape == (256,), f"entity_indices shape is wrong. It is {entity_indices.shape} expected (256)"
+    assert relation_indices.shape == (256,), f"relation_indices shape is wrong. It is {relation_indices.shape} expected (256)"
+    entity_vecs = get_embeddings_from_indices(entity_embeddings, entity_indices)
+    relation_vecs = get_embeddings_from_indices(relation_embeddings, relation_indices)
+    assert entity_vecs.shape == (256,500), f"entity_vecs shape is wrong. It is {entity_vecs.shape} expected (256, 500)"
+    assert relation_vecs.shape == (256,500), f"relation_vecs shape is wrong. It is {relation_vecs.shape} expected (256, 500)"
+
     # path_states_updated = path_states.clone()
     # action_indices = 2 * current_steps + 1
     # state_indices = action_indices + 1
@@ -525,19 +589,35 @@ def hydrate_replay_buffer(
     #
     # path_states_updated[row_idx, action_indices, :] = actions
     # path_states_updated[row_idx, state_indices, :] = next_states
+    
+    logger.info(
+        "Hydrating with items (shapes, devices):\n"
+        f"\t-questions_ids : {sampled_qidx.shape}, {sampled_qidx.device}\n"
+        f"\t-quest_bert_emb : {bert_quest.shape}, {bert_quest.device}\n"
+        f"\t-cur_states : {current_states.shape}, {current_states.device}\n"
+        f"\t-actions : {relation_vecs.shape}, {relation_vecs.device}\n"
+        f"\t-rewards : {combined_reward.shape}, {combined_reward.device}\n"
+        f"\t-next_states : {entity_vecs.shape}, {entity_vecs.device}\n"
+        f"\t-dones : {done.shape}, {done.device}\n"
+        f"\t-path_states : {path_states.shape}, {path_states.device}\n"
+        f"\t-log_probs : {log_probs.shape}, {log_probs.device}\n"
+        f"\t-entropies : {entropy.shape}, {entropy.device}\n"
+        f"\t-step_counter : {step_counter.shape}, {step_counter.device}\n"
+    )
 
     replay_buffer.add_transitions(
-        questions_ids=sampled_qidx.to(cpu_device),
+        questions_ids=sampled_qidx,
         quest_bert_emb=bert_quest.detach().to(cpu_device),
         cur_states=current_states.detach().to(cpu_device),
-        actions=actions.detach().to(cpu_device),
+        actions=relation_vecs.detach().to(cpu_device),
         rewards=combined_reward.detach().to(cpu_device),
-        next_states=next_states.detach().to(cpu_device),
+        next_states=entity_vecs.detach().to(cpu_device),
         dones=done.squeeze(-1).detach().to(torch.bool).cpu(),
         path_states=path_states.detach().cpu(),
         log_probs=log_probs.detach().cpu(),
         entropies=entropy.detach().cpu(),
         step_counter=step_counter.detach().cpu(),
+        logger=logger,
     )
 
     actor.train()
