@@ -497,7 +497,7 @@ class GraphEmbeddingDataset(Dataset):
         for question, answer in zip(questions, answers):
             qna = question + answer + [sep_token] # sep_token is both separator and eos
             # <s> question_nonspecial_tokens </s> ans_nonspecial_tokens </s>
-            mask = [0] * (len(question)) + [1] * len(answer) + [0]
+            mask = [0] * (len(question)) + [1] * len(answer) + [1]
             merged_questions_answers.append(qna)
             answer_masks.append(mask)
 
