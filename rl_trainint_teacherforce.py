@@ -449,10 +449,11 @@ def hydrate_replay_buffer(
 
     initial_ids = []
     answer_ids = []
+    mini_batch_size = len(mini_batch)
     for path in mini_batch["triples_ints"].tolist():
         initial_ids = path[0]
         answer_ids = path[-1]
-    initial_ids_tensor = torch.tensor(answer_ids, dtype=torch.long, device=device)
+    initial_ids_tensor = torch.tensor(initial_ids, dtype=torch.long, device=device)
     answer_ids_tensor = torch.tensor(answer_ids, dtype=torch.long, device=device)
 
     # if torch.max(step_counter).item() == 3:
@@ -463,26 +464,28 @@ def hydrate_replay_buffer(
         # reset_states = env.reset(bert_quest[frozen_done_flags])
         reset_states = env.knowledge_graph.entity_embedding[initial_ids_tensor]
         new_paths = torch.full(
-            (reset_states.shape[0], max_path_len, state_dim),
+            (mini_batch_size, max_path_len, state_dim),
             PATH_PADDING_VALUE,
             device=device,
             dtype=path_states.dtype,
         )
-        new_paths[torch.arange(reset_states.shape[0], device=device), 0, :] = reset_states
+        new_paths[torch.arange(mini_batch_size, device=device), 0, :] = reset_states
         path_states[frozen_done_flags] = new_paths
+        step_counter[frozen_done_flags] = 0
         done_flags[done_flags] = False
 
     notdone_flags = ~frozen_done_flags
     if frozen_done_flags.any():
-        notdone_flags = ~done_flags
         notdone_steps = step_counter[notdone_flags]
         notdone_max_num_steps = max_num_steps[notdone_flags]
+
+        # Advancement from where they were
         path_states[notdone_flags, (notdone_steps*2) + 1] = actions[notdone_flags]
         path_states[notdone_flags, (notdone_steps*2) + 2] = next_states[notdone_flags]
-        # CHeck if its done
+
+        # Check if its done
         step_counter[notdone_flags]  += 1
-        notdone_steps = step_counter[notdone_flags]
-        done_flags[notdone_flags] = notdone_steps == (notdone_max_num_steps - 1) # TODO: Fix this. AFter it says done something should be done 
+        done_flags[notdone_flags] = notdone_steps == notdone_max_num_steps  # TODO: Fix this. AFter it says done something should be done 
 
     # if torch.max(step_counter) >= 3:
     #     debugpy.breakpoint()
