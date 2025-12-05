@@ -17,6 +17,7 @@ class HunchBart(nn.Module):
         self,
         pretrained_bart_model_name: str,
         graph_embedding_dim: int,
+        tokenizer: PreTrainedTokenizer,
         pooling="mean",
     ):
         super(HunchBart, self).__init__()
@@ -33,12 +34,15 @@ class HunchBart(nn.Module):
         self.activation = nn.Tanh()
         self.projection = nn.Linear(self.bart.config.hidden_size, self.bart.config.hidden_size)
 
+        self.tokenizer = tokenizer
+
     def forward(
         self,
         graph_embeddings: torch.Tensor,
         encoder_attention_mask: torch.Tensor,
         decoder_input_ids: Optional[torch.Tensor],
         decoder_attention_mask: torch.Tensor,
+        questions_masks: torch.Tensor,
         labels=None,
         *args,
         **kwargs
@@ -52,7 +56,7 @@ class HunchBart(nn.Module):
             inputs_embeds=translated_embeddings,
             attention_mask=encoder_attention_mask,
             decoder_input_ids=decoder_input_ids,
-            decoder_attention_mask=decoder_attention_mask,
+            decoder_attention_mask=decoder_attention_mask, # Makes it so that *answers* are not seen by model
             output_hidden_states=True,
             *args,
             **kwargs,
@@ -61,7 +65,7 @@ class HunchBart(nn.Module):
 
         # 2. Pooling to get a single vector
         # TODO: Figure out the attention_mask
-        pooled = (last_encoder_hidden_state * decoder_attention_mask.unsqueeze(-1)).sum(1) / decoder_attention_mask.sum(1, keepdim=True)
+        pooled = (last_encoder_hidden_state * questions_masks.unsqueeze(-1)).sum(1) / questions_masks.sum(1, keepdim=True)
         pooled = self.activation(self.pooler(pooled))
         bert_alignment_inference = self.projection(pooled)  # map to BERT space
 

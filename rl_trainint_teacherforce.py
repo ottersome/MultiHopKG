@@ -195,6 +195,50 @@ class QuestionCoverageSampler:
 
         return self._cursor / len(self._question_ids)
 
+def _prepare_question_prompts(
+    qna_tokens: torch.Tensor,
+    ans_masks: torch.Tensor,
+    pad_token_id: int,
+    bos_token_id: Optional[int],
+    eos_token_id: Optional[int],
+) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
+    """
+    Extract only the question portion (prior to the first answer token) to use as decoder prompts.
+    """
+    prompts: List[torch.Tensor] = []
+    prompt_lengths: List[int] = []
+    device = qna_tokens.device
+    seq_len = qna_tokens.shape[1]
+
+    for seq, mask in zip(qna_tokens, ans_masks):
+        mask_list = mask.tolist()
+        seq_list = seq.tolist()
+        try:
+            answer_start = mask_list.index(1)
+        except ValueError:
+            answer_start = len(seq_list)
+
+        answer_start = min(answer_start, seq_len)
+        prompt = [
+            token
+            for token in seq_list[:answer_start]
+            if token != pad_token_id and token != bos_token_id and token != eos_token_id
+        ]
+        if not prompt:
+            raise ValueError("Was expecting a prompt in evaluation")
+        if bos_token_id is None:
+            raise ValueError("Decoder BOS token id must be defined for prompt preparation")
+        prompt.append(bos_token_id)
+        prompts.append(torch.tensor(prompt, dtype=torch.long, device=device))
+        prompt_lengths.append(len(prompt))
+
+    decoder_input_ids = torch.nn.utils.rnn.pad_sequence(
+        prompts, batch_first=True, padding_value=pad_token_id
+    )
+    decoder_attention_mask = (decoder_input_ids != pad_token_id).long()
+
+    return decoder_input_ids, decoder_attention_mask, prompt_lengths
+
 
 
 @torch.no_grad()
@@ -667,6 +711,10 @@ def evaluate_seq2seq_outputs(
     nav_agent.eval()
     hunch_llm.eval()
     # env.eval()
+    bart_model = getattr(hunch_llm, "bart", None)
+    bart_config = getattr(bart_model, "config", None)
+    decoder_bos_token_id = getattr(bart_config, "decoder_start_token_id", None)
+    decoder_eos_token_id = getattr(bart_config, "eos_token_id", None)
 
     total_nll = 0.0
     total_tokens = 0
@@ -788,12 +836,21 @@ def evaluate_seq2seq_outputs(
         qna_tokens, answer_mask = GraphEmbeddingDataset._merge_questions_and_answers(
             question_tokens_list, answer_tokens_list, bart_pad_token_id
         )
-        qna_tokens_tensor = [ torch.tensor(qna_token, dtype=torch.long, device=device) for qna_token in qna_tokens ]
-        padded_qna_tokens = torch.nn.utils.rnn.pad_sequence(
-            qna_tokens_tensor, batch_first=True, padding_value=bart_pad_token_id
+        qna_tokens_tensor = [
+            torch.tensor(qna_token, dtype=torch.long, device=device) for qna_token in qna_tokens
+        ]
+        padded_qna_tokens = torch.nn.utils.rnn.pad_sequence(qna_tokens_tensor, batch_first=True, padding_value=bart_pad_token_id)
+        answer_mask_tensors = [ torch.tensor(mask, dtype=torch.long, device=device) for mask in answer_masks ]
+        padded_answer_masks = torch.nn.utils.rnn.pad_sequence(answer_mask_tensors, batch_first=True, padding_value=0)
+
+        decoder_attention_mask = (padded_qna_tokens != bart_pad_token_id).long()
+        decoder_prompt_ids, decoder_prompt_attention_mask, prompt_lengths = _prepare_question_prompts(
+            padded_qna_tokens,
+            padded_answer_masks,
+            bart_pad_token_id,
+            decoder_bos_token_id,
+            decoder_eos_token_id,
         )
-        decoder_attention_mask = torch.ones_like(padded_qna_tokens, dtype=torch.long, device=device)
-        decoder_attention_mask[qna_tokens == bart_pad_token_id] = 0
         bart_outputs = hunch_llm.bart( # type:ignore
             inputs_embeds=translated_embeddings,
             attention_mask=encoder_attention_mask,
@@ -846,10 +903,8 @@ def evaluate_seq2seq_outputs(
         ########################################
         # Actual NLP Generation (Using Beam-search)
         ########################################
-        # TODO: We have to to change decoder_start_token_id=answer_tokenizer.bos_token_id
-        # To include the question at the beginning
-        # We need to look for the logic in pretraining
-        # Prep questions
+        max_prompt_len = max(prompt_lengths) if prompt_lengths else 0
+        max_generation_len = max(padded_qna_tokens.shape[1], max_prompt_len + 1)
         generated_ids = hunch_llm.bart.generate( # type: ignore
             decoder_input_ids=padded_questions,
             inputs_embeds=translated_embeddings,
@@ -862,17 +917,28 @@ def evaluate_seq2seq_outputs(
             num_beams=3,
         )
 
-        pred_texts = answer_tokenizer.batch_decode(
-            generated_ids, skip_special_tokens=True
-        )
+        pred_texts: List[str] = []
+        generated_lengths: List[int] = []
+        for sample_idx in range(generated_ids.size(0)):
+            prompt_len = prompt_lengths[sample_idx]
+            answer_candidate = generated_ids[sample_idx][prompt_len:]
+            trimmed_tokens: List[int] = []
+            for token_id in answer_candidate.tolist():
+                if decoder_eos_token_id is not None and token_id == decoder_eos_token_id:
+                    break
+                if token_id == bart_pad_token_id:
+                    continue
+                trimmed_tokens.append(token_id)
+            generated_lengths.append(len(trimmed_tokens))
+            pred_texts.append(
+                answer_tokenizer.decode(trimmed_tokens, skip_special_tokens=True).strip()
+            )
         ref_texts = answer_tokenizer.batch_decode(answer_tokens_list, skip_special_tokens=True)
 
         total_sequences += _batch_size
         # success_count += success_flags.sum().item()
         total_steps += step_counter.float().mean().item()
-        total_generated_len += (
-            generated_ids.ne(bart_pad_token_id).sum(dim=1).float().mean().item()
-        )
+        total_generated_len += sum(generated_lengths)
 
         # For supasoft reward
         last_decoder_hidden_state = bart_outputs.decoder_hidden_states[-1]
@@ -888,8 +954,9 @@ def evaluate_seq2seq_outputs(
             hunch_llm,
             path_trace,
             bert_ans,
-            padded_questions,
+            padded_qna_tokens,
             bart_pad_token_id,
+            padded_answer_masks,
         )
         # mse_alignment_sum += (-reward_supasoft).sum().item()
         # mse_alignment_count += reward_supasoft.numel()

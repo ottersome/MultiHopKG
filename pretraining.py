@@ -224,12 +224,16 @@ def validation_loop(
             truth_answers[ans_masks == 0] = tokenizer.pad_token_id  # For the loss function.
             truth_answers = truth_answers[:, 1:].contiguous()
 
+            # Question Mask
+            questions_masks = (ans_masks == 0) & (padding_mask)
+            # questions_lens = torch.sum(question_mask, dim = 1)
+
             # Compute the loss
             answers_inf_softmax_w_emb, bert_alignment_inference_w_emb = model(
-                graph_embeddings, graphemb_attn_mask, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
+                graph_embeddings, graphemb_attn_mask, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1], questions_masks=questions_masks[:,:-1],
             )
             answers_inf_softmax_wo_emb, bert_alignment_inference_wo_emb = model(
-                negative_graph_embeddings, graphemb_attn_mask, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1]
+                negative_graph_embeddings, graphemb_attn_mask, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1], questions_masks=questions_masks[:,:-1],
             )
             _, logits = answers_inf_softmax_w_emb.loss, answers_inf_softmax_w_emb.logits
             _, n_logits = answers_inf_softmax_wo_emb.loss, answers_inf_softmax_wo_emb.logits
@@ -361,93 +365,95 @@ def train_loop(
     validation_reports: List[Tuple[int, Any]] = []
     cur_num_batches = 0
 
-    with CustomProgress(column_names=["Train Loss", "Val  Loss", "lr_rate"],table_max_rows=10) as progress:
-        task_epoch = progress.add_task("Epochs", total=epochs)
-        for e in range(epochs):
-            task_batch = progress.add_task("Batch", total=len(train_dataloader))
-            for idx_batch,batch in enumerate(train_dataloader):
+    # with CustomProgress(column_names=["Train Loss", "Val  Loss", "lr_rate"],table_max_rows=10) as progress:
+        # task_epoch = progress.add_task("Epochs", total=epochs)
+    for e in range(epochs):
+            # task_batch = progress.add_task("Batch", total=len(train_dataloader))
+        for idx_batch,batch in enumerate(train_dataloader):
 
-                # Validation
-                if cur_num_batches % val_every_n_batches == 0:
-                    val_report = validation_loop(
-                        bart_llm,
-                        val_dataloader,
-                        word_tokenizer,
-                        verbose,
-                        aim_run,
-                        cur_num_batches,
-                    )
-                    validation_reports.append((
-                        cur_num_batches,
-                        val_report,
-                    ))
-                    if wandb_on:
-                        wandb.log(val_report)
-                    if aim_run is not None:
-                        for metric_name, metric_value in val_report.items():
-                            aim_run.track(
-                                metric_value,
-                                name=metric_name,
-                                step=cur_num_batches,
-                            )
-
-                cur_num_batches += 1
-
-                # Actual Training
-                qna_tokens, ans_masks, graph_embeddings, graphemb_attention_mask, ans_bert_embeddings = batch
-                truth_answers = qna_tokens.clone()
-                truth_answers[ans_masks == 0] = word_tokenizer.pad_token_id  # For the loss function.
-                truth_answers = truth_answers[:, 1:].contiguous()
-
-                # Compute the loss
-                optimizer.zero_grad()
-                # TODO: Watch out for offset*till
-                padding_mask = qna_tokens != word_tokenizer.pad_token_id
-                answers_inf_softmax, bert_output = bart_llm(
-                    graph_embeddings, 
-                    graphemb_attention_mask,
-                    qna_tokens[:,:-1],
-                    decoder_attention_mask=padding_mask[:,:-1]
+            # Validation
+            if cur_num_batches % val_every_n_batches == 0:
+                val_report = validation_loop(
+                    bart_llm,
+                    val_dataloader,
+                    word_tokenizer,
+                    verbose,
+                    aim_run,
+                    cur_num_batches,
                 )
-                _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
-
-
-                # Graph Projector Backprop
-                gtllm_loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
-                bert_loss = F.mse_loss(bert_output, ans_bert_embeddings)
-                final_loss = gtllm_loss + bert_loss
-                final_loss.backward()
-                optimizer.step()
-                # scheduler.step()
-                current_lr = scheduler.get_last_lr()[0]
-                loss_reports.append(gtllm_loss.item())
-
+                validation_reports.append((
+                    cur_num_batches,
+                    val_report,
+                ))
                 if wandb_on:
-                    wandb_payload = {
-                        "loss_bart_train": gtllm_loss.item(),
-                        "loss_bert_train": bert_loss.item(),
-                        "final_loss_train": final_loss.item()
-                    }
-                    wandb.log(wandb_payload)
+                    wandb.log(val_report)
                 if aim_run is not None:
-                    step_id = cur_num_batches
-                    aim_run.track(e, name="train/epoch", step=step_id)
-                    aim_run.track(gtllm_loss.item(), name="train/loss_bart_train", step=step_id)
-                    aim_run.track(bert_loss.item(), name="train/loss_bert_train", step=step_id)
-                    aim_run.track(final_loss.item(), name="train/final_loss_train", step=step_id)
-                    aim_run.track(current_lr, name="train/lr", step=step_id)
+                    for metric_name, metric_value in val_report.items():
+                        aim_run.track(
+                            metric_value,
+                            name=metric_name,
+                            step=cur_num_batches,
+                        )
 
-                # Check for changes
-                change_in_embeddings = torch.dist(ent_emb_backup, train_dataset.id2ent.weight).sum()
-                logger.debug(f"Difference in embedding sizes: {change_in_embeddings}")
-                grad = train_dataset.id2ent.weight.grad
-                logger.debug(f"Repoerting on gradient of embedding: {grad}")
+            cur_num_batches += 1
 
-                table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1]}", f"{current_lr}")
-                progress.update_table(table_reports)
-                progress.update(task_batch, advance=1)
-                time.sleep(0.1)
-            progress.update(task_epoch, advance=1)
+            # Actual Training
+            qna_tokens, ans_masks, graph_embeddings, graphemb_attention_mask, ans_bert_embeddings = batch
+            truth_answers = qna_tokens.clone()
+            truth_answers[ans_masks == 0] = word_tokenizer.pad_token_id  # For the loss function.
+            truth_answers = truth_answers[:, 1:].contiguous()
+
+            # Compute the loss
+            optimizer.zero_grad()
+            # TODO: Watch out for offset*till
+            padding_mask = qna_tokens != word_tokenizer.pad_token_id
+            questions_masks = (ans_masks == 0) & (padding_mask)
+            answers_inf_softmax, bert_output = bart_llm(
+                graph_embeddings, 
+                graphemb_attention_mask,
+                qna_tokens[:,:-1],
+                decoder_attention_mask=padding_mask[:,:-1],
+                questions_masks=questions_masks[:,:-1],
+            )
+            _, logits = answers_inf_softmax.loss, answers_inf_softmax.logits
+
+
+            # Graph Projector Backprop
+            gtllm_loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
+            bert_loss = F.mse_loss(bert_output, ans_bert_embeddings)
+            final_loss = gtllm_loss + bert_loss
+            final_loss.backward()
+            optimizer.step()
+            # scheduler.step()
+            current_lr = scheduler.get_last_lr()[0]
+            loss_reports.append(gtllm_loss.item())
+
+            if wandb_on:
+                wandb_payload = {
+                    "loss_bart_train": gtllm_loss.item(),
+                    "loss_bert_train": bert_loss.item(),
+                    "final_loss_train": final_loss.item()
+                }
+                wandb.log(wandb_payload)
+            if aim_run is not None:
+                step_id = cur_num_batches
+                aim_run.track(e, name="train/epoch", step=step_id)
+                aim_run.track(gtllm_loss.item(), name="train/loss_bart_train", step=step_id)
+                aim_run.track(bert_loss.item(), name="train/loss_bert_train", step=step_id)
+                aim_run.track(final_loss.item(), name="train/final_loss_train", step=step_id)
+                aim_run.track(current_lr, name="train/lr", step=step_id)
+
+            # Check for changes
+            change_in_embeddings = torch.dist(ent_emb_backup, train_dataset.id2ent.weight).sum()
+            logger.debug(f"Difference in embedding sizes: {change_in_embeddings}")
+            grad = train_dataset.id2ent.weight.grad
+            logger.debug(f"Repoerting on gradient of embedding: {grad}")
+
+            table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1]}", f"{current_lr}")
+            # progress.update_table(table_reports)
+            # progress.update(task_batch, advance=1)
+            # time.sleep(0.1)
+        # progress.update(task_epoch, advance=1)
 
     return bart_llm
 
@@ -565,6 +571,7 @@ def main():
     hunch_llm = HunchBart(
         pretrained_bart_model_name=args.hunchbart_base_llm_model,
         graph_embedding_dim=embeddings_size,
+        tokenizer=word_tokenizer
     ).to(args.device)
 
     # Freeze the BART model, keep embedding_translator trainable
