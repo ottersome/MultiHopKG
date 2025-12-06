@@ -89,7 +89,8 @@ def _prepare_question_prompts(
         except ValueError:
             answer_start = len(seq_list)
         answer_start = min(answer_start, seq_len)
-        prompt = [token for token in seq_list[:answer_start] if token != pad_token_id and token != bos_token_id and token != eos_token_id]
+        # prompt = [token for token in seq_list[:answer_start] if token != pad_token_id and token != bos_token_id and token != eos_token_id]
+        prompt = [token for token in seq_list[:answer_start] if token != pad_token_id]
         if not prompt:
             raise ValueError("Was expecting a prompt in evaluation")
         prompt.append(bos_token_id)
@@ -135,7 +136,8 @@ def _run_generation_evaluation(
         decoder_input_ids=decoder_input_ids,
         decoder_attention_mask=decoder_attention_mask,
         min_length=0,
-        max_length=max_generation_len,
+        # max_length=max_generation_len,
+        max_new_tokens=20, # Out of lazyness. 
         num_beams=3,
     )
 
