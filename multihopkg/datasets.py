@@ -462,8 +462,11 @@ class GraphEmbeddingDataset(Dataset):
         self.dataset: pd.DataFrame = dataset
         self.bert_embed_size = bert_embed_size
         sep_token = word_tokenizer.sep_token
+        bos_token = word_tokenizer.bos_token
         assert isinstance(sep_token, str), "Expected the separator token to be a string. e.g. </s>"
         self.separator_token_id = word_tokenizer.convert_tokens_to_ids([sep_token])
+        self.bos_token_id = word_tokenizer.bos_token_id
+        assert isinstance(self.bos_token_id, int)
         if isinstance(self.separator_token_id, list):
             self.separator_token_id = self.separator_token_id[0] # Appeases LSP
         assert isinstance(self.separator_token_id, int), f"Expected the separator token to be an integer. Instead we get {self.separator_token_id}"
@@ -474,6 +477,7 @@ class GraphEmbeddingDataset(Dataset):
             dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[0]].tolist(),
             dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[1]].tolist(),
             self.separator_token_id,
+            self.bos_token_id,
         )
         self.path = dataset.loc[:, DataPartitions.ASSUMED_COLUMNS[2]].tolist()
         self.bert_embed_answers = dataset.iloc[:, 3:3+self.bert_embed_size].values.tolist()
@@ -485,7 +489,7 @@ class GraphEmbeddingDataset(Dataset):
 
     @staticmethod
     def _merge_questions_and_answers(
-        questions: List[List[int]], answers: List[List[int]], sep_token: int
+        questions: List[List[int]], answers: List[List[int]], sep_token: int, bos_token: int
     ) -> Tuple[List[List[int]], List[List[int]]]:
         """
         Merges questions and answers into a single string, separated by a token.
@@ -495,9 +499,9 @@ class GraphEmbeddingDataset(Dataset):
         answer_masks = []
 
         for question, answer in zip(questions, answers):
-            qna = question + answer + [sep_token] # sep_token is both separator and eos
+            qna = question + [bos_token] + answer + [sep_token] # sep_token is both separator and eos
             # <s> question_nonspecial_tokens </s> ans_nonspecial_tokens </s>
-            mask = [0] * (len(question)) + [1] * len(answer) + [1]
+            mask = [0] * (len(question) + 1) + [1] * len(answer) + [1]
             merged_questions_answers.append(qna)
             answer_masks.append(mask)
 

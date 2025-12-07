@@ -88,6 +88,7 @@ class HunchBart(nn.Module):
         hunchbart_base_llm_model_name: str,
         state_dict: Mapping[str, Any],
         graph_embedding_dim: int, # Graph Embedding Dimension
+        tokenizer: PreTrainedTokenizer
     ) -> 'HunchBart':
         """
         Create a HunchBart from pretrained embeddings.
@@ -95,6 +96,7 @@ class HunchBart(nn.Module):
         model = cls(
             pretrained_bart_model_name=hunchbart_base_llm_model_name,
             graph_embedding_dim=graph_embedding_dim,
+            tokenizer=tokenizer,
         )
         model.load_state_dict(state_dict)
 

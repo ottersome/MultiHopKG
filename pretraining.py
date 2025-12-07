@@ -71,7 +71,6 @@ def _prepare_question_prompts(
     ans_masks: torch.Tensor,
     pad_token_id: int,
     bos_token_id: Optional[int],
-    eos_token_id: Optional[int],
 ) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
     """
     Extract only the question portion (prior to the first answer token) to use as decoder prompts.
@@ -122,7 +121,7 @@ def _run_generation_evaluation(
     pad_token_id = tokenizer.pad_token_id
     assert isinstance(pad_token_id, int), "pad_token_id must be defined for generation evaluation"
     decoder_input_ids, decoder_attention_mask, prompt_lengths = _prepare_question_prompts(
-        qna_tokens, ans_masks, pad_token_id, tokenizer.bos_token_id, tokenizer.eos_token_id
+        qna_tokens, ans_masks, pad_token_id, tokenizer.bos_token_id,
     )
 
     translated_embeddings = model.embedding_translator(graph_embeddings)
