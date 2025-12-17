@@ -567,7 +567,10 @@ def hydrate_replay_buffer(
 
     # Take a Step
     next_states, extrinsic_reward, done = env.step(observation, actions)
-    done = done_flags | done.squeeze()
+    done = done.squeeze()
+    # Merge environment termination with replay-buffer saturation
+    done_flags = done_flags | done
+    done = done_flags
 
     # Calculate Reward
     # TODO: Confirm this works well
@@ -826,14 +829,10 @@ def evaluate_seq2seq_outputs(
             path_trace[active_idx, 2 * step_active + 1, :] = actions
             path_trace[active_idx, 2 * step_active + 2, :] = next_states
 
-            # success_flags[active_idx] |= done.squeeze(-1).bool()
-
             step_counter[active_idx] = step_active + 1
-
-            # TOREM: This should not be necessary
-            # done_mask[active_idx] = done.squeeze(-1).bool() | (
-            #     step_counter[active_idx] >= max_transitions
-            # )
+            # Stop rollouts early when the env signals success or we hit the step budget
+            done_now = done.squeeze(-1).bool()
+            done_mask[active_idx] = done_now | (step_counter[active_idx] >= max_transitions)
 
         # final_indices = torch.clamp(2 * step_counter, max=max_path_len - 1) # Tstep_activeOREM: I really dont see this being necessary for now
         idxs_out_of_range = [step_counter[i] > max_transitions for i in range(len(step_counter))]
