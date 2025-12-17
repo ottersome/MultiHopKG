@@ -195,6 +195,15 @@ class QuestionCoverageSampler:
 
         return self._cursor / len(self._question_ids)
 
+# Mostly used globally to test ANN
+def ints_to_strs(list_ints: List[int], int_to_mid: Dict[int, Any], mid_to_fin: Dict[Any, str]) -> List[str]:
+    return_vals: List[str] = []
+    for li in list_ints:
+        mid = int_to_mid[li]
+        fin = mid_to_fin[mid]
+        return_vals.append(fin)
+    return return_vals
+
 def _prepare_question_prompts(
     qna_tokens: torch.Tensor,
     ans_masks: torch.Tensor,
@@ -259,6 +268,7 @@ def prepopulate_replay_buffer(
     BATCH_SIZE=64 # TODO: Parameterize later
     gpu_device = next(actor.parameters()).device
     cpu_device = replay_buffer.cur_states.device
+    bart_bos_token_id = hunch_llm.tokenizer.bos_token_id
     # Lets Initiate sub buffers for each question
 
     for i in tqdm(range(0, len(train_df), BATCH_SIZE), f"Populating the replay buffer"):
@@ -266,7 +276,7 @@ def prepopulate_replay_buffer(
         _inner_batch_size = len(mini_batch)
 
         # Get questions ready for batch Bart processing
-        questions = [torch.Tensor(ques).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
+        questions = [torch.Tensor(ques + [bart_bos_token_id]).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
         padded_questions_tokens = torch.nn.utils.rnn.pad_sequence(
             questions, batch_first=True, padding_value=pad_token_id
         ).to(gpu_device)
@@ -506,7 +516,8 @@ def hydrate_replay_buffer(
     frozen_done_flags = done_flags.clone()
     if frozen_done_flags.any():
         # reset_states = env.reset(bert_quest[frozen_done_flags])
-        reset_states = env.knowledge_graph.entity_embedding[initial_ids_tensor]
+        # reset_states = env.knowledge_graph.entity_embedding[initial_ids_tensor]
+        reset_states = get_embeddings_from_indices(env.knowledge_graph.entity_embedding, initial_ids_tensor)
         new_paths = torch.full(
             (mini_batch_size, max_path_len, state_dim),
             PATH_PADDING_VALUE,
@@ -637,20 +648,20 @@ def hydrate_replay_buffer(
     # path_states_updated[row_idx, action_indices, :] = actions
     # path_states_updated[row_idx, state_indices, :] = next_states
     
-    logger.info(
-        "Hydrating with items (shapes, devices):\n"
-        f"\t-questions_ids : {sampled_qidx.shape}, {sampled_qidx.device}\n"
-        f"\t-quest_bert_emb : {bert_quest.shape}, {bert_quest.device}\n"
-        f"\t-cur_states : {current_states.shape}, {current_states.device}\n"
-        f"\t-actions : {relation_vecs.shape}, {relation_vecs.device}\n"
-        f"\t-rewards : {combined_reward.shape}, {combined_reward.device}\n"
-        f"\t-next_states : {entity_vecs.shape}, {entity_vecs.device}\n"
-        f"\t-dones : {done.shape}, {done.device}\n"
-        f"\t-path_states : {path_states.shape}, {path_states.device}\n"
-        f"\t-log_probs : {log_probs.shape}, {log_probs.device}\n"
-        f"\t-entropies : {entropy.shape}, {entropy.device}\n"
-        f"\t-step_counter : {step_counter.shape}, {step_counter.device}\n"
-    )
+    # logger.info(
+    #     # "Hydrating with items (shapes, devices):\n"
+    #     f"\t-questions_ids : {sampled_qidx.shape}, {sampled_qidx.device}\n"
+    #     f"\t-quest_bert_emb : {bert_quest.shape}, {bert_quest.device}\n"
+    #     f"\t-cur_states : {current_states.shape}, {current_states.device}\n"
+    #     f"\t-actions : {relation_vecs.shape}, {relation_vecs.device}\n"
+    #     f"\t-rewards : {combined_reward.shape}, {combined_reward.device}\n"
+    #     f"\t-next_states : {entity_vecs.shape}, {entity_vecs.device}\n"
+    #     f"\t-dones : {done.shape}, {done.device}\n"
+    #     f"\t-path_states : {path_states.shape}, {path_states.device}\n"
+    #     f"\t-log_probs : {log_probs.shape}, {log_probs.device}\n"
+    #     f"\t-entropies : {entropy.shape}, {entropy.device}\n"
+    #     f"\t-step_counter : {step_counter.shape}, {step_counter.device}\n"
+    # )
 
     replay_buffer.add_transitions(
         questions_ids=sampled_qidx,
@@ -751,10 +762,11 @@ def evaluate_seq2seq_outputs(
         question_tokens_list = [q for q in mini_batch["enc_questions"].tolist()]
         answer_tokens_list = [ans for ans in mini_batch["enc_answer"].tolist()]
         # TODO: Confirm that question_token_list has a `2` at the end (separator token)
-        question_tokens_list_tensor = [torch.tensor(q, dtype=torch.long) for q in mini_batch["enc_questions"].tolist()]
+        bos_bart_token_id =  question_tokenizer.bos_token_id
+        question_tokens_list_tensor = [torch.tensor(q + [bos_bart_token_id], dtype=torch.long) for q in mini_batch["enc_questions"].tolist()]
         padded_questions = torch.nn.utils.rnn.pad_sequence(question_tokens_list_tensor, batch_first=True, padding_value=bart_pad_token_id).to(device)
         bart_questions_mask = padded_questions != bart_pad_token_id
-        answer_tokens_list_tensor = [torch.tensor(ans, dtype=torch.long) for ans in mini_batch["enc_answer"].tolist()]
+        answer_tokens_list_tensor = [torch.tensor(ans + [bos_bart_token_id], dtype=torch.long) for ans in mini_batch["enc_answer"].tolist()]
         # padded_answers = torch.nn.utils.rnn.pad_sequence(answer_tokens_list_tensor, batch_first=True, padding_value=bart_pad_token_id).to(device)
         # max_answer_len = max(len(ans) for ans in answer_tokens_list_tensor)
 
@@ -766,7 +778,10 @@ def evaluate_seq2seq_outputs(
 
         paths = mini_batch["triples_ints"].tolist()
         answer_entity_ids = torch.tensor([path[-1] for path in paths], dtype=torch.long, device=device)
-        init_states = env.reset(bert_quest)
+        question_entity_ids = torch.tensor([path[0] for path in paths], dtype=torch.long, device=device)
+
+        init_states = question_entity_ids
+        init_states = get_embeddings_from_indices(env.knowledge_graph.entity_embedding, init_states)
         path_trace = torch.full(
             (_batch_size, max_path_len, state_dim),
             PATH_PADDING_VALUE,
@@ -833,14 +848,17 @@ def evaluate_seq2seq_outputs(
         ########################################
         # TODO: Logit Loss Calculation
         ########################################
+        assert isinstance(question_tokenizer.bos_token, str), "Expected question tokenizer to have bos_token and be a string."
+        bos_token_id = question_tokenizer.bos_token_id
+        assert isinstance(bos_token_id, int)
         qna_tokens, answer_mask = GraphEmbeddingDataset._merge_questions_and_answers(
-            question_tokens_list, answer_tokens_list, bart_pad_token_id
+            question_tokens_list, answer_tokens_list, bart_pad_token_id, bos_token_id
         )
         qna_tokens_tensor = [
             torch.tensor(qna_token, dtype=torch.long, device=device) for qna_token in qna_tokens
         ]
         padded_qna_tokens = torch.nn.utils.rnn.pad_sequence(qna_tokens_tensor, batch_first=True, padding_value=bart_pad_token_id)
-        answer_mask_tensors = [ torch.tensor(mask, dtype=torch.long, device=device) for mask in answer_masks ]
+        answer_mask_tensors = [ torch.tensor(mask, dtype=torch.long, device=device) for mask in answer_mask]
         padded_answer_masks = torch.nn.utils.rnn.pad_sequence(answer_mask_tensors, batch_first=True, padding_value=0)
 
         decoder_attention_mask = (padded_qna_tokens != bart_pad_token_id).long()
@@ -860,6 +878,7 @@ def evaluate_seq2seq_outputs(
             output_hidden_states=True,
         )
         logits = bart_outputs.logits
+        # TODO: Do metrics on the bert alignment thing. 
         #
         anslogits_pred_list = []
         shapes_for_reconstruction = []
@@ -956,7 +975,6 @@ def evaluate_seq2seq_outputs(
             bert_ans,
             padded_qna_tokens,
             bart_pad_token_id,
-            padded_answer_masks,
         )
         # mse_alignment_sum += (-reward_supasoft).sum().item()
         # mse_alignment_count += reward_supasoft.numel()
@@ -1146,8 +1164,8 @@ def train_multihopkg(
     )
     alpha_optimizer = torch.optim.Adam([log_alpha], lr=learning_rate)
     target_entropy = -float(action_shape[0])
-    # tau = 0.005
-    tau = 0.1
+    tau = 0.005
+    # tau = 0.1
     bert_dim = replay_buffer.get_question_bert_emb_dim()
     gamma = nav_agent.gamma
     # hydration_interval = int(num_update_steps * 0.005)
@@ -1599,11 +1617,13 @@ def calculate_llm_reward_supasoft(
 
     dec_attention_mask = question_tokens != pad_token_id
     # TODO: Inspect this when you get the whole thing running to discard it as problem ( in case you are having problems)
+    #questions_masks = (ans_masks == 0) & (padding_mask)
     paths_attention_mask = ~(obtained_state == BART_PADDING_VALUE).all(dim=-1)
     _, bert_ans_embeddings = hunch_llm(
         graph_embeddings=obtained_state,
         encoder_attention_mask=paths_attention_mask,
         decoder_input_ids=question_tokens,
+        questions_masks=dec_attention_mask,
         decoder_attention_mask=dec_attention_mask,
     )
 
@@ -1664,6 +1684,7 @@ def main():
         hunchbart_base_llm_model_name=gtllm_hunch_base_model,
         state_dict=pretrained_gtllm_metadata["gtllm_state_dict"],
         graph_embedding_dim=gtllm_graph_embedding_dim,
+        tokenizer=gtllm_tokenizer,
     ).to(args.device)
 
     # Prepare all the paremters used to train the graph embedding model
@@ -1727,11 +1748,13 @@ def main():
     logger.info(":: Setting up the data")
 
     # Load the KGE Dictionaries
+    # DEBUG: Remove these globals after done with debugging
+    global id2ent, id2rel, entities_info, relations_info
     id2ent, ent2id, id2rel, rel2id = data_utils.load_dictionaries(qna_data_path)
 
     # Load the Entity-Rel Info
-    entities_info: Dict[str, str] = pd.read_csv(args.path_entities_info, index_col=0)["Title"].to_dict()
-    relations_info: Dict[str, str]= pd.read_csv(args.path_relations_info, index_col=0)["Title"].to_dict()
+    entities_info = pd.read_csv(args.path_entities_info, index_col=0)["Title"].to_dict()
+    relations_info = pd.read_csv(args.path_relations_info, index_col=0)["Title"].to_dict()
 
     ########################################
     # Load the QA Dataset
@@ -1762,6 +1785,8 @@ def main():
     ########################################
     # Setup the Vector Searchers
     ########################################
+    global ann_index_manager_ent
+    global ann_index_manager_rel
     ann_index_manager_ent = ANN_IndexMan(
         kge_model.get_all_entity_embeddings_wo_dropout(),
         exact_computation=True,

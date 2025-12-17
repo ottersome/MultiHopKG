@@ -446,9 +446,9 @@ def train_loop(
 
             # Check for changes
             change_in_embeddings = torch.dist(ent_emb_backup, train_dataset.id2ent.weight).sum()
-            logger.debug(f"Difference in embedding sizes: {change_in_embeddings}")
+            # logger.debug(f"Difference in embedding sizes: {change_in_embeddings}")
             grad = train_dataset.id2ent.weight.grad
-            logger.debug(f"Repoerting on gradient of embedding: {grad}")
+            # logger.debug(f"Repoerting on gradient of embedding: {grad}")
 
             table_reports = (f"{loss_reports[-1]}", f"{validation_reports[-1][-1]}", f"{current_lr}")
             # progress.update_table(table_reports)

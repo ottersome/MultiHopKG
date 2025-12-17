@@ -84,7 +84,7 @@ def get_args() -> argparse.Namespace:
     # Batch Settings
     ap.add_argument('--batch_size', type=int, default=256, help='Training mini-batch size (default: 256)')
     ap.add_argument('--batch_size_dev', type=int, default=64, help='Evaluation mini-batch size (default: 64)')
-    ap.add_argument('--batches_b4_eval', type=int, default=100, help='Batches to train before first evaluation phase (default: 100)') #TODO: Remove if unused.
+    ap.add_argument('--batches_b4_eval', type=int, default=3, help='Batches to train before first evaluation phase (default: 100)') #TODO: Remove if unused.
     ap.add_argument('--num_gradupdates_till_eval', type=int, default=1000, help='Batches to train between evaluations (default: 15)')
 
     # Datasets & File Paths

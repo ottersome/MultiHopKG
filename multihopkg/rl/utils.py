@@ -106,11 +106,6 @@ class QuestionReplayBuffer:
         cap = self.experiences_per_question
 
         qids, qids_count = torch.unique(questions_ids, return_counts=True)
-        if logger is not None:
-            logger.info(f"Adding {qids_count} transitions to replay buffer")
-            logger.info(f"We are writing into write_ptrs {self.write_ptr[qids]} with qids {qids}")
-            for h in logger.handlers:
-                h.flush()
         start = self.write_ptr[qids] # [E]
         start_tiled = self.write_ptr[questions_ids] # [E]
         arange_N = torch.concat([
@@ -118,10 +113,6 @@ class QuestionReplayBuffer:
             for qid_count in qids_count
         ]) 
         exp_ids = (start_tiled + arange_N) % cap
-        if logger is not None:
-            logger.info(f"We will be adding experiences into exp_ids {exp_ids}")
-            for h in logger.handlers:
-                h.flush()
 
         # Write into buffer (parallelized)
         # TODO: We will likely want to remove cur_states as it may covered by path_states
