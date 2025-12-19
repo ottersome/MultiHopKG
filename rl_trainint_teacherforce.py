@@ -1179,11 +1179,6 @@ def train_multihopkg(
         relations = [int(rel) for rel in path[1::2]]
         if relations:
             teacher_relation_targets[int(qid)] = relations
-    default_relation_idx = 0
-    if teacher_relation_targets:
-        sample_relations = next(iter(teacher_relation_targets.values()))
-        if sample_relations:
-            default_relation_idx = int(sample_relations[0])
     eval_interval_updates = max(1, num_gradupdates_till_eval)
     last_eval_updates = 0
 
@@ -1204,11 +1199,8 @@ def train_multihopkg(
         qid_list = question_ids_tensor.detach().cpu().tolist()
         step_list = step_counts.detach().cpu().tolist()
         for qid_value, step_value in zip(qid_list, step_list):
-            relations = teacher_relation_targets.get(int(qid_value))
-            if not relations:
-                relation_indices.append(default_relation_idx)
-                continue
-            relation_pos = min(int(step_value), len(relations) - 1)
+            relations = teacher_relation_targets[int(qid_value)]
+            relation_pos = int(step_value)
             relation_indices.append(relations[relation_pos])
         if not relation_indices:
             return None
