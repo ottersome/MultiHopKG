@@ -1260,8 +1260,8 @@ def train_multihopkg(
             target_values = target_value_net(
                 next_states_path, graph_nextstate_mask, bert_quest_emb
             ).squeeze()
-            # q_target = rewards + (1.0 - dones.to(torch.float32)) * gamma * target_values.squeeze()
-            q_target = rewards + 1.0 * gamma * target_values.squeeze()
+            dones_float = dones.to(torch.float32)
+            q_target = rewards + (1.0 - dones_float) * gamma * target_values
 
         q1_pred = critic_q1(qa_state, graph_plusAction_mask, bert_quest_emb).squeeze()
         q2_pred = critic_q2(qa_state, graph_plusAction_mask, bert_quest_emb).squeeze()
