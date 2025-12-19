@@ -501,12 +501,12 @@ def hydrate_replay_buffer(
         .to(device)
     )
 
-    initial_ids = []
-    answer_ids = []
+    initial_ids: List[int] = []
+    answer_ids: List[int] = []
     mini_batch_size = len(mini_batch)
     for path in mini_batch["triples_ints"].tolist():
-        initial_ids = path[0]
-        answer_ids = path[-1]
+        initial_ids.append(int(path[0]))
+        answer_ids.append(int(path[-1]))
     initial_ids_tensor = torch.tensor(initial_ids, dtype=torch.long, device=device)
     answer_ids_tensor = torch.tensor(answer_ids, dtype=torch.long, device=device)
 
