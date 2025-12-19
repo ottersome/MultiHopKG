@@ -834,14 +834,13 @@ def evaluate_seq2seq_outputs(
             done_now = done.squeeze(-1).bool()
             done_mask[active_idx] = done_now | (step_counter[active_idx] >= max_transitions)
 
-        # final_indices = torch.clamp(2 * step_counter, max=max_path_len - 1) # Tstep_activeOREM: I really dont see this being necessary for now
         idxs_out_of_range = [step_counter[i] > max_transitions for i in range(len(step_counter))]
         assert not any(idxs_out_of_range), "There should be no id out of range" # TOREM: After debugging for long enough
-        # final_states = path_trace[torch.arange(_batch_size, device=device), step_counter, : ].unsqueeze(1)
-        # encoder_attention_mask = torch.ones((_batch_size, final_states.shape[1]), dtype=torch.long, device=device)
+        # Build per-sample attention mask using actual traversed length (2 * steps + 1)
         encoder_attention_mask = torch.zeros((_batch_size, max_path_len), dtype=torch.bool, device=device)
         for i in range(_batch_size):
-            encoder_attention_mask[i, :step_active[i]] = True
+            valid_len = int(2 * step_counter[i].item() + 1)
+            encoder_attention_mask[i, :valid_len] = True
 
         translated_embeddings = hunch_llm.embedding_translator(path_trace) # type: ignore
         ########################################
