@@ -587,37 +587,46 @@ def hydrate_replay_buffer(
         if isinstance(relation_embeddings, torch.Tensor)
         else relation_embeddings.weight.device
     )
+    relation_vecs_list: List[torch.Tensor] = []
+    entity_vecs_list: List[torch.Tensor] = []
     for elem_idxs in range(len(mini_batch)):
-        if done_flags[elem_idxs]: # Just add somethign random. It wont be used
-            gt_action_id.append(0)
-            gt_entity_id.append(0)
-        else:
-            path = mini_batch["triples_ints"].iloc[elem_idxs]
-            path_step_counter = int(step_counter[elem_idxs].item())
-            action_pos = 2 * path_step_counter + 1 # assume: path_step_counter is not zero because it is always increased above by 1
-            entity_pos = action_pos + 1
-            if entity_pos >= len(path):
-                raise IndexError(
-                    f"Tried to access step {path_step_counter} for path of length {len(path)} (question idx {mini_batch.index[elem_idxs]})."
-                )
-            action_id = int(path[action_pos])
-            entity_id = int(path[entity_pos])
-            if action_id >= relation_embeddings.shape[0] or entity_id >= entity_embeddings.shape[0]:
-                debugpy.breakpoint()
-                raise IndexError(
-                    f"Tried to access action_id {action_id} or entity_id {entity_id} for path of length {len(path)} (question idx {mini_batch.index[elem_idxs]})."
-                )
-            gt_action_id.append(int(path[action_pos]))
-            gt_entity_id.append(int(path[entity_pos]))
+        path = mini_batch["triples_ints"].iloc[elem_idxs]
+        num_relations = max(0, (len(path) - 1) // 2)
+        path_step_counter = int(step_counter[elem_idxs].item())
 
-    entity_indices = torch.tensor(gt_entity_id, dtype=torch.long, device=entity_device)
-    relation_indices = torch.tensor(gt_action_id, dtype=torch.long, device=relation_device)
-    assert entity_indices.shape == (256,), f"entity_indices shape is wrong. It is {entity_indices.shape} expected (256)"
-    assert relation_indices.shape == (256,), f"relation_indices shape is wrong. It is {relation_indices.shape} expected (256)"
-    entity_vecs = get_embeddings_from_indices(entity_embeddings, entity_indices)
-    relation_vecs = get_embeddings_from_indices(relation_embeddings, relation_indices)
-    assert entity_vecs.shape == (256,500), f"entity_vecs shape is wrong. It is {entity_vecs.shape} expected (256, 500)"
-    assert relation_vecs.shape == (256,500), f"relation_vecs shape is wrong. It is {relation_vecs.shape} expected (256, 500)"
+        if done_flags[elem_idxs] or path_step_counter >= num_relations:
+            # STOP action: keep entity where it is, use stop embedding
+            cur_state_vec = path_states[elem_idxs, 2 * path_step_counter, :]
+            relation_vecs_list.append(env.stop_action_embedding.to(relation_device))
+            entity_vecs_list.append(cur_state_vec.to(entity_device))
+            continue
+
+        action_pos = 2 * path_step_counter + 1
+        entity_pos = action_pos + 1
+        if entity_pos >= len(path):
+            raise IndexError(
+                f"Tried to access step {path_step_counter} for path of length {len(path)} (question idx {mini_batch.index[elem_idxs]})."
+            )
+        action_id = int(path[action_pos])
+        entity_id = int(path[entity_pos])
+        if action_id >= relation_embeddings.shape[0] or entity_id >= entity_embeddings.shape[0]:
+            debugpy.breakpoint()
+            raise IndexError(
+                f"Tried to access action_id {action_id} or entity_id {entity_id} for path of length {len(path)} (question idx {mini_batch.index[elem_idxs]})."
+            )
+        relation_vecs_list.append(
+            get_embeddings_from_indices(
+                relation_embeddings, torch.tensor([action_id], device=relation_device)
+            ).squeeze(0)
+        )
+        entity_vecs_list.append(
+            get_embeddings_from_indices(
+                entity_embeddings, torch.tensor([entity_id], device=entity_device)
+            ).squeeze(0)
+        )
+
+    relation_vecs = torch.stack(relation_vecs_list, dim=0)
+    entity_vecs = torch.stack(entity_vecs_list, dim=0)
 
     # path_states_updated = path_states.clone()
     # action_indices = 2 * current_steps + 1
@@ -1173,26 +1182,37 @@ def train_multihopkg(
             target_param.data.mul_(1.0 - tau)
             target_param.data.add_(tau * param.data)
 
+    stop_action_embedding = env.stop_action_embedding.to(device)
+    relation_embeddings_ref = env.knowledge_graph.relation_embedding
+
     def get_teacher_action_embeddings(
         question_ids_tensor: torch.Tensor, step_counts: torch.Tensor
     ) -> Optional[torch.Tensor]:
         if not teacher_relation_targets:
             return None
-        relation_indices: List[int] = []
+        targets: List[torch.Tensor] = []
         qid_list = question_ids_tensor.detach().cpu().tolist()
         step_list = step_counts.detach().cpu().tolist()
         for qid_value, step_value in zip(qid_list, step_list):
-            relations = teacher_relation_targets[int(qid_value)]
-            relation_pos = int(step_value)
-            relation_indices.append(relations[relation_pos])
-        if not relation_indices:
+            relations = teacher_relation_targets.get(int(qid_value))
+            if not relations:
+                targets.append(stop_action_embedding)
+                continue
+            if int(step_value) >= len(relations):
+                targets.append(stop_action_embedding)
+                continue
+            relation_id = relations[int(step_value)]
+            relation_idx_tensor = torch.tensor(
+                [relation_id], dtype=torch.long, device=device
+            )
+            targets.append(
+                get_embeddings_from_indices(
+                    relation_embeddings_ref, relation_idx_tensor
+                ).squeeze(0)
+            )
+        if not targets:
             return None
-        relation_idx_tensor = torch.tensor(
-            relation_indices, dtype=torch.long, device=device
-        )
-        return get_embeddings_from_indices(
-            env.knowledge_graph.relation_embedding, relation_idx_tensor
-        ).to(device)
+        return torch.stack(targets, dim=0)
 
     def sac_update_step(
         question_ids: torch.Tensor,

@@ -451,11 +451,24 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         knowledge_graph: KGEModel,
         nav_start_emb_type: str,
         reached_destination_threshold: float,
+        stop_action_threshold: float = 0.5,
     ):
         super(ReinforcedUnsupervisedEnv, self).__init__() # Should be injected via information extracted from Knowledge Grap self.action_dim = relation_dim  # TODO: Ensure this is a solid default self.question_embedding_module_trainable = question_embedding_module_trainable
         self.bert_question_embedding_module = bert_question_embedding_module
         self.knowledge_graph = knowledge_graph
         self.reached_destination_threshold = reached_destination_threshold
+        self.stop_action_threshold = stop_action_threshold
+
+        rel_embed = knowledge_graph.relation_embedding
+        if isinstance(rel_embed, torch.Tensor):
+            rel_base = rel_embed
+        else:
+            rel_base = rel_embed.weight
+        self.stop_action_embedding = torch.zeros(
+            rel_base.shape[1],
+            device=rel_base.device,
+            dtype=rel_base.dtype,
+        )
         
         # self.start_emb_func = {
         #     'centroid': self.get_centroid_embedding,
@@ -496,6 +509,11 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
             cur_state.state, action
         )
 
+        # Detect explicit STOP action via proximity to stop embedding
+        stop_embed = self.stop_action_embedding.to(action.device)
+        stop_distance = torch.norm(action - stop_embed, dim=-1, keepdim=True)
+        is_stop = stop_distance < self.stop_action_threshold
+
         # TODO: We need to double check this 'done' determinator
         # No gradients are calculated here
         with torch.no_grad():
@@ -505,6 +523,20 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
             answer_found = torch.norm(diff, dim=-1, keepdim=True) < self.reached_destination_threshold
             assert isinstance(answer_found, torch.Tensor)
             extrinsic_reward = answer_found.float()
+
+        if is_stop.any():
+            # Keep position unchanged for stopped samples
+            current_position = torch.where(
+                is_stop,
+                cur_state.state,
+                current_position,
+            )
+            # Bonus for stopping near answer, small penalty otherwise
+            stop_bonus = (answer_found & is_stop).float()
+            stop_penalty = (~answer_found & is_stop).float() * -0.1
+            extrinsic_reward = extrinsic_reward + stop_bonus + stop_penalty
+
+        done_flag = answer_found | is_stop
 
         ########################################
         # Projections
@@ -522,7 +554,7 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         #     kge_action=detached_actions,
         # )
         
-        return current_position, extrinsic_reward, answer_found
+        return current_position, extrinsic_reward, done_flag
 
     def get_llm_embeddings(self, questions_tokens: torch.Tensor) -> torch.Tensor:
         """
