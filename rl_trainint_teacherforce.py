@@ -8,66 +8,49 @@ Experiment Portal.
 """
 
 import argparse
-import ast
 import copy
-import io
-import json
 import logging
-from ntpath import exists
 import os
 import pickle
 import random
-import sys
 import time
 import math
-from collections import Counter, defaultdict, deque
-from typing import Any, DefaultDict, Dict, List, Optional, Sequence, Tuple
+from collections import Counter, deque
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import debugpy
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from multihopkg.datasets import GraphEmbeddingDataset
 from multihopkg.utils.data_structures import DataPartitions
-from multihopkg.utils.ops import ensure_list_of_ints
 from multihopkg.logging import setup_logger
 import torch
 import torch.nn.functional as F
-from PIL import Image
 from rich import traceback
 from aim import Run
 
 # PCA
-from sklearn.decomposition import PCA
 from torch import nn
 from tqdm import tqdm
 from transformers import (
     AutoModel,
     AutoTokenizer,
     BartConfig,
-    BertModel,
     PreTrainedTokenizer,
 )
 
 import multihopkg.data_utils as data_utils
-import multihopkg.utils_debug.distribution_tracker as dist_tracker
 import wandb
-from multihopkg.environments import Observation
 from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
-from multihopkg.logging import setup_logger
-from multihopkg.logs import torch_module_logging
-from multihopkg.models_language.classical import HunchBart, collate_token_ids_batch
+from multihopkg.models_language.classical import HunchBart
 from multihopkg.rl.graph_search.cpg import ContinuousPolicyGradient
-from multihopkg.rl.graph_search.sac import CriticQ, CriticV, GraphCriticQ, GraphCriticV
-from multihopkg.rl.graph_search.pn import ITLGraphEnvironment, ReinforcedUnsupervisedEnv
+from multihopkg.rl.graph_search.sac import GraphCriticQ, GraphCriticV
+from multihopkg.rl.graph_search.pn import ReinforcedUnsupervisedEnv
 from multihopkg.rl.utils import QuestionReplayBuffer
 from multihopkg.run_configs import rl_alpha
 from multihopkg.run_configs.common import overload_parse_defaults_with_yaml
-from multihopkg.utils.convenience import tensor_normalization
 from multihopkg.utils.setup import set_seeds
-from multihopkg.utils.wandb import histogram_all_modules
-from multihopkg.utils_debug.dump_evals import dump_evaluation_metrics
-from multihopkg.vector_search import ANN_IndexMan, ANN_IndexMan_pRotatE
+from multihopkg.vector_search import ANN_IndexMan
 
 # torch.backends.cuda.matmul.allow_tf32 = False
 # torch.backends.cudnn.allow_tf32 = False
@@ -271,7 +254,7 @@ def prepopulate_replay_buffer(
     bart_bos_token_id = hunch_llm.tokenizer.bos_token_id
     # Lets Initiate sub buffers for each question
 
-    for i in tqdm(range(0, len(train_df), BATCH_SIZE), f"Populating the replay buffer"):
+    for i in tqdm(range(0, len(train_df), BATCH_SIZE), "Populating the replay buffer"):
         mini_batch = train_df.iloc[i : i + BATCH_SIZE]
         _inner_batch_size = len(mini_batch)
 
