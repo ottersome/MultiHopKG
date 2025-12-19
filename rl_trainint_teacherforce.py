@@ -1259,7 +1259,7 @@ def train_multihopkg(
         with torch.no_grad():
             target_values = target_value_net(
                 next_states_path, graph_nextstate_mask, bert_quest_emb
-            )
+            ).squeeze()
             # q_target = rewards + (1.0 - dones.to(torch.float32)) * gamma * target_values.squeeze()
             q_target = rewards + 1.0 * gamma * target_values.squeeze()
 
