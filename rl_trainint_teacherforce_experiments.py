@@ -17,6 +17,7 @@ import pandas as pd
 import torch
 from rich import traceback
 from transformers import AutoModel, AutoTokenizer
+import matplotlib.pyplot as plt
 
 import multihopkg.data_utils as data_utils
 from multihopkg.exogenous.sun_models import KGEModel, get_embeddings_from_indices
@@ -86,6 +87,7 @@ def load_artifacts(args: argparse.Namespace, logger: logging.Logger) -> Experime
     pretrained_gtllm_metadata = torch.load(
         args.pretrained_gtllm_path, weights_only=False
     )
+    print(f"Loaded the following keys: \n{pretrained_gtllm_metadata.keys()}")
 
     gtllm_hunch_base_model = pretrained_gtllm_metadata["hunchbart_base_llm_model"]
     gtllm_graph_embedding_dim = pretrained_gtllm_metadata["hunchbart_hidden_dim"]
@@ -411,6 +413,32 @@ def log_reward_table(
     logger.info("Sample reward slices:\n%s", df.to_string(index=False))
 
 
+def plot_abs_delta_histograms(rewards: Dict[str, torch.Tensor], logger: logging.Logger) -> None:
+    """Plot absolute reward gaps across path variants."""
+
+    try:
+        deltas = {
+            "perfect vs random": (rewards["perfect"] - rewards["random"]).abs(),
+            "perfect vs corrupted": (rewards["perfect"] - rewards["single_hop_corrupted"]).abs(),
+            "perfect vs start_only": (rewards["perfect"] - rewards["start_only"]).abs(),
+        }
+
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+        for ax, (name, tensor) in zip(axes, deltas.items()):
+            vals = tensor.detach().cpu().numpy()
+            ax.hist(vals, bins=30, color="#4C72B0", alpha=0.8)
+            ax.set_title(name)
+            ax.set_xlabel("|Δ reward|")
+            ax.set_ylabel("count")
+            ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+
+        fig.suptitle("Supasoft reward |Δ| distributions")
+        plt.tight_layout()
+        plt.show()
+    except Exception as exc:  # pragma: no cover - visualization fallback
+        logger.warning("Failed to render histograms: %s", exc)
+
+
 def main() -> None:
     args = parse_args()
     logger = build_logger()
@@ -450,6 +478,7 @@ def main() -> None:
         )
 
     log_reward_table(rewards, sample_ids, logger)
+    plot_abs_delta_histograms(rewards, logger)
 
 
 if __name__ == "__main__":
