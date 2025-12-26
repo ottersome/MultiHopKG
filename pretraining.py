@@ -66,6 +66,46 @@ def collate_wrapper(pad_value:int) -> Callable:
     return _collate_fn
 
 
+def _build_negative_graph_embeddings(
+    graph_embeddings: torch.Tensor,
+    graphemb_attn_mask: torch.Tensor,
+    entity_embeddings: nn.Embedding,
+    relation_embeddings: nn.Embedding,
+) -> torch.Tensor:
+    """
+    Craft harder negatives by corrupting a random hop (relation + following entity)
+    per sample, mirroring the corruption/randomization we probe in supasoft reward experiments.
+    """
+
+    negative = graph_embeddings.clone()
+    device = negative.device
+    ent_weight = entity_embeddings.weight.to(device)
+    rel_weight = relation_embeddings.weight.to(device)
+
+    valid_steps = (graphemb_attn_mask.sum(dim=1).long() - 1) // 2
+
+    for row_idx in range(negative.size(0)):
+        steps = int(valid_steps[row_idx].item())
+        assert steps >= 1
+
+        hop = torch.randint(0, steps, (), device=device).item()
+        rel_pos = 2 * hop + 1
+        ent_pos = rel_pos + 1
+
+        rel_idx = torch.randint(0, rel_weight.shape[0], (), device=device)
+        ent_idx = torch.randint(0, ent_weight.shape[0], (), device=device)
+
+        if rel_pos < steps:
+            negative[row_idx, rel_pos, :] = rel_weight[rel_idx]
+        if ent_pos < steps:
+            negative[row_idx, ent_pos, :] = ent_weight[ent_idx]
+        else:
+            # If no trailing entity slot, perturb the last real token.
+            negative[row_idx, steps - 1, :] = ent_weight[ent_idx]
+
+    return negative
+
+
 def _prepare_question_prompts(
     qna_tokens: torch.Tensor,
     ans_masks: torch.Tensor,
@@ -198,6 +238,8 @@ def validation_loop(
     verbose: bool,
     aim_run: Optional[AimRun],
     global_step: int,
+    entity_embeddings: nn.Embedding,
+    relation_embeddings: nn.Embedding,
 ) -> Dict[str, float]:
     # TODO: Implement some other more sophisticated validation metrics
     pad_token_id = tokenizer.pad_token_id
@@ -216,8 +258,13 @@ def validation_loop(
         for batch_idx, batch in enumerate(val_dataloader):
             # Turn of all backprop
             qna_tokens, ans_masks, graph_embeddings, graphemb_attn_mask, answer_bert_emb = batch
-            # Now we will round-robin graph_embeddings to get a negative sample. 
-            negative_graph_embeddings = torch.roll(graph_embeddings, shifts=1, dims=0)
+            # Build harder negatives by corrupting a random hop per path (matches reward probes).
+            negative_graph_embeddings = _build_negative_graph_embeddings(
+                graph_embeddings,
+                graphemb_attn_mask,
+                entity_embeddings,
+                relation_embeddings,
+            )
 
             padding_mask = qna_tokens != tokenizer.pad_token_id
 
@@ -381,6 +428,8 @@ def train_loop(
                     verbose,
                     aim_run,
                     cur_num_batches,
+                    entity_embeddings,
+                    relation_embeddings,
                 )
                 validation_reports.append((
                     cur_num_batches,
