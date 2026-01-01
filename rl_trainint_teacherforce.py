@@ -395,7 +395,7 @@ def get_ground_truth_paths(
         relation_ids = torch.tensor(discrete_path[1::2], dtype=torch.long, device=device)
         entity_vecs = get_embeddings_from_indices(entity_embeddings, entity_ids)
 
-        _num_steps = max(0, entity_ids.numel() - 1)
+        _num_steps = entity_ids.numel() - 1
         if _num_steps > max_supported_steps:
             raise RuntimeError(f"Error: No support for {_num_steps} steps found in triple_ints in the dataset. Maximum number of steps in this training is {max_supported_steps} ")
         gt_step_counts[row_idx] = _num_steps
@@ -594,7 +594,8 @@ def hydrate_replay_buffer(
         num_relations = max(0, (len(path) - 1) // 2)
         path_step_counter = int(step_counter[elem_idxs].item())
 
-        if done_flags[elem_idxs] or path_step_counter >= num_relations:
+        assert path_step_counter < num_relations, "Cannot have path_step_counter >= num_relations"
+        if done_flags[elem_idxs]:
             # STOP action: keep entity where it is, use stop embedding
             cur_state_vec = path_states[elem_idxs, 2 * path_step_counter, :]
             relation_vecs_list.append(env.stop_action_embedding.to(relation_device))

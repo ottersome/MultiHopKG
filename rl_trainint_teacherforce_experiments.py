@@ -8,6 +8,7 @@ perfect-path vs random-path reward gaps.
 
 import argparse
 import logging
+import debugpy
 import os
 from dataclasses import dataclass
 from typing import Dict, Iterable, Tuple
@@ -327,6 +328,15 @@ def run_reward_probes(
         artifacts.tokenizer.pad_token_id,
     )
 
+    permuted_paths = torch.roll(gt_paths, shifts=1, dims=0)
+    rewards["permuted"], _ = calculate_llm_reward_supasoft(
+        artifacts.hunch_llm,
+        permuted_paths,
+        answer_embeddings,
+        question_tokens,
+        artifacts.tokenizer.pad_token_id,
+    )
+
     random_trials = []
     for _ in range(max(1, artifacts.num_random_trials)):
         random_paths = build_random_paths(
@@ -377,6 +387,7 @@ def run_reward_probes(
         rewards["perfect"] - rewards["single_hop_corrupted"]
     )
     rewards["perfect_minus_start_only"] = rewards["perfect"] - rewards["start_only"]
+    rewards["perfect_minus_permuted"] = rewards["perfect"] - rewards["permuted"]
 
     logger.info(
         "Computed rewards | perfect mean %.4f | random mean %.4f",
@@ -405,6 +416,7 @@ def log_reward_table(
                 "random": rewards["random"][idx].item(),
                 "corrupted": rewards["single_hop_corrupted"][idx].item(),
                 "start_only": rewards["start_only"][idx].item(),
+                "permuted": rewards["permuted"][idx].item(),
             }
         )
     if not rows:
@@ -421,9 +433,11 @@ def plot_abs_delta_histograms(rewards: Dict[str, torch.Tensor], logger: logging.
             "perfect vs random": (rewards["perfect"] - rewards["random"]).abs(),
             "perfect vs corrupted": (rewards["perfect"] - rewards["single_hop_corrupted"]).abs(),
             "perfect vs start_only": (rewards["perfect"] - rewards["start_only"]).abs(),
+            "perfect vs permuted": (rewards["perfect"] - rewards["permuted"]).abs(),
         }
 
-        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+        axes = axes.flatten()
         for ax, (name, tensor) in zip(axes, deltas.items()):
             vals = tensor.detach().cpu().numpy()
             ax.hist(vals, bins=30, color="#4C72B0", alpha=0.8)
@@ -443,6 +457,13 @@ def main() -> None:
     args = parse_args()
     logger = build_logger()
     artifacts = load_artifacts(args, logger)
+
+    if args.debug:
+        logger.info("\033[1;33m Waiting for debugger to attach...\033[0m")
+        debugpy.listen(("0.0.0.0", 42023))
+        debugpy.wait_for_client()
+        # USe debugpy to listen
+
 
     dataset, split = _select_split(artifacts.data_partitions, args.exp_split)
     sample_size = min(args.exp_num_samples, len(dataset))

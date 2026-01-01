@@ -95,13 +95,12 @@ def _build_negative_graph_embeddings(
         rel_idx = torch.randint(0, rel_weight.shape[0], (), device=device)
         ent_idx = torch.randint(0, ent_weight.shape[0], (), device=device)
 
-        if rel_pos < steps:
-            negative[row_idx, rel_pos, :] = rel_weight[rel_idx]
-        if ent_pos < steps:
-            negative[row_idx, ent_pos, :] = ent_weight[ent_idx]
-        else:
-            # If no trailing entity slot, perturb the last real token.
-            negative[row_idx, steps - 1, :] = ent_weight[ent_idx]
+        assert steps != 0, "Wrong non-0 step assumption"
+        max_rel_pos = (steps - 1) * 2 + 1
+        assert rel_pos <= max_rel_pos
+        assert ent_pos <= max_rel_pos + 1
+        negative[row_idx, rel_pos, :] = rel_weight[rel_idx]
+        negative[row_idx, ent_pos, :] = ent_weight[ent_idx]
 
     return negative
 
@@ -247,9 +246,11 @@ def validation_loop(
     loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=pad_token_id)
     validation_metrics: Dict[str, List[float]] = {
         "valid/loss" : [],
-        "valid/cf-loss" : [],
+        "valid/cf-loss_corrupted" : [],
+        "valid/cf-loss_permuted" : [],
         "valid/alignment_loss_w_emb" : [],
         "valid/alignment_loss_wo_emb" : [],
+        "valid/alignment_loss_perm" : [],
         "valid/exact_match": [],
         "valid/avg_generated_length": [],
     }
@@ -265,6 +266,9 @@ def validation_loop(
                 entity_embeddings,
                 relation_embeddings,
             )
+            # Additional negative: borrow an entire path from another sample (true permutation).
+            perm_graph_embeddings = torch.roll(graph_embeddings, shifts=1, dims=0)
+            perm_graphemb_attn_mask = torch.roll(graphemb_attn_mask, shifts=1, dims=0)
 
             padding_mask = qna_tokens != tokenizer.pad_token_id
 
@@ -283,21 +287,29 @@ def validation_loop(
             answers_inf_softmax_wo_emb, bert_alignment_inference_wo_emb = model(
                 negative_graph_embeddings, graphemb_attn_mask, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1], questions_masks=questions_masks[:,:-1],
             )
+            answers_inf_softmax_perm, bert_alignment_inference_perm = model(
+                perm_graph_embeddings, perm_graphemb_attn_mask, qna_tokens[:,:-1], decoder_attention_mask=padding_mask[:,:-1], questions_masks=questions_masks[:,:-1],
+            )
             _, logits = answers_inf_softmax_w_emb.loss, answers_inf_softmax_w_emb.logits
             _, n_logits = answers_inf_softmax_wo_emb.loss, answers_inf_softmax_wo_emb.logits
+            _, p_logits = answers_inf_softmax_perm.loss, answers_inf_softmax_perm.logits
 
             # Computer Bert Alignment Loss
             alignment_loss_w_emb = F.mse_loss(bert_alignment_inference_w_emb, answer_bert_emb)
             alignment_loss_wo_emb = F.mse_loss(bert_alignment_inference_wo_emb, answer_bert_emb)
+            alignment_loss_perm = F.mse_loss(bert_alignment_inference_perm, answer_bert_emb)
             validation_metrics["valid/alignment_loss_w_emb"].append(alignment_loss_w_emb.item())
             validation_metrics["valid/alignment_loss_wo_emb"].append(alignment_loss_wo_emb.item())
+            validation_metrics["valid/alignment_loss_perm"].append(alignment_loss_perm.item())
 
             # Loss Calculation
             loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
             n_loss = loss_fn(n_logits.view(-1, n_logits.shape[-1]), truth_answers.view(-1)).mean()
+            p_loss = loss_fn(p_logits.view(-1, p_logits.shape[-1]), truth_answers.view(-1)).mean()
 
             validation_metrics["valid/loss"].append(loss.item())
-            validation_metrics["valid/cf-loss"].append(n_loss.item())
+            validation_metrics["valid/cf-loss_corrupted"].append(n_loss.item())
+            validation_metrics["valid/cf-loss_permuted"].append(p_loss.item())
             if verbose and batch_idx == 0:
                 # Take logits and covert them into idxs:
                 qna_strs = tokenizer.batch_decode(qna_tokens)
