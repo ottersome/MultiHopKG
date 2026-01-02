@@ -388,6 +388,9 @@ def train_loop(
     baseline_lr: float,
     minimum_lr: float,
     num_warmup_steps: int,
+    contrastive_weight: float,
+    contrastive_margin: float,
+    contrastive_use_permuted: bool,
     # --- Validation Parameters -- #
     val_every_n_batches: int,
     verbose: bool,
@@ -483,7 +486,51 @@ def train_loop(
             # Graph Projector Backprop
             gtllm_loss = loss_fn(logits.view(-1, logits.shape[-1]), truth_answers.view(-1)).mean()
             bert_loss = F.mse_loss(bert_output, ans_bert_embeddings)
-            final_loss = gtllm_loss + bert_loss
+            contrastive_loss = torch.tensor(0.0, device=device)
+            if contrastive_weight > 0:
+                # Negatives: single-hop corruption, and optionally permuted paths.
+                negative_graph_embeddings = _build_negative_graph_embeddings(
+                    graph_embeddings,
+                    graphemb_attention_mask,
+                    entity_embeddings,
+                    relation_embeddings,
+                )
+                _, neg_bert_output = bart_llm(
+                    negative_graph_embeddings,
+                    graphemb_attention_mask,
+                    qna_tokens[:,:-1],
+                    decoder_attention_mask=padding_mask[:,:-1],
+                    questions_masks=questions_masks[:,:-1],
+                )
+                pos_mse = F.mse_loss(
+                    bert_output, ans_bert_embeddings, reduction="none"
+                ).mean(dim=-1)
+                neg_mse = F.mse_loss(
+                    neg_bert_output, ans_bert_embeddings, reduction="none"
+                ).mean(dim=-1)
+                contrastive_loss = F.relu(contrastive_margin + pos_mse - neg_mse).mean()
+
+                if contrastive_use_permuted:
+                    perm_graph_embeddings = torch.roll(graph_embeddings, shifts=1, dims=0)
+                    perm_graphemb_attention_mask = torch.roll(
+                        graphemb_attention_mask, shifts=1, dims=0
+                    )
+                    _, perm_bert_output = bart_llm(
+                        perm_graph_embeddings,
+                        perm_graphemb_attention_mask,
+                        qna_tokens[:,:-1],
+                        decoder_attention_mask=padding_mask[:,:-1],
+                        questions_masks=questions_masks[:,:-1],
+                    )
+                    perm_mse = F.mse_loss(
+                        perm_bert_output, ans_bert_embeddings, reduction="none"
+                    ).mean(dim=-1)
+                    perm_contrastive = F.relu(
+                        contrastive_margin + pos_mse - perm_mse
+                    ).mean()
+                    contrastive_loss = 0.5 * (contrastive_loss + perm_contrastive)
+
+            final_loss = gtllm_loss + bert_loss + contrastive_weight * contrastive_loss
             final_loss.backward()
             optimizer.step()
             # scheduler.step()
@@ -494,7 +541,8 @@ def train_loop(
                 wandb_payload = {
                     "loss_bart_train": gtllm_loss.item(),
                     "loss_bert_train": bert_loss.item(),
-                    "final_loss_train": final_loss.item()
+                    "loss_contrastive_train": contrastive_loss.item(),
+                    "final_loss_train": final_loss.item(),
                 }
                 wandb.log(wandb_payload)
             if aim_run is not None:
@@ -502,6 +550,7 @@ def train_loop(
                 aim_run.track(e, name="train/epoch", step=step_id)
                 aim_run.track(gtllm_loss.item(), name="train/loss_bart_train", step=step_id)
                 aim_run.track(bert_loss.item(), name="train/loss_bert_train", step=step_id)
+                aim_run.track(contrastive_loss.item(), name="train/loss_contrastive_train", step=step_id)
                 aim_run.track(final_loss.item(), name="train/final_loss_train", step=step_id)
                 aim_run.track(current_lr, name="train/lr", step=step_id)
 
@@ -652,6 +701,9 @@ def main():
         args.baseline_lr,
         args.minimum_lr,
         args.num_warmup_steps,
+        args.contrastive_weight,
+        args.contrastive_margin,
+        args.contrastive_use_permuted,
         args.val_every_n_batches,
         args.verbose,
         aim_run,

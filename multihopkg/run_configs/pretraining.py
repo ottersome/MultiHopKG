@@ -50,6 +50,23 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--minimum_lr", type=float, default=1e-6)
     ap.add_argument("--aim_repo", type=str, default="./.aim", help="Filesystem path where Aim logs will be stored")
     ap.add_argument("--aim_experiment", type=str, default="gtllm_pretraining", help="Aim experiment name for grouping runs")
+    ap.add_argument(
+        "--contrastive_weight",
+        type=float,
+        default=0.0,
+        help="Weight for contrastive margin loss between true and negative paths.",
+    )
+    ap.add_argument(
+        "--contrastive_margin",
+        type=float,
+        default=0.05,
+        help="Margin used in contrastive path loss.",
+    )
+    ap.add_argument(
+        "--contrastive_use_permuted",
+        action="store_true",
+        help="Include permuted-path negatives in the contrastive loss.",
+    )
 
     args = ap.parse_args()
     # Some sanity checks/helps
