@@ -131,7 +131,6 @@ def _prepare_question_prompts(
         prompt = [token for token in seq_list[:answer_start] if token != pad_token_id]
         if not prompt:
             raise ValueError("Was expecting a prompt in evaluation")
-        prompt.append(bos_token_id)
         prompts.append(torch.tensor(prompt, dtype=torch.long, device=device))
         prompt_lengths.append(len(prompt))
 
