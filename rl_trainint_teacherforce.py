@@ -244,6 +244,8 @@ def prepopulate_replay_buffer(
     num_simulations_per_question: int, # Simulations ~= Transitions  
     max_env_steps: int,
     pad_token_id: int,
+    stop_reward_weight: float,
+    step_penalty: float,
 ) -> QuestionReplayBuffer:
 
     actor.eval()
@@ -331,7 +333,11 @@ def prepopulate_replay_buffer(
             padded_questions_tokens.view(-1, padded_questions_tokens.shape[-1]),
             pad_token_id,
         )
-        combined_reward = llm_reward #+ extrinsic_reward.squeeze(-1)  #NOTE: at some point we might be interested in using this extrinsic reward.
+        combined_reward = (
+            llm_reward
+            + stop_reward_weight * extrinsic_reward.squeeze(-1)
+            + step_penalty
+        )
 
         # Obviously this is only a one step thing:
         step_counter = torch.zeros_like(llm_reward, dtype=torch.long)
@@ -340,16 +346,16 @@ def prepopulate_replay_buffer(
         ########################################
         action_dim = action.shape[-1]
         state_dim = init_states.shape[-1]
-        question_n_exp_idxs = torch.Tensor(mini_batch.index).to(torch.long).unsqueeze(1).repeat(1, num_simulations_per_question).view(-1)
+        questions_tiled_idxs = torch.Tensor(mini_batch.index).to(torch.long).unsqueeze(1).repeat(1, num_simulations_per_question).view(-1)
         replay_buffer.add_transitions(
-            questions_ids=question_n_exp_idxs,
+            questions_ids=questions_tiled_idxs,
             quest_bert_emb=bert_quest_emb,
             cur_states=init_states.view(-1, state_dim), # TODO: we might want to remove this since we already have path_states
             actions=action.view(-1, action_dim).detach().to(cpu_device),
             rewards=combined_reward.detach().to(cpu_device),
             path_states = padded_path.view(_inner_batch_size * num_simulations_per_question, -1, padded_path.shape[-1]),
             next_states=next_state.view(-1, state_dim).detach().to(cpu_device),
-            dones=torch.zeros((_inner_batch_size * num_simulations_per_question), dtype=torch.bool),
+            dones=done.squeeze(-1).to(torch.bool),
             log_probs = torch.ones_like(llm_reward, dtype=torch.float), # TODO: make sure we handle this place holder value properly later
             entropies = torch.full_like(llm_reward, -1.0),
             step_counter = step_counter,
@@ -424,7 +430,9 @@ def hydrate_replay_buffer(
     train_df: pd.DataFrame,
     pad_token_id: int,
     summary_writer: AimWriter,
-    global_step:int, 
+    global_step:int,
+    stop_reward_weight: float,
+    step_penalty: float,
 ) -> int:
     """Generate new transitions by extending oldest trajectories in replay."""
 
@@ -459,17 +467,10 @@ def hydrate_replay_buffer(
     actual_num_experiences = sum(list(question_counts.values()))
     sampled_question_idxs = sampled_qidx.numpy().tolist()
 
+    # Now that we have Sampled.
+    # We can start with mini batch logic
     mini_batch = train_df.loc[sampled_question_idxs]
-    
-    max_num_steps = all_max_num_steps[mini_batch.index]
-
-    # if gt_paths is not None:
-    #     assert step_counter != gt_step_counts, "Sample does not have the same amount of steps as necessary"
-    #     # step_counter = torch.minimum(step_counter, gt_step_counts)
-    #     prefix_lengths = step_counter * 2 + 1
-    #     for row_idx in range(actual_num_experiences):
-    #         fill_len = int(prefix_lengths[row_idx].item())
-    #         path_states[row_idx, :fill_len, :] = gt_paths[row_idx, :fill_len, :]
+    batch_max_num_steps = all_max_num_steps[mini_batch.index]
 
     questions_tokens = [torch.Tensor(ques).to(torch.long) for ques in train_df.loc[mini_batch.index, "enc_questions"]]
     padded_questions_tokens = torch.nn.utils.rnn.pad_sequence(
@@ -515,7 +516,7 @@ def hydrate_replay_buffer(
     notdone_flags = ~frozen_done_flags
     if frozen_done_flags.any():
         notdone_steps = step_counter[notdone_flags]
-        notdone_max_num_steps = max_num_steps[notdone_flags]
+        notdone_max_num_steps = batch_max_num_steps[notdone_flags]
 
         # Advancement from where they were
         path_states[notdone_flags, (notdone_steps*2) + 1] = actions[notdone_flags]
@@ -569,7 +570,11 @@ def hydrate_replay_buffer(
         pad_token_id,
     )
 
-    combined_reward = llm_reward.squeeze()# + extrinsic_reward.squeeze()
+    combined_reward = (
+        llm_reward.squeeze()
+        + stop_reward_weight * extrinsic_reward.squeeze(-1)
+        + step_penalty
+    )
     summary_writer.add_scalar("hydration_llm_reward", combined_reward.mean().item(), global_step)
 
     # TODO: Truth action and truth entity here
@@ -628,36 +633,6 @@ def hydrate_replay_buffer(
 
     relation_vecs = torch.stack(relation_vecs_list, dim=0)
     entity_vecs = torch.stack(entity_vecs_list, dim=0)
-
-    # path_states_updated = path_states.clone()
-    # action_indices = 2 * current_steps + 1
-    # state_indices = action_indices + 1
-    #
-    # within_bounds = state_indices < max_path_len
-    # if not within_bounds.all():
-    #     overflow_mask = ~within_bounds
-    #     action_indices = torch.clamp(action_indices, max=max_path_len - 2)
-    #     state_indices = action_indices + 1
-    #     done = done.clone()
-    #     done[overflow_mask] = True
-    #
-    # path_states_updated[row_idx, action_indices, :] = actions
-    # path_states_updated[row_idx, state_indices, :] = next_states
-    
-    # logger.info(
-    #     # "Hydrating with items (shapes, devices):\n"
-    #     f"\t-questions_ids : {sampled_qidx.shape}, {sampled_qidx.device}\n"
-    #     f"\t-quest_bert_emb : {bert_quest.shape}, {bert_quest.device}\n"
-    #     f"\t-cur_states : {current_states.shape}, {current_states.device}\n"
-    #     f"\t-actions : {relation_vecs.shape}, {relation_vecs.device}\n"
-    #     f"\t-rewards : {combined_reward.shape}, {combined_reward.device}\n"
-    #     f"\t-next_states : {entity_vecs.shape}, {entity_vecs.device}\n"
-    #     f"\t-dones : {done.shape}, {done.device}\n"
-    #     f"\t-path_states : {path_states.shape}, {path_states.device}\n"
-    #     f"\t-log_probs : {log_probs.shape}, {log_probs.device}\n"
-    #     f"\t-entropies : {entropy.shape}, {entropy.device}\n"
-    #     f"\t-step_counter : {step_counter.shape}, {step_counter.device}\n"
-    # )
 
     replay_buffer.add_transitions(
         questions_ids=sampled_qidx,
@@ -720,8 +695,10 @@ def evaluate_seq2seq_outputs(
     # env.eval()
     bart_model = getattr(hunch_llm, "bart", None)
     bart_config = getattr(bart_model, "config", None)
-    decoder_bos_token_id = getattr(bart_config, "decoder_start_token_id", None)
+    # decoder_bos_token_id = getattr(bart_config, "decoder_start_token_id", None) # This gives </s> for some reason
+    decoder_bos_token_id = getattr(bart_config, "bos_token_id", None)
     decoder_eos_token_id = getattr(bart_config, "eos_token_id", None)
+    assert decoder_bos_token_id is not None and decoder_eos_token_id is not None, "Assumption broken: Evaluation needs both eos and bos tokens."
 
     total_nll = 0.0
     total_tokens = 0
@@ -733,6 +710,9 @@ def evaluate_seq2seq_outputs(
     total_generated_len = 0.0
     mse_alignment_sum = 0.0
     mse_alignment_count = 0
+    total_stop_actions = 0
+    total_actions = 0
+    stop_episode_count = 0
 
     # Samples for Humans
     samples_idxs = np.random.choice(len(dataset), 4, replace=False).tolist()
@@ -758,11 +738,16 @@ def evaluate_seq2seq_outputs(
         question_tokens_list = [q for q in mini_batch["enc_questions"].tolist()]
         answer_tokens_list = [ans for ans in mini_batch["enc_answer"].tolist()]
         # TODO: Confirm that question_token_list has a `2` at the end (separator token)
-        bos_bart_token_id =  question_tokenizer.bos_token_id
-        question_tokens_list_tensor = [torch.tensor(q + [bos_bart_token_id], dtype=torch.long) for q in mini_batch["enc_questions"].tolist()]
+        question_tokens_list_tensor = [
+            torch.tensor(q + [decoder_bos_token_id], dtype=torch.long)
+            for q in mini_batch["enc_questions"].tolist()
+        ]
         padded_questions = torch.nn.utils.rnn.pad_sequence(question_tokens_list_tensor, batch_first=True, padding_value=bart_pad_token_id).to(device)
         bart_questions_mask = padded_questions != bart_pad_token_id
-        answer_tokens_list_tensor = [torch.tensor(ans + [bos_bart_token_id], dtype=torch.long) for ans in mini_batch["enc_answer"].tolist()]
+        answer_tokens_list_tensor = [
+            torch.tensor(ans + [decoder_eos_token_id], dtype=torch.long)
+            for ans in mini_batch["enc_answer"].tolist()
+        ]
         # padded_answers = torch.nn.utils.rnn.pad_sequence(answer_tokens_list_tensor, batch_first=True, padding_value=bart_pad_token_id).to(device)
         # max_answer_len = max(len(ans) for ans in answer_tokens_list_tensor)
 
@@ -789,9 +774,13 @@ def evaluate_seq2seq_outputs(
         step_counter = torch.zeros(_batch_size, dtype=torch.long, device=device)
         done_mask = torch.zeros(_batch_size, dtype=torch.bool, device=device)
         # success_flags = torch.zeros(_batch_size, dtype=torch.bool, device=device)
+        stop_step = torch.full((_batch_size,), -1, dtype=torch.long, device=device)
+        answer_found_step = torch.full((_batch_size,), -1, dtype=torch.long, device=device)
 
         step_active = torch.Tensor([])
 
+        stop_embed = env.stop_action_embedding.to(device)
+        stop_threshold = env.stop_action_threshold
         for i in range(max_transitions):
             active_idx = (~done_mask).nonzero(as_tuple=False).squeeze(-1)
             if active_idx.numel() == 0:
@@ -806,6 +795,10 @@ def evaluate_seq2seq_outputs(
                 graph_state_mask=mask_active,
                 context_quest_bert_emb=bert_quest[active_idx],
             )
+            stop_distance = torch.norm(actions - stop_embed, dim=-1, keepdim=True)
+            is_stop = stop_distance < stop_threshold
+            total_stop_actions += int(is_stop.sum().item())
+            total_actions += is_stop.numel()
 
             row_idx = torch.arange(active_idx.size(0), device=device)
             # TODO: confirm this looks okay
@@ -826,6 +819,21 @@ def evaluate_seq2seq_outputs(
             # Stop rollouts early when the env signals success or we hit the step budget
             done_now = done.squeeze(-1).bool()
             done_mask[active_idx] = done_now | (step_counter[active_idx] >= max_transitions)
+            stop_episode_count += int((done_now & is_stop.squeeze(-1)).sum().item())
+
+            answer_embeddings = get_embeddings_from_indices(
+                env.knowledge_graph.entity_embedding, answer_entity_ids[active_idx]
+            )
+            diff = env.knowledge_graph.absolute_difference(answer_embeddings, next_states)
+            answer_found = (
+                torch.norm(diff, dim=-1, keepdim=True) < env.reached_destination_threshold
+            )
+            first_stop_mask = is_stop.squeeze(-1) & (stop_step[active_idx] < 0)
+            if first_stop_mask.any():
+                stop_step[active_idx[first_stop_mask]] = step_active[first_stop_mask]
+            first_answer_mask = answer_found.squeeze(-1) & (answer_found_step[active_idx] < 0)
+            if first_answer_mask.any():
+                answer_found_step[active_idx[first_answer_mask]] = step_active[first_answer_mask]
 
         idxs_out_of_range = [step_counter[i] > max_transitions for i in range(len(step_counter))]
         assert not any(idxs_out_of_range), "There should be no id out of range" # TOREM: After debugging for long enough
@@ -839,11 +847,8 @@ def evaluate_seq2seq_outputs(
         ########################################
         # TODO: Logit Loss Calculation
         ########################################
-        assert isinstance(question_tokenizer.bos_token, str), "Expected question tokenizer to have bos_token and be a string."
-        bos_token_id = question_tokenizer.bos_token_id
-        assert isinstance(bos_token_id, int)
         qna_tokens, answer_mask = GraphEmbeddingDataset._merge_questions_and_answers(
-            question_tokens_list, answer_tokens_list, bart_pad_token_id, bos_token_id
+            question_tokens_list, answer_tokens_list, decoder_eos_token_id, decoder_bos_token_id
         )
         qna_tokens_tensor = [
             torch.tensor(qna_token, dtype=torch.long, device=device) for qna_token in qna_tokens
@@ -853,13 +858,7 @@ def evaluate_seq2seq_outputs(
         padded_answer_masks = torch.nn.utils.rnn.pad_sequence(answer_mask_tensors, batch_first=True, padding_value=0)
 
         decoder_attention_mask = (padded_qna_tokens != bart_pad_token_id).long()
-        decoder_prompt_ids, decoder_prompt_attention_mask, prompt_lengths = _prepare_question_prompts(
-            padded_qna_tokens,
-            padded_answer_masks,
-            bart_pad_token_id,
-            decoder_bos_token_id,
-            decoder_eos_token_id,
-        )
+        prompt_lengths = bart_questions_mask.sum(dim=1).tolist()
         bart_outputs = hunch_llm.bart( # type:ignore
             inputs_embeds=translated_embeddings,
             attention_mask=encoder_attention_mask,
@@ -955,7 +954,8 @@ def evaluate_seq2seq_outputs(
 
         # 2. Pooling to get a single vector.
         # TODO: Figure out the attention_mask
-        pooled = (last_decoder_hidden_state * decoder_attention_mask.unsqueeze(-1)).sum(1) / encoder_attention_mask.sum(1, keepdim=True)
+        pooled = (last_decoder_hidden_state * decoder_attention_mask.unsqueeze(-1)).sum(1)
+        pooled = pooled / decoder_attention_mask.sum(1, keepdim=True).clamp(min=1)
         pooled = hunch_llm.activation(hunch_llm.pooler(pooled)) # type: ignore
         bert_alignment_inference = hunch_llm.projection(pooled)  # type: ignore
 
@@ -964,7 +964,7 @@ def evaluate_seq2seq_outputs(
             hunch_llm,
             path_trace,
             bert_ans,
-            padded_qna_tokens,
+            padded_questions,
             bart_pad_token_id,
         )
         # mse_alignment_sum += (-reward_supasoft).sum().item()
@@ -999,6 +999,8 @@ def evaluate_seq2seq_outputs(
                 "dataset_id" : sidx,
                 "path_states": path_trace[_local_sidxs,:, :],
                 "step_counter": step_counter[_local_sidxs],
+                "stop_step": stop_step[_local_sidxs],
+                "answer_found_step": answer_found_step[_local_sidxs],
                 "predicted_texts": pred_texts[_local_sidxs],
                 "reference_texts": ref_texts[_local_sidxs],
                 "ref_paths": mini_batch["triples_ints"].iloc[_local_sidxs]
@@ -1018,6 +1020,12 @@ def evaluate_seq2seq_outputs(
         metrics[f"{prefix}/avg_step_count"] = total_steps / max(total_sequences, 1)
         metrics[f"{prefix}/avg_generated_length"] = (
             total_generated_len / max(total_sequences, 1)
+        )
+        metrics[f"{prefix}/stop_action_rate"] = (
+            total_stop_actions / max(total_actions, 1)
+        )
+        metrics[f"{prefix}/stop_episode_rate"] = (
+            stop_episode_count / max(total_sequences, 1)
         )
     if mse_alignment_count > 0:
         metrics[f"{prefix}/bert_alignment_mse"] = (
@@ -1042,7 +1050,10 @@ def evaluate_seq2seq_outputs(
 
         # Now the piece of resistance: Ann Finding
         step_counter = sample["step_counter"]
-        paths = sample["path_states"][:(step_counter*2+3),:]
+        stop_step = sample["stop_step"]
+        answer_found_step = sample["answer_found_step"]
+        valid_len = int(2 * step_counter.item() + 1)
+        paths = sample["path_states"][:valid_len, :]
         ref_path = sample["ref_paths"]
         entities = paths[0::2,:]
         relations = paths[1::2,:]
@@ -1075,6 +1086,14 @@ def evaluate_seq2seq_outputs(
             else:
                 ref_path_titles += [ref_rel_titles[i//2]]
 
+        stop_label = "no_stop_action"
+        if stop_step.item() >= 0:
+            stop_label = f"stopped_at_step={int(stop_step.item())}"
+        elif answer_found_step.item() >= 0:
+            stop_label = f"should_have_stopped_at_step={int(answer_found_step.item())}"
+        elif step_counter.item() >= max_transitions:
+            stop_label = "hit_max_steps"
+
         logger.info(
             "----------------------------------------\n"
             f"The following is the {idx}th sample.\n"
@@ -1083,6 +1102,7 @@ def evaluate_seq2seq_outputs(
             f"Predicted Text is: {predicted_text}\n"
             f"Predicted Path is: {final_path_titles}\n"
             f"Ref Path Path is: {ref_path_titles}\n"
+            f"Stop Label is: {stop_label}\n"
             "----------------------------------------\n"
         )
 
@@ -1125,6 +1145,8 @@ def train_multihopkg(
     qid_to_title: Dict[str, str],
     pid_to_title: Dict[str, str],
     teacherforce_reg_lambda: float,
+    stop_reward_weight: float,
+    step_penalty: float,
 ):
     if answer_tokenizer.pad_token_id is None:
         raise ValueError(
@@ -1166,12 +1188,11 @@ def train_multihopkg(
     question_ids = train_df.index.values.tolist()
     assert isinstance(question_ids, List)
     teacher_relation_targets: Dict[int, List[int]] = {}
-    for qid, path in train_df["triples_ints"].items():
-        if not isinstance(path, Sequence):
-            continue
+    for ques_id, path in train_df["triples_ints"].items():
+        assert isinstance(ques_id, int)
         relations = [int(rel) for rel in path[1::2]]
         if relations:
-            teacher_relation_targets[int(qid)] = relations
+            teacher_relation_targets[int(ques_id)] = relations
     eval_interval_updates = max(1, num_gradupdates_till_eval)
     last_eval_updates = 0
 
@@ -1189,28 +1210,19 @@ def train_multihopkg(
     def get_teacher_action_embeddings(
         question_ids_tensor: torch.Tensor, step_counts: torch.Tensor
     ) -> Optional[torch.Tensor]:
-        if not teacher_relation_targets:
-            return None
+        assert teacher_relation_targets
         targets: List[torch.Tensor] = []
-        qid_list = question_ids_tensor.detach().cpu().tolist()
+        ques_id_list = question_ids_tensor.detach().cpu().tolist()
         step_list = step_counts.detach().cpu().tolist()
-        for qid_value, step_value in zip(qid_list, step_list):
-            relations = teacher_relation_targets.get(int(qid_value))
-            if not relations:
-                targets.append(stop_action_embedding)
-                continue
-            if int(step_value) >= len(relations):
-                targets.append(stop_action_embedding)
-                continue
+        for ques_id_value, step_value in zip(ques_id_list, step_list):
+            relations = teacher_relation_targets.get(int(ques_id_value))
+            assert relations
+            assert step_value < len(relations)
             relation_id = relations[int(step_value)]
             relation_idx_tensor = torch.tensor(
                 [relation_id], dtype=torch.long, device=device
             )
-            targets.append(
-                get_embeddings_from_indices(
-                    relation_embeddings_ref, relation_idx_tensor
-                ).squeeze(0)
-            )
+            targets.append(get_embeddings_from_indices(relation_embeddings_ref, relation_idx_tensor).squeeze(0))
         if not targets:
             return None
         return torch.stack(targets, dim=0)
@@ -1287,22 +1299,23 @@ def train_multihopkg(
         policy_state = _states_path.clone()
         policy_state[batch_idxs, 2 * step_counter + 1, :] = policy_actions
 
-        teacher_targets = get_teacher_action_embeddings(question_ids, step_counter)
+        teacher_targets = get_teacher_action_embeddings(question_ids, step_counter) # shape: (batch_size, action_dimension)
         policy_alignment_metric = 0.0
         buffer_alignment_metric = 0.0
 
-        if teacher_targets is not None:
-            teacher_targets = teacher_targets.to(policy_actions.dtype)
-            buffer_alignment_metric = (
-                F.mse_loss(
-                    actions,
-                    teacher_targets.detach(),
-                    reduction="none",
-                )
-                .mean(dim=-1)
-                .mean()
-                .item()
+        assert teacher_targets is not None
+
+        teacher_targets = teacher_targets.to(policy_actions.dtype)
+        buffer_alignment_metric = (
+            F.mse_loss(
+                actions,
+                teacher_targets.detach(),
+                reduction="none",
             )
+            .mean(dim=-1)
+            .mean()
+            .item()
+        )
 
         q1_pi = critic_q1(policy_state, graph_plusAction_mask, bert_quest_emb)
         q2_pi = critic_q2(policy_state, graph_plusAction_mask, bert_quest_emb)
@@ -1469,7 +1482,9 @@ def train_multihopkg(
                     train_df=train_df,
                     pad_token_id=pad_token_id,
                     summary_writer=writer,
-                    global_step=total_gradient_updates
+                    global_step=total_gradient_updates,
+                    stop_reward_weight=stop_reward_weight,
+                    step_penalty=step_penalty,
                 )
                 if added:
                     if wandb_on:
@@ -1870,6 +1885,8 @@ def main():
             num_simulations_per_question=args.experiences_per_question,
             max_env_steps=args.max_env_steps,
             pad_token_id=gtllm_tokenizer.pad_token_id, # type: ignore
+            stop_reward_weight=args.stop_reward_weight,
+            step_penalty=args.step_penalty,
         )
         with open(args.replay_buffer_cache_path,'wb') as f:
             pickle.dump(replay_buffer, f)
@@ -1990,6 +2007,8 @@ def main():
         qid_to_title=entities_info,
         pid_to_title=relations_info,
         teacherforce_reg_lambda=args.teacherforce_reg_lambda,
+        stop_reward_weight=args.stop_reward_weight,
+        step_penalty=args.step_penalty,
     )
     logger.info("Done with everything. Exiting...")
 
