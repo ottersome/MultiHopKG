@@ -34,8 +34,12 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--wr_notes", type=str, help="wandb: Additional notes for this run")
 
     # -------------------- General Data Parameters --------------------
-    ap.add_argument("--path_mquake_data", type=str, default="./data/mquake/")
+    # ap.add_argument("--path_general_data", type=str, default="./data/mquake/")
+    ap.add_argument("--path_qna_data", type=str, default="./data/mquake/mquake_qna_ds.csv")
+    ap.add_argument("--path_entities_dict", type=str, default="./data/mquake/entities.dict")
+    ap.add_argument("--path_relations_dict", type=str, default="./data/mquake/relations.dict")
     ap.add_argument("--path_cache_dir", type=str, default="./.cache/mquake_aligned/")
+    ap.add_argument("--path_cached_metadata", type=str, default="./.cache/mquake_aligned/mquake.json")
     ap.add_argument("--tvt_split", type=list, default=[0.8, 0.1, 0.1], help="Train-Valid-Test Splits")
     ap.add_argument("--path_graph_emb_data", type=str, default="./models/graph_embeddings/transE_mquake_dim500", help="Path to Entity Embeddings")
     ap.add_argument("--outPath_save_model", type=str, default="./models/gtllm_bertaligned/")

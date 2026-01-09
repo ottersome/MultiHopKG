@@ -68,6 +68,18 @@ def get_args() -> argparse.Namespace:
         default=0.0,
         help='Weight applied to the teacher-forcing action regularization term (default: 0.0)',
     )
+    ap.add_argument(
+        '--stop_reward_weight',
+        type=float,
+        default=1.0,
+        help='Scale applied to extrinsic stop/answer rewards from the environment.',
+    )
+    ap.add_argument(
+        '--step_penalty',
+        type=float,
+        default=0.0,
+        help='Penalty applied per transition to encourage stopping sooner (negative value).',
+    )
 
 
     # Dropout Scheduling

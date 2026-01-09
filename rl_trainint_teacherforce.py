@@ -65,6 +65,13 @@ PATH_PADDING_VALUE = 1
 BART_PADDING_VALUE = 1 # TODO:  Need to remove hardcoding on this later
 
 
+def _compute_relation_scale(relation_embeddings: torch.Tensor) -> float:
+    """Return a typical L2 norm for relation embeddings to scale actions into the right range."""
+    base = relation_embeddings if isinstance(relation_embeddings, torch.Tensor) else relation_embeddings.weight
+    scale = base.norm(dim=-1).mean().item()
+    return max(scale, 1e-6)
+
+
 class AimWriter:
     """Minimal adapter to use Aim like TensorBoard's SummaryWriter."""
 
@@ -254,6 +261,7 @@ def prepopulate_replay_buffer(
     gpu_device = next(actor.parameters()).device
     cpu_device = replay_buffer.cur_states.device
     bart_bos_token_id = hunch_llm.tokenizer.bos_token_id
+    action_scale = _compute_relation_scale(env.knowledge_graph.relation_embedding)
     # Lets Initiate sub buffers for each question
 
     for i in tqdm(range(0, len(train_df), BATCH_SIZE), "Populating the replay buffer"):
@@ -308,7 +316,7 @@ def prepopulate_replay_buffer(
         #.... Action
 
         # Initially we use random actions
-        action = torch.empty(init_states.shape).uniform_(-1.0, 1.0).to(gpu_device)
+        action = torch.empty(init_states.shape).uniform_(-1.0, 1.0).to(gpu_device) * action_scale
         log_prob = None
         entropy = None
 
@@ -335,7 +343,7 @@ def prepopulate_replay_buffer(
         )
         combined_reward = (
             llm_reward
-            + stop_reward_weight * extrinsic_reward.squeeze(-1)
+            + stop_reward_weight * extrinsic_reward.squeeze(-1) * -1
             + step_penalty
         )
 
@@ -441,6 +449,7 @@ def hydrate_replay_buffer(
 
     device = next(actor.parameters()).device
     cpu_device = replay_buffer.cur_states.device
+    action_scale = _compute_relation_scale(env.knowledge_graph.relation_embedding)
     bert_embed_dim = replay_buffer.get_question_bert_emb_dim()
     # max_path_len = replay_buffer.path_states.shape[2] # TOREM: redundant
     state_dim = replay_buffer.path_states.shape[-1] #TODO: CHECK INDEXING
@@ -477,12 +486,10 @@ def hydrate_replay_buffer(
         questions_tokens, batch_first=True, padding_value=pad_token_id
     ).to(device)
     # NOTE: Double check on this indexing
-    answer_bert_embs = (
-        torch.Tensor(
-            train_df.iloc[mini_batch.index, 3 : 3 + bert_embed_dim].values.tolist()
-        )
-        .to(torch.long)
-        .to(device)
+    answer_bert_embs = torch.tensor(
+        train_df.iloc[mini_batch.index, 3 : 3 + bert_embed_dim].values.tolist(),
+        dtype=torch.float32,
+        device=device,
     )
 
     initial_ids: List[int] = []
@@ -540,6 +547,10 @@ def hydrate_replay_buffer(
         graph_state_mask=graph_state_mask,
         context_quest_bert_emb=bert_quest,
     )
+    # Rescale actions to the relation embedding magnitude
+    actions = actions# * action_scale
+    # The log_probs tweak is the change-of-variables correction: if you multiply a continuous action by a constant scale s, the density changes by -d * log(s)
+    log_probs = log_probs - actions.shape[-1] * math.log(action_scale)
 
     row_idx = torch.arange(actual_num_experiences, device=device)
     current_states = path_states[row_idx, valid_counts, :]
@@ -563,8 +574,7 @@ def hydrate_replay_buffer(
     next_state_path[row_idx, (step_counter + 1) * 2 + 2, :] = next_states
     llm_reward, _ = calculate_llm_reward_supasoft(
         hunch_llm,
-        #NOTE : Check on this unsqueeze
-        next_states.unsqueeze(1),
+        next_state_path,
         answer_bert_embs,
         padded_questions_tokens,
         pad_token_id,
@@ -599,13 +609,18 @@ def hydrate_replay_buffer(
         num_relations = max(0, (len(path) - 1) // 2)
         path_step_counter = int(step_counter[elem_idxs].item())
 
-        assert path_step_counter < num_relations, "Cannot have path_step_counter >= num_relations"
         if done_flags[elem_idxs]:
             # STOP action: keep entity where it is, use stop embedding
             cur_state_vec = path_states[elem_idxs, 2 * path_step_counter, :]
             relation_vecs_list.append(env.stop_action_embedding.to(relation_device))
             entity_vecs_list.append(cur_state_vec.to(entity_device))
             continue
+
+        if path_step_counter >= num_relations:
+            raise ValueError(
+                f"Cannot have path_step_counter >= num_relations for question idx {mini_batch.index[elem_idxs]} "
+                f"(step_counter={path_step_counter}, num_relations={num_relations})."
+            )
 
         action_pos = 2 * path_step_counter + 1
         entity_pos = action_pos + 1
@@ -713,6 +728,7 @@ def evaluate_seq2seq_outputs(
     total_stop_actions = 0
     total_actions = 0
     stop_episode_count = 0
+    action_scale = _compute_relation_scale(env.knowledge_graph.relation_embedding)
 
     # Samples for Humans
     samples_idxs = np.random.choice(len(dataset), 4, replace=False).tolist()
@@ -795,6 +811,7 @@ def evaluate_seq2seq_outputs(
                 graph_state_mask=mask_active,
                 context_quest_bert_emb=bert_quest[active_idx],
             )
+            actions = actions * action_scale
             stop_distance = torch.norm(actions - stop_embed, dim=-1, keepdim=True)
             is_stop = stop_distance < stop_threshold
             total_stop_actions += int(is_stop.sum().item())
@@ -1206,26 +1223,43 @@ def train_multihopkg(
 
     stop_action_embedding = env.stop_action_embedding.to(device)
     relation_embeddings_ref = env.knowledge_graph.relation_embedding
+    action_scale = _compute_relation_scale(relation_embeddings_ref)
 
     def get_teacher_action_embeddings(
-        question_ids_tensor: torch.Tensor, step_counts: torch.Tensor
-    ) -> Optional[torch.Tensor]:
-        assert teacher_relation_targets
-        targets: List[torch.Tensor] = []
+        question_ids_tensor: torch.Tensor, step_counts: torch.Tensor, done_mask: torch.Tensor
+    ) -> Tuple[Optional[torch.Tensor], torch.Tensor]:
+        """Return teacher relation embeddings per sample and validity mask."""
+        if not teacher_relation_targets:
+            return None, torch.zeros_like(step_counts, dtype=torch.bool, device=device)
+
+        valid_mask = torch.zeros(step_counts.shape[0], dtype=torch.bool, device=device)
+        targets: Optional[torch.Tensor] = None
         ques_id_list = question_ids_tensor.detach().cpu().tolist()
         step_list = step_counts.detach().cpu().tolist()
-        for ques_id_value, step_value in zip(ques_id_list, step_list):
+        done_list = done_mask.detach().cpu().tolist()
+        for idx, (ques_id_value, step_value, done_value) in enumerate(
+            zip(ques_id_list, step_list, done_list)
+        ):
             relations = teacher_relation_targets.get(int(ques_id_value))
-            assert relations
-            assert step_value < len(relations)
+            if not relations or done_value or step_value >= len(relations):
+                continue
+
             relation_id = relations[int(step_value)]
-            relation_idx_tensor = torch.tensor(
-                [relation_id], dtype=torch.long, device=device
-            )
-            targets.append(get_embeddings_from_indices(relation_embeddings_ref, relation_idx_tensor).squeeze(0))
-        if not targets:
-            return None
-        return torch.stack(targets, dim=0)
+            relation_idx_tensor = torch.tensor([relation_id], dtype=torch.long, device=device)
+            relation_vec = get_embeddings_from_indices(
+                relation_embeddings_ref, relation_idx_tensor
+            ).squeeze(0)
+
+            if targets is None:
+                targets = torch.zeros(
+                    (step_counts.shape[0], relation_vec.shape[-1]),
+                    dtype=relation_vec.dtype,
+                    device=device,
+                )
+            targets[idx] = relation_vec
+            valid_mask[idx] = True
+
+        return targets, valid_mask
 
     def sac_update_step(
         question_ids: torch.Tensor,
@@ -1296,26 +1330,35 @@ def train_multihopkg(
             graph_state_mask=graph_curState_mask,
             context_quest_bert_emb=bert_quest_emb,
         )
+        policy_actions = policy_actions * action_scale
+        log_probs = log_probs - policy_actions.shape[-1] * math.log(action_scale)
         policy_state = _states_path.clone()
         policy_state[batch_idxs, 2 * step_counter + 1, :] = policy_actions
 
-        teacher_targets = get_teacher_action_embeddings(question_ids, step_counter) # shape: (batch_size, action_dimension)
+        teacher_targets: Optional[torch.Tensor] = None
+        teacher_valid_mask: Optional[torch.Tensor] = None
         policy_alignment_metric = 0.0
         buffer_alignment_metric = 0.0
 
-        assert teacher_targets is not None
-
-        teacher_targets = teacher_targets.to(policy_actions.dtype)
-        buffer_alignment_metric = (
-            F.mse_loss(
-                actions,
-                teacher_targets.detach(),
-                reduction="none",
+        if teacherforce_reg_lambda > 0:
+            teacher_targets, teacher_valid_mask = get_teacher_action_embeddings(
+                question_ids, step_counter, dones
             )
-            .mean(dim=-1)
-            .mean()
-            .item()
-        )
+            if teacher_targets is not None:
+                teacher_targets = teacher_targets.to(policy_actions.dtype)
+
+        if teacher_targets is not None and teacher_valid_mask is not None and teacher_valid_mask.any():
+            mask = teacher_valid_mask
+            buffer_alignment_metric = (
+                F.mse_loss(
+                    actions[mask],
+                    teacher_targets[mask].detach(),
+                    reduction="none",
+                )
+                .mean(dim=-1)
+                .mean()
+                .item()
+            )
 
         q1_pi = critic_q1(policy_state, graph_plusAction_mask, bert_quest_emb)
         q2_pi = critic_q2(policy_state, graph_plusAction_mask, bert_quest_emb)
@@ -1334,9 +1377,15 @@ def train_multihopkg(
 
         policy_loss = (alpha * log_probs.unsqueeze(-1) - min_q_pi).mean()
         # policy_loss = (log_probs.unsqueeze(-1) - min_q_pi).mean()
-        if teacher_targets is not None and teacherforce_reg_lambda > 0:
+        if (
+            teacher_targets is not None
+            and teacher_valid_mask is not None
+            and teacher_valid_mask.any()
+            and teacherforce_reg_lambda > 0
+        ):
+            mask = teacher_valid_mask
             reg_component = F.mse_loss(
-                policy_actions, teacher_targets, reduction="none"
+                policy_actions[mask], teacher_targets[mask], reduction="none"
             ).mean(dim=-1)
             policy_loss = policy_loss + teacherforce_reg_lambda * reg_component.mean()
             policy_alignment_metric = reg_component.mean().item()
@@ -1653,7 +1702,7 @@ def main():
 
     if args.debug:
         logger.info("\033[1;33m Waiting for debugger to attach...\033[0m")
-        debugpy.listen(("0.0.0.0", 42023))
+        debugpy.listen(("0.0.0.0", 42029))
         debugpy.wait_for_client()
         # USe debugpy to listen
 
@@ -1834,6 +1883,9 @@ def main():
         nav_start_emb_type=args.nav_start_emb_type,
         reached_destination_threshold=args.reached_destination_threshold,
     )
+    # Align stop threshold with relation embedding scale so stop actions remain reachable after scaling
+    relation_scale = _compute_relation_scale(kge_model.relation_embedding)
+    #env.stop_action_threshold = env.stop_action_threshold * relation_scale
 
     meep = torch.rand(10, 100).to(args.device)
     init_states = env.reset(meep)

@@ -85,6 +85,7 @@ def load_artifacts(args: argparse.Namespace, logger: logging.Logger) -> Experime
         logger.warning("CUDA requested but not available; falling back to CPU.")
         device = torch.device("cpu")
 
+    logger.info(f"Loading model {args.pretrained_gtllm_path}")
     pretrained_gtllm_metadata = torch.load(
         args.pretrained_gtllm_path, weights_only=False
     )

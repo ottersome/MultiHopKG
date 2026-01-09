@@ -10,7 +10,6 @@ import argparse
 import json
 import math
 import os
-import sys
 import time
 from typing import Dict, Tuple
 
@@ -21,6 +20,8 @@ DEFAULT_BATCH_SIZE = 20_000
 DEFAULT_EXACT_MAX_N = 6_000
 DEFAULT_CHUNK_SIZE = 1_024
 DEFAULT_NN_SAMPLES = 512
+DEFAULT_HIST_BINS = 50
+DEFAULT_PLOTS_DIR = os.path.join("analysis", "graph_embedding_plots")
 
 
 def _load_embeddings(embeddings_dir: str) -> Tuple[np.ndarray, np.ndarray]:
@@ -88,6 +89,7 @@ def _sample_distance_stats(
     num_pairs: int,
     rng: np.random.Generator,
     batch_size: int,
+    hist_bins: int,
 ) -> Dict[str, float]:
     n = x.shape[0]
     if n < 2:
@@ -110,6 +112,12 @@ def _sample_distance_stats(
         "std": float(np.std(values)),
     }
     stats.update(_quantiles(values))
+    hist_counts, hist_edges = np.histogram(values, bins=hist_bins)
+    stats["histogram"] = {
+        "bins": int(hist_bins),
+        "edges": hist_edges.tolist(),
+        "counts": hist_counts.tolist(),
+    }
     return stats
 
 
@@ -118,6 +126,7 @@ def _sample_cosine_stats(
     num_pairs: int,
     rng: np.random.Generator,
     batch_size: int,
+    hist_bins: int,
 ) -> Dict[str, float]:
     n = x.shape[0]
     if n < 2:
@@ -142,6 +151,12 @@ def _sample_cosine_stats(
         "std": float(np.std(vals)),
     }
     stats.update(_quantiles(vals))
+    hist_counts, hist_edges = np.histogram(vals, bins=hist_bins)
+    stats["histogram"] = {
+        "bins": int(hist_bins),
+        "edges": hist_edges.tolist(),
+        "counts": hist_counts.tolist(),
+    }
     return stats
 
 
@@ -200,14 +215,23 @@ def analyze_embeddings(
     exact_max_n: int,
     chunk_size: int,
     nn_samples: int,
+    hist_bins: int,
 ) -> Dict[str, object]:
     stats: Dict[str, object] = {"name": name}
     stats.update(_basic_stats(x))
     stats["pairwise_l2_samples"] = _sample_distance_stats(
-        x, num_pairs=num_pairs, rng=rng, batch_size=batch_size
+        x,
+        num_pairs=num_pairs,
+        rng=rng,
+        batch_size=batch_size,
+        hist_bins=hist_bins,
     )
     stats["pairwise_cosine_samples"] = _sample_cosine_stats(
-        x, num_pairs=num_pairs, rng=rng, batch_size=batch_size
+        x,
+        num_pairs=num_pairs,
+        rng=rng,
+        batch_size=batch_size,
+        hist_bins=hist_bins,
     )
 
     if x.shape[0] <= exact_max_n:
@@ -222,6 +246,30 @@ def analyze_embeddings(
         stats["max_distance"] = stats["pairwise_l2_samples"]["max"]
         stats["min_max_exact"] = False
     return stats
+
+
+def _plot_histogram(hist: Dict[str, object], title: str, xlabel: str, output_path: str) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise RuntimeError("matplotlib is required for plotting") from exc
+
+    edges = np.array(hist["edges"], dtype=np.float64)
+    counts = np.array(hist["counts"], dtype=np.float64)
+    if edges.size < 2:
+        raise ValueError("Histogram edges must have at least 2 values")
+
+    widths = np.diff(edges)
+    centers = edges[:-1] + widths / 2.0
+
+    plt.figure(figsize=(10, 6))
+    plt.bar(centers, counts, width=widths, align="center", alpha=0.8, edgecolor="black")
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel("Count")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    plt.close()
 
 
 def parse_args() -> argparse.Namespace:
@@ -244,6 +292,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exact-max-n", type=int, default=DEFAULT_EXACT_MAX_N)
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
     parser.add_argument("--nn-samples", type=int, default=DEFAULT_NN_SAMPLES)
+    parser.add_argument("--hist-bins", type=int, default=DEFAULT_HIST_BINS)
+    parser.add_argument("--plots-dir", default=DEFAULT_PLOTS_DIR)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--output-json", default="")
     return parser.parse_args()
@@ -254,7 +304,11 @@ def main() -> int:
     rng = np.random.default_rng(args.seed)
     entity, relation = _load_embeddings(args.embeddings_dir)
 
-    results = {"embeddings_dir": args.embeddings_dir, "timestamp": time.time()}
+    results = {
+        "embeddings_dir": args.embeddings_dir,
+        "timestamp": time.time(),
+        "plots_dir": args.plots_dir,
+    }
 
     if args.which in ("entity", "both"):
         results["entity"] = analyze_embeddings(
@@ -266,6 +320,7 @@ def main() -> int:
             exact_max_n=args.exact_max_n,
             chunk_size=args.chunk_size,
             nn_samples=args.nn_samples,
+            hist_bins=args.hist_bins,
         )
     if args.which in ("relation", "both"):
         results["relation"] = analyze_embeddings(
@@ -277,6 +332,7 @@ def main() -> int:
             exact_max_n=args.exact_max_n,
             chunk_size=args.chunk_size,
             nn_samples=args.nn_samples,
+            hist_bins=args.hist_bins,
         )
 
     if args.which == "both":
@@ -290,7 +346,34 @@ def main() -> int:
             exact_max_n=args.exact_max_n,
             chunk_size=args.chunk_size,
             nn_samples=args.nn_samples,
+            hist_bins=args.hist_bins,
         )
+
+    os.makedirs(args.plots_dir, exist_ok=True)
+    plot_targets = [(k, v) for k, v in results.items() if isinstance(v, dict) and "pairwise_l2_samples" in v]
+    plot_manifest = {}
+    for name, stats in plot_targets:
+        l2_hist = stats["pairwise_l2_samples"]["histogram"]
+        cosine_hist = stats["pairwise_cosine_samples"]["histogram"]
+        l2_path = os.path.join(args.plots_dir, f"{name}_pairwise_l2_hist.png")
+        cosine_path = os.path.join(args.plots_dir, f"{name}_pairwise_cosine_hist.png")
+        _plot_histogram(
+            l2_hist,
+            title=f"{name} pairwise L2 distance distribution",
+            xlabel="L2 distance",
+            output_path=l2_path,
+        )
+        _plot_histogram(
+            cosine_hist,
+            title=f"{name} pairwise cosine similarity distribution",
+            xlabel="Cosine similarity",
+            output_path=cosine_path,
+        )
+        plot_manifest[name] = {
+            "pairwise_l2_histogram": l2_path,
+            "pairwise_cosine_histogram": cosine_path,
+        }
+    results["plot_files"] = plot_manifest
 
     print(json.dumps(results, indent=2, sort_keys=True))
 

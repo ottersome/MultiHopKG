@@ -1,0 +1,36 @@
+# Uses No Autoencoder
+do_train: True
+do_valid: True
+do_test: True
+evaluate_train: True
+countries: False
+data_path: "./data/Kinship"
+model: "TransE"
+double_entity_embedding: false
+double_relation_embedding: false
+negative_sample_size: 14
+hidden_dim: 10
+gamma: 3.0270593905904852
+negative_adversarial_sampling: True
+adversarial_temperature: 0.9059047511316708
+batch_size: 7
+regularization: 0.0
+test_batch_size: 16
+uni_weight: true
+learning_rate: 0.00058
+cpu_num: 12
+save_path: "models/graph_embeddings/Kinship"
+max_steps: 20000
+save_checkpoint_steps: 10000
+valid_steps: 5000
+log_steps: 100
+test_log_steps: 1000
+autoencoder_flag: False
+wandb_project: "embedding_trainings"
+wandb_entity: "halcyon-solutions"
+track: True
+random_seed: 0
+
+lambda_lp: 0.4480686953051138
+lambda_rp: 0.3983648182624783
+saving_threshold: 0.8

@@ -1,4 +1,5 @@
-pretrained_gtllm_path: "models/gtllm_bert_aligned/gtllm_no_kl_encoder_only_noscheduler_11202025_225054.pt"
+#pretrained_gtllm_path: "models/gtllm_bert_aligned/gtllm_no_kl_encoder_only_noscheduler_11202025_225054.pt"
+pretrained_gtllm_path: "models/gtllm_bert_aligned/flagship.pt"
 nav_start_emb_type: "centroid"
 batch_size: 128
 batch_size_dev: 12

@@ -222,6 +222,9 @@ def build_random_paths(
     start_entity_ids: torch.Tensor,
     device: torch.device,
 ) -> torch.Tensor:
+    """
+    Takes the start entity and then just fills other relations and entities in the same number of steps as ground truth path at random.
+    """
     ent_embed = knowledge_graph.entity_embedding
     rel_embed = knowledge_graph.relation_embedding
 
@@ -648,6 +651,148 @@ def start_entity_leakage_test(
     summarize_delta("Perfect - FullRandom", perfect - full_random, logger)
 
 
+def path_mask_test(
+    artifacts: AnalysisArtifacts,
+    batch: pd.DataFrame,
+    question_tokens: torch.Tensor,
+    answer_embeddings: torch.Tensor,
+    logger: logging.Logger,
+) -> None:
+    gt_paths, _ = get_ground_truth_paths(
+        mini_batch=batch,
+        env=artifacts.env,
+        max_path_len=artifacts.max_path_len,
+        device=artifacts.device,
+    )
+    masked_paths = torch.full_like(gt_paths, BART_PADDING_VALUE)
+
+    perfect, _ = _reward_with_embeddings(
+        artifacts.hunch_llm,
+        gt_paths,
+        answer_embeddings,
+        question_tokens,
+        artifacts.tokenizer.pad_token_id,
+    )
+    masked, _ = _reward_with_embeddings(
+        artifacts.hunch_llm,
+        masked_paths,
+        answer_embeddings,
+        question_tokens,
+        artifacts.tokenizer.pad_token_id,
+    )
+
+    summarize_delta("Perfect - MaskedPath", perfect - masked, logger)
+
+
+def answer_shuffle_test(
+    artifacts: AnalysisArtifacts,
+    batch: pd.DataFrame,
+    question_tokens: torch.Tensor,
+    answer_embeddings: torch.Tensor,
+    logger: logging.Logger,
+) -> None:
+    gt_paths, _ = get_ground_truth_paths(
+        mini_batch=batch,
+        env=artifacts.env,
+        max_path_len=artifacts.max_path_len,
+        device=artifacts.device,
+    )
+    perm = torch.randperm(answer_embeddings.shape[0], device=artifacts.device)
+    shuffled_answers = answer_embeddings[perm]
+
+    base_reward, _ = _reward_with_embeddings(
+        artifacts.hunch_llm,
+        gt_paths,
+        answer_embeddings,
+        question_tokens,
+        artifacts.tokenizer.pad_token_id,
+    )
+    shuffled_reward, _ = _reward_with_embeddings(
+        artifacts.hunch_llm,
+        gt_paths,
+        shuffled_answers,
+        question_tokens,
+        artifacts.tokenizer.pad_token_id,
+    )
+
+    diff = (base_reward - shuffled_reward).abs()
+    corr = torch.corrcoef(torch.stack([base_reward, shuffled_reward]))[0, 1].item()
+
+    logger.info(
+        "Answer shuffle | abs_delta_mean: %.4f | abs_delta_std: %.4f | corr: %.4f",
+        diff.mean().item(),
+        diff.std().item() if diff.numel() > 1 else 0.0,
+        corr,
+    )
+
+
+def margin_probe(
+    artifacts: AnalysisArtifacts,
+    batch: pd.DataFrame,
+    question_tokens: torch.Tensor,
+    answer_embeddings: torch.Tensor,
+    logger: logging.Logger,
+    margin: float = 0.05,
+) -> None:
+    gt_paths, step_counts = get_ground_truth_paths(
+        mini_batch=batch,
+        env=artifacts.env,
+        max_path_len=artifacts.max_path_len,
+        device=artifacts.device,
+    )
+    state_dim = gt_paths.shape[-1]
+    start_entity_ids = _start_entity_ids(batch, artifacts.device)
+
+    random_paths = build_random_paths(
+        batch_size=len(batch),
+        max_path_len=artifacts.max_path_len,
+        state_dim=state_dim,
+        step_counts=step_counts,
+        knowledge_graph=artifacts.env.knowledge_graph,
+        start_entity_ids=start_entity_ids,
+        device=artifacts.device,
+    )
+    corrupted_paths = build_corrupted_paths(
+        gt_paths=gt_paths,
+        step_counts=step_counts,
+        knowledge_graph=artifacts.env.knowledge_graph,
+    )
+
+    perfect, _ = _reward_with_embeddings(
+        artifacts.hunch_llm,
+        gt_paths,
+        answer_embeddings,
+        question_tokens,
+        artifacts.tokenizer.pad_token_id,
+    )
+    random_reward, _ = _reward_with_embeddings(
+        artifacts.hunch_llm,
+        random_paths,
+        answer_embeddings,
+        question_tokens,
+        artifacts.tokenizer.pad_token_id,
+    )
+    corrupted, _ = _reward_with_embeddings(
+        artifacts.hunch_llm,
+        corrupted_paths,
+        answer_embeddings,
+        question_tokens,
+        artifacts.tokenizer.pad_token_id,
+    )
+
+    delta_random = perfect - random_reward
+    delta_corrupted = perfect - corrupted
+    frac_random = (delta_random > margin).float().mean().item()
+    frac_corrupted = (delta_corrupted > margin).float().mean().item()
+
+    logger.info(
+        "Margin probe (margin=%.3f) | perfect>random: %.2f | perfect>corrupted: %.2f",
+        margin,
+        frac_random,
+        frac_corrupted,
+    )
+
+
 def main() -> None:
     args = parse_args()
     logger = build_logger()
@@ -679,6 +824,9 @@ def main() -> None:
         train_eval_mismatch_test(artifacts, batch, question_tokens, answer_embeddings, logger)
         contrastive_sensitivity_test(artifacts, batch, question_tokens, answer_embeddings, logger)
         start_entity_leakage_test(artifacts, batch, question_tokens, answer_embeddings, logger)
+        path_mask_test(artifacts, batch, question_tokens, answer_embeddings, logger)
+        answer_shuffle_test(artifacts, batch, question_tokens, answer_embeddings, logger)
+        margin_probe(artifacts, batch, question_tokens, answer_embeddings, logger)
 
 
 if __name__ == "__main__":

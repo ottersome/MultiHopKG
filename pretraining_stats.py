@@ -181,7 +181,7 @@ def _prepare_device(device_name: str) -> torch.device:
 
 
 def load_datasets(args) -> Tuple[DataPartitions, Dict[int, str], Dict[int, str]]:
-    path_entities_dict = os.path.join(args.path_mquake_data, "entities.dict")
+    path_entities_dict = os.path.join(args.path_general_data, "entities.dict")
     path_relations_dict = os.path.join(args.path_mquake_data, "relations.dict")
     id2ent, ent2id = load_native_index(path_entities_dict)
     id2rel, rel2id = load_native_index(path_relations_dict)

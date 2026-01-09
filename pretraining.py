@@ -588,7 +588,7 @@ def main():
     aim_run = AimRun(experiment=args.aim_experiment)
     run_name = args.run_name if args.run_name is not None else "gtllm_pretraining"
     aim_run.name = run_name
-    aim_run["hparams"] = vars(args)
+    aim_run.add_tag("pretraining")
 
     ########################################
     # Process the NLP components
@@ -598,8 +598,8 @@ def main():
     ########################################
     # Load Embedding Data
     ########################################
-    path_entities_dict = os.path.join(args.path_mquake_data, "entities.dict")
-    path_relations_dict = os.path.join(args.path_mquake_data, "relations.dict")
+    path_entities_dict = args.path_entities_dict
+    path_relations_dict = args.path_relations_dict
     id2ent, ent2id = load_native_index(path_entities_dict)
     id2rel, rel2id = load_native_index(path_relations_dict)
     logger.info(f"Loaded a total of :\n\t-{len(id2ent)} entities\n\t-{len(id2rel)} relations")
@@ -620,15 +620,15 @@ def main():
     ########################################
     # Process the Dataset
     ########################################
-    raw_mquake_csv_data_path = os.path.join(args.path_mquake_data, "mquake_qna_ds.csv")
-    meta_data_path = os.path.join(args.path_cache_dir, "mquake.json")
+    qna_data_path = args.path_qna_data
+    meta_data_path = args.path_cached_metadata
     logger.info(
         f"Loading the data from {meta_data_path}." + \
         str("\n\t Will be forcing recompute" if args.force_recompute_cache else "")
     )
     train_df, dev_df, test_df, _ = data_utils.load_qa_data(
         cached_metadata_path=meta_data_path,
-        raw_QAData_path=raw_mquake_csv_data_path,
+        raw_QAData_path=qna_data_path,
         question_tokenizer_name=args.hunchbart_base_llm_tokenizer,
         answer_tokenizer_name=args.hunchbart_base_llm_tokenizer,
         entity2id=ent2id,
@@ -723,7 +723,7 @@ def main():
         "hunchbart_base_llm_model" : args.hunchbart_base_llm_model,
         "hunchbart_hidden_dim": embeddings_size,  # Which is also the graph dim 
         # Data saves 
-        "path_mquake_data": args.path_mquake_data,
+        "qna_data": args.path_qna_data,
         "path_graph_emb_data": args.path_graph_emb_data,
         "path_pretraining_cache": args.path_cache_dir,
         # Embedding Training Metaparam

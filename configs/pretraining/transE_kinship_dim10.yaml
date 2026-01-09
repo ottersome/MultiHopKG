@@ -1,0 +1,25 @@
+# -------------------- General Parameters --------------------
+seed: 42
+epochs: 500
+batch_size: 64
+val_every_n_batches: 50
+num_warmup_steps: 200
+    
+# -------------------- General Data Parameters --------------------
+path_qna_data: "./data/Kinship/kinship_hinton_qna.csv"
+path_entities_dict: "./data/Kinship/entities.dict"
+path_relations_dict: "./data/Kinship/relations.dict"
+
+path_cache_dir: "./cache/kinship_aligned/"
+path_cached_metadata: "./cache/kinship_aligned/metadata.json"
+
+tvt_split: [0.8, 0.1, 0.1]
+path_graph_emb_data: "./models/graph_embeddings/Kinship"
+
+outPath_save_model: "./models/gtllm_bert_aligned/"
+
+# -------------------- Language Modeling Parameters --------------------
+hunchbart_base_llm_tokenizer: "facebook/bart-base"
+hunchbart_base_llm_model: "facebook/bart-base"
+baseline_lr: 0.001
+minimum_lr: 0.000001

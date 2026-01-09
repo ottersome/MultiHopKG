@@ -440,7 +440,7 @@ def hydrate_replay_buffer(
         pad_token_id,
     )
 
-    combined_reward = llm_reward.squeeze()# + extrinsic_reward.squeeze()
+    combined_reward = llm_reward.squeeze() + extrinsic_reward.squeeze()
     summary_writer.add_scalar("hydration_llm_reward", combined_reward.mean().item(), global_step)
 
     # path_states_updated = path_states.clone()
