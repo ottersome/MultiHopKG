@@ -11,13 +11,14 @@
 
 import copy
 import itertools
+import json
 import numpy as np
 import os, sys
 import random
 import debugpy
 import platform
 
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 
@@ -239,6 +240,81 @@ def initialize_model_directory(args, random_seed=None):
         print('Model directory exists: {}'.format(model_dir))
 
     args.model_dir = model_dir
+
+def summarize_model_parameters(model: Optional[torch.nn.Module]) -> Optional[Dict]:
+    """Return parameter counts and estimated sizes (in MB) broken down by top-level modules."""
+    if model is None:
+        return None
+    module_stats: Dict[str, Dict[str, float]] = {}
+    total_params = 0
+    trainable_params = 0
+    total_bytes = 0
+    trainable_bytes = 0
+    mb = 1024 * 1024
+
+    for name, param in model.named_parameters():
+        numel = int(param.numel())
+        elem_bytes = int(param.element_size()) if hasattr(param, 'element_size') else 4
+        prefix = name.split('.')[0] if '.' in name else name
+        entry = module_stats.setdefault(prefix, {
+            'total_parameters': 0,
+            'trainable_parameters': 0,
+            'total_size_bytes': 0,
+            'trainable_size_bytes': 0,
+        })
+        entry['total_parameters'] += numel
+        entry['total_size_bytes'] += numel * elem_bytes
+        total_params += numel
+        total_bytes += numel * elem_bytes
+        if param.requires_grad:
+            entry['trainable_parameters'] += numel
+            entry['trainable_size_bytes'] += numel * elem_bytes
+            trainable_params += numel
+            trainable_bytes += numel * elem_bytes
+
+    breakdown = {}
+    for prefix, entry in module_stats.items():
+        frozen_params = entry['total_parameters'] - entry['trainable_parameters']
+        frozen_bytes = entry['total_size_bytes'] - entry['trainable_size_bytes']
+        breakdown[prefix] = {
+            'total_parameters': entry['total_parameters'],
+            'trainable_parameters': entry['trainable_parameters'],
+            'frozen_parameters': frozen_params,
+            'total_size_mb': round(entry['total_size_bytes'] / mb, 4),
+            'trainable_size_mb': round(entry['trainable_size_bytes'] / mb, 4),
+            'frozen_size_mb': round(frozen_bytes / mb, 4),
+        }
+
+    return {
+        'total_parameters': total_params,
+        'trainable_parameters': trainable_params,
+        'frozen_parameters': total_params - trainable_params,
+        'total_size_mb': round(total_bytes / mb, 4),
+        'trainable_size_mb': round(trainable_bytes / mb, 4),
+        'frozen_size_mb': round((total_bytes - trainable_bytes) / mb, 4),
+        'parameter_breakdown': breakdown
+    }
+
+
+def dump_hyperparameters(args, model: Optional[torch.nn.Module] = None):
+    """Serialize resolved hyperparameters (plus model stats) to stdout and a JSON file."""
+    hparams = {k: v for k, v in sorted(vars(args).items())}
+    model_stats = summarize_model_parameters(model)
+    if model_stats is not None:
+        hparams['model_parameter_stats'] = model_stats
+    payload = json.dumps(hparams, indent=2, sort_keys=True)
+    print('Resolved hyperparameters:\n{}'.format(payload))
+    output_path = args.hparams_output_path or os.path.join(args.model_dir, 'hparams.json')
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    try:
+        with open(output_path, 'w') as f:
+            f.write(payload)
+        print('Hyperparameters saved to {}'.format(output_path))
+    except Exception as exc:
+        print('Failed to write hyperparameters to {}: {}'.format(output_path, exc))
+    return output_path
 
 def construct_model(args):
     """
@@ -919,8 +995,15 @@ def run_experiment(args):
                 run_ablation_studies(args)
             else:
                 initialize_model_directory(args)
+                lf = None
+                if args.dump_hparams or args.dump_hparams_only:
+                    lf = construct_model(args)
+                    dump_hyperparameters(args, lf)
+                    if args.dump_hparams_only:
+                        return
                 setup_wandb(args, job_type='run')
-                lf = construct_model(args)
+                if lf is None:
+                    lf = construct_model(args)
                 lf.cuda()
 
                 if args.train:

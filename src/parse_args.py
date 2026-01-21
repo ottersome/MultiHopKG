@@ -43,6 +43,12 @@ parser.add_argument('--gpu', type=int, default=0,
                     help='gpu device (default: 0)')
 parser.add_argument('--checkpoint_path', type=str, default=None,
                     help='path to a pretrained checkpoint')
+parser.add_argument('--dump_hparams', action='store_true',
+                    help='print and optionally save resolved hyperparameters (default: False)')
+parser.add_argument('--dump_hparams_only', action='store_true',
+                    help='dump hyperparameters then exit without running training/inference (default: False)')
+parser.add_argument('--hparams_output_path', type=str, default='',
+                    help='output path for the hyperparameter dump (default: <model_dir>/hparams.json)')
 
 # Data
 parser.add_argument('--test', action='store_true',
