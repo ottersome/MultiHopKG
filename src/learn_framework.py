@@ -65,19 +65,15 @@ class LFramework(nn.Module):
         self._q_proj: Optional[nn.Linear] = None
         if self.use_question_encoder:
             if AutoTokenizer is not None and AutoModel is not None:
-                try:
-                    self._q_tokenizer = AutoTokenizer.from_pretrained(args.bert_model_name)
-                    self._q_encoder = AutoModel.from_pretrained(args.bert_model_name)
-                    self._q_encoder.eval()
-                    for p in self._q_encoder.parameters():
-                        p.requires_grad = False
-                    # Hidden size from config; default to 768 if unavailable
-                    self._q_hidden = int(getattr(getattr(self._q_encoder, 'config', object()), 'hidden_size', 768))
-                except Exception:
-                    # Fall back to zero vectors if model can't be loaded
-                    self._q_tokenizer = None
-                    self._q_encoder = None
-                    self._q_hidden = int(getattr(args, 'relation_dim', 200))
+                self._q_tokenizer = AutoTokenizer.from_pretrained(args.bert_model_name)
+                self._q_encoder = AutoModel.from_pretrained(args.bert_model_name)
+                self._q_encoder.eval()
+                for p in self._q_encoder.parameters():
+                    p.requires_grad = False
+                # Hidden size from config; default to 768 if unavailable
+                self._q_hidden = getattr(getattr(self._q_encoder, 'config', object()), 'hidden_size', None)
+                assert self._q_hidden != None
+                self._q_hidden = int(self._q_hidden)
             else:
                 # transformers not available
                 self._q_hidden = int(getattr(args, 'relation_dim', 200))

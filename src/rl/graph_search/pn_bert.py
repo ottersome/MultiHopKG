@@ -112,6 +112,7 @@ class GraphSearchPolicyBert(GraphSearchPolicy):
         src_entity, nlp_question, target_entity, last_step, last_r, seen_nodes = obs
 
         H = self.path[-1][0][-1, :, :]
+        # Q Was removed here: SO below wont work
         if self.relation_only:
             X = torch.cat([H, Q], dim=-1)
         elif self.relation_only_in_path:

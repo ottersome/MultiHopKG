@@ -95,7 +95,7 @@ To change the hyperparameters and other experiment set up, start from the [confi
 We provide an optional question encoder to condition the policy on natural language questions while keeping the output a node prediction. Use the config `configs/mquake-rs-bert.sh` as a starting point and run with the RS launcher:
 
 ```
-./experiment-rs.sh configs/mquake-rs-bert.sh --train <gpu-ID>
+./experiment-rs-nlp.sh configs/mquake-rs-nlp.sh --train <gpu-ID>
 ```
 
 Key flags in configs:
