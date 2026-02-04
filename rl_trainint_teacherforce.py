@@ -84,6 +84,7 @@ class AimWriter:
     ) -> None:
         os.makedirs(repo, exist_ok=True)
         self._run = Run(experiment=experiment)
+        self._run.add_tag("rl_teacherforce")
         if run_name:
             self._run.name = run_name
 
@@ -348,8 +349,7 @@ def prepopulate_replay_buffer(
         )
 
         # Obviously this is only a one step thing:
-        step_counter = torch.zeros_like(llm_reward, dtype=torch.long)
-        ########################################
+        step_counter = torch.zeros_like(llm_reward, dtype=torch.long) ########################################
         # Fill out Replay Buffer 
         ########################################
         action_dim = action.shape[-1]
@@ -508,22 +508,23 @@ def hydrate_replay_buffer(
     if frozen_done_flags.any():
         # reset_states = env.reset(bert_quest[frozen_done_flags])
         # reset_states = env.knowledge_graph.entity_embedding[initial_ids_tensor]
-        reset_states = get_embeddings_from_indices(env.knowledge_graph.entity_embedding, initial_ids_tensor)
+        num_done_samples = int(torch.sum(frozen_done_flags).item())
+        reset_states = get_embeddings_from_indices(env.knowledge_graph.entity_embedding, initial_ids_tensor[frozen_done_flags])
         new_paths = torch.full(
-            (mini_batch_size, max_path_len, state_dim),
+            (num_done_samples, max_path_len, state_dim),
             PATH_PADDING_VALUE,
             device=device,
             dtype=path_states.dtype,
-        )
-        new_paths[torch.arange(mini_batch_size, device=device), 0, :] = reset_states
+        ).to(device)
+        new_paths[torch.arange(num_done_samples, device=device), 0, :] = reset_states
         path_states[frozen_done_flags] = new_paths
         step_counter[frozen_done_flags] = 0
         done_flags[done_flags] = False
 
     notdone_flags = ~frozen_done_flags
-    if frozen_done_flags.any():
+    if notdone_flags.any():
         notdone_steps = step_counter[notdone_flags]
-        notdone_max_num_steps = batch_max_num_steps[notdone_flags]
+        notdone_max_num_steps = batch_max_num_steps[notdone_flags] + 1 # NOTE: +1 to allow for final "stop action"
 
         # Advancement from where they were
         path_states[notdone_flags, (notdone_steps*2) + 1] = actions[notdone_flags]
@@ -542,6 +543,7 @@ def hydrate_replay_buffer(
     graph_state_mask = valid_mask.unsqueeze(1).unsqueeze(2).to(device)
     valid_counts = valid_mask.sum(dim=-1)
 
+    # Take Actions
     actions, log_probs, entropy, _, _ = actor(
         path_states,
         graph_state_mask=graph_state_mask,
@@ -604,47 +606,48 @@ def hydrate_replay_buffer(
     )
     relation_vecs_list: List[torch.Tensor] = []
     entity_vecs_list: List[torch.Tensor] = []
-    for elem_idxs in range(len(mini_batch)):
-        path = mini_batch["triples_ints"].iloc[elem_idxs]
-        num_relations = max(0, (len(path) - 1) // 2)
-        path_step_counter = int(step_counter[elem_idxs].item())
-
-        if done_flags[elem_idxs]:
-            # STOP action: keep entity where it is, use stop embedding
-            cur_state_vec = path_states[elem_idxs, 2 * path_step_counter, :]
-            relation_vecs_list.append(env.stop_action_embedding.to(relation_device))
-            entity_vecs_list.append(cur_state_vec.to(entity_device))
-            continue
-
-        if path_step_counter >= num_relations:
-            raise ValueError(
-                f"Cannot have path_step_counter >= num_relations for question idx {mini_batch.index[elem_idxs]} "
-                f"(step_counter={path_step_counter}, num_relations={num_relations})."
-            )
-
-        action_pos = 2 * path_step_counter + 1
-        entity_pos = action_pos + 1
-        if entity_pos >= len(path):
-            raise IndexError(
-                f"Tried to access step {path_step_counter} for path of length {len(path)} (question idx {mini_batch.index[elem_idxs]})."
-            )
-        action_id = int(path[action_pos])
-        entity_id = int(path[entity_pos])
-        if action_id >= relation_embeddings.shape[0] or entity_id >= entity_embeddings.shape[0]:
-            debugpy.breakpoint()
-            raise IndexError(
-                f"Tried to access action_id {action_id} or entity_id {entity_id} for path of length {len(path)} (question idx {mini_batch.index[elem_idxs]})."
-            )
-        relation_vecs_list.append(
-            get_embeddings_from_indices(
-                relation_embeddings, torch.tensor([action_id], device=relation_device)
-            ).squeeze(0)
-        )
-        entity_vecs_list.append(
-            get_embeddings_from_indices(
-                entity_embeddings, torch.tensor([entity_id], device=entity_device)
-            ).squeeze(0)
-        )
+    # for elem_idxs in range(len(mini_batch)):
+    #     path = mini_batch["triples_ints"].iloc[elem_idxs]
+    #     num_relations = max(0, (len(path) - 1) // 2)
+    #     path_step_counter = int(step_counter[elem_idxs].item())
+    #
+    #     if done_flags[elem_idxs]:
+    #         # STOP action: keep entity where it is, use stop embedding
+    #         cur_state_vec = path_states[elem_idxs, 2 * path_step_counter, :]
+    #         relation_vecs_list.append(env.stop_action_embedding.to(relation_device))
+    #         entity_vecs_list.append(cur_state_vec.to(entity_device))
+    #         continue
+    #
+    #     # TODO: Instead check if we have more hops than ground truth. If so, force action to be stop, and set `done` to true.
+    #     if path_step_counter >= num_relations + 1: # We allow one extra for when we need to take the "stop_action"
+    #         raise ValueError(
+    #             f"Cannot have path_step_counter >= num_relations for question idx {mini_batch.index[elem_idxs]} "
+    #             f"(step_counter={path_step_counter}, num_relations={num_relations})."
+    #         )
+    #
+    #     action_pos = 2 * path_step_counter + 1
+    #     entity_pos = action_pos + 1
+    #     if entity_pos >= len(path):
+    #         raise IndexError(
+    #             f"Tried to access step {path_step_counter} for path of length {len(path)} (question idx {mini_batch.index[elem_idxs]})."
+    #         )
+    #     action_id = int(path[action_pos])
+    #     entity_id = int(path[entity_pos])
+    #     if action_id >= relation_embeddings.shape[0] or entity_id >= entity_embeddings.shape[0]:
+    #         debugpy.breakpoint()
+    #         raise IndexError(
+    #             f"Tried to access action_id {action_id} or entity_id {entity_id} for path of length {len(path)} (question idx {mini_batch.index[elem_idxs]})."
+    #         )
+    #     relation_vecs_list.append(
+    #         get_embeddings_from_indices(
+    #             relation_embeddings, torch.tensor([action_id], device=relation_device)
+    #         ).squeeze(0)
+    #     )
+    #     entity_vecs_list.append(
+    #         get_embeddings_from_indices(
+    #             entity_embeddings, torch.tensor([entity_id], device=entity_device)
+    #         ).squeeze(0)
+    #     )
 
     relation_vecs = torch.stack(relation_vecs_list, dim=0)
     entity_vecs = torch.stack(entity_vecs_list, dim=0)
@@ -1702,7 +1705,7 @@ def main():
 
     if args.debug:
         logger.info("\033[1;33m Waiting for debugger to attach...\033[0m")
-        debugpy.listen(("0.0.0.0", 42029))
+        debugpy.listen(("0.0.0.0", 42023))
         debugpy.wait_for_client()
         # USe debugpy to listen
 
@@ -1736,7 +1739,8 @@ def main():
     gtllm_tokenizer_name = pretrained_gtllm_metadata["hunchbart_base_llm_tokenizer"]
     gtllm_tokenizer = AutoTokenizer.from_pretrained(gtllm_tokenizer_name)
 
-    qna_data_path = pretrained_gtllm_metadata["path_mquake_data"]
+    # NOTE: A Bit of a patchy approach. Assumes qna_data file shrares directory witn entity2id.txt and relation2id.txt
+    qna_data_path = os.path.dirname(pretrained_gtllm_metadata["qna_data"])
 
     hunch_llm = HunchBart.from_pretrained(
         hunchbart_base_llm_model_name=gtllm_hunch_base_model,
