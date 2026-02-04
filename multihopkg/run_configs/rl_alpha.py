@@ -22,8 +22,6 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--update_batch_size', type=int, default=32, help="Number of experiences to sample per update")
 
     # Buffer
-    ap.add_argument('--replay_buffer_memory_per_question', type=int, default=25000, help="Max number of steps that the replay buffer can hold.")
-    ap.add_argument('--replay_min_usable_size', type=int, default=10000, help="Minium number of transitions necessary in the Replay Buffer deemed sufficient to train the model.")
     ap.add_argument('--replay_buffer_cache_path', type=str, default=".cache/replay_buffer/replay_buffer.pkl", help="Minium number of transitions necessary in the Replay Buffer deemed sufficient to train the model.")
     ap.add_argument('--force_replaybuffer_recompute', action="store_true", help="Whether to recomptue the replay buffer.")
     ap.add_argument('--num_hydration_samples', default=256, type=int, help="How many samples to hydrate on the replay buffer after updates.")
