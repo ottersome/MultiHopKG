@@ -66,8 +66,7 @@ def get_args() -> argparse.Namespace:
         default=0.0,
         help='Weight applied to the teacher-forcing action regularization term (default: 0.0)',
     )
-    ap.add_argument(
-        '--stop_reward_weight',
+    ap.add_argument( '--stop_reward_weight',
         type=float,
         default=1.0,
         help='Scale applied to extrinsic stop/answer rewards from the environment.',

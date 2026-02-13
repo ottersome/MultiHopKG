@@ -226,6 +226,7 @@ def prepopulate_replay_buffer(
         paths = mini_batch.loc[:, "triples_ints"]
         answer_graphemb_idxs = torch.LongTensor([path[-1] for path in paths]).to(gpu_device) # TODO: see if we can remove device
         answer_graphemb_idxs = answer_graphemb_idxs.unsqueeze(1).repeat(1,num_simulations_per_question).view(-1).to(gpu_device)
+        num_steps_path = torch.LongTensor([(len(p)-1)//2 for p in paths.tolist()]).to(gpu_device)
 
         bert_emb_dim = replay_buffer.get_question_bert_emb_dim()
 
@@ -251,6 +252,7 @@ def prepopulate_replay_buffer(
         # init_states = init_states.detach().to(cpu_device)
         padded_path = torch.full([init_states.shape[0], max_env_steps*2 + 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float, device=gpu_device)
         padded_path[:,0,:] = init_states
+        gt_action_ids = torch.LongTensor([p[1] for p in paths]).to(gpu_device)
 
         #.... Action
 
@@ -262,7 +264,11 @@ def prepopulate_replay_buffer(
         # ... Environment step
         observation = ReinforcedUnsupervisedEnv.RUE_Observation(
             state=init_states,
-            answer_id=answer_graphemb_idxs
+            answer_id=answer_graphemb_idxs,
+            current_steps=torch.np.zeros((init_states.shape[0],)),
+            gt_num_steps=num_steps_path,
+            relation_gt=gt_action_ids
+
         )
         
         # TODO: Either get LLM reward inside of this function or remove this one.

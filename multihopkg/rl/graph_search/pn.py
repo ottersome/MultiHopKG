@@ -444,6 +444,9 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
     class RUE_Observation:
         state:  torch.Tensor
         answer_id: torch.Tensor # Mostly to guide the training, almost debugging
+        current_steps: torch.Tensor
+        gt_num_steps: torch.Tensor
+        relation_gt: torch.Tensor
 
     def __init__(
         self,
@@ -498,45 +501,59 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         return initial_state.view(1,-1).repeat(num_questions,1)
 
     def step(self, cur_state: RUE_Observation, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+        # Global reward Ideas
+        device = action.device
+        global_rewards = torch.zeros(cur_state.state.shape[0]).to(device)
+        global_positions = torch.zeros_like(cur_state.state).to(device)
+        global_dones = torch.full((cur_state.state.shape[0],), False).to(device)
+
         ########################################
-        # ANN mostly for debugging for now
+        # Finishing States
         ########################################
-        # ! Restraining the movement to the neighborhood
+        global_dones = cur_state.current_steps == cur_state.gt_num_steps
+        if global_dones.any():
+            final_actions = action[global_dones]
+            final_distance = torch.norm(final_actions - self.stop_action_embedding.to(action.device), dim=-1,keepdim=False)
+            where_good = final_distance < self.stop_action_threshold
+            global_positions[global_dones] = cur_state.state[global_dones]#Just keep them in place
+            if where_good.any():
+                global_rewards[global_dones][where_good] = 10 # TODO: Obviously refine these hard coded stuff
+                global_rewards[global_dones][~where_good] = -10
 
-        # TODO: ensure that cur_state's last place is used properly here to get a new state
-        # That is the correct dimension is reduced. 
-        current_position = self.knowledge_graph.flexible_forward(
-            cur_state.state, action
-        )
-
-        # Detect explicit STOP action via proximity to stop embedding
-        stop_embed = self.stop_action_embedding.to(action.device)
-        stop_distance = torch.norm(action - stop_embed, dim=-1, keepdim=True)
-        is_stop = stop_distance < self.stop_action_threshold
-
-        # TODO: We need to double check this 'done' determinator
-        # No gradients are calculated here
-        with torch.no_grad():
-            answer_embeddings = get_embeddings_from_indices(self.knowledge_graph.entity_embedding, cur_state.answer_id)
-            diff = self.knowledge_graph.absolute_difference(answer_embeddings, current_position) 
-            
-            answer_found = torch.norm(diff, dim=-1, keepdim=True) < self.reached_destination_threshold
-            assert isinstance(answer_found, torch.Tensor)
-            extrinsic_reward = answer_found.float()
-
-        if is_stop.any():
-            # Keep position unchanged for stopped samples
-            current_position = torch.where(
-                is_stop,
-                cur_state.state,
-                current_position,
+        ########################################
+        # Remaining Ongoing States
+        ########################################
+        # TODO: make sure that everything ehre ins indexged by ongoing_episode_states
+        ongoing_episode_states =  ~global_dones
+        if ongoing_episode_states.any():
+            ong_cur_state = cur_state.state[ongoing_episode_states]
+            ong_action = action[ongoing_episode_states]
+            # ong_answer = cur_state.answer_id[ongoing_episode_states]
+            ong_gt_relation = cur_state.relation_gt[ongoing_episode_states]
+            # ! Restraining the movement to the neighborhood
+            # TODO: ensure that cur_state's last place is used properly here to get a new state
+            # That is the correct dimension is reduced. 
+            ong_current_position = self.knowledge_graph.flexible_forward(
+                ong_cur_state, ong_action
             )
-            # Bonus for stopping near answer, small penalty otherwise
-            stop_bonus = (answer_found & is_stop).float()
-            stop_penalty = (~answer_found & is_stop).float() * -0.1
-            extrinsic_reward = extrinsic_reward + stop_bonus + stop_penalty
+            global_positions[ongoing_episode_states] = ong_current_position
+            # # Detect explicit STOP action via proximity to stop embedding
+            # # This is different from above. Maybe it found the answer prematurely. Which shouldn't be discarded.
+            # # But for now I comment out as we are trying the strict (easier) approach (strict teacher force)
+            # stop_embed = self.stop_action_embedding.to(action.device)
+            # stop_distance = torch.norm(action - stop_embed, dim=-1, keepdim=True)
+            # is_stop = stop_distance < self.stop_action_threshold
 
-        done_flag = answer_found | is_stop
+            # TODO: We need to double check this 'done' determinator
+            # No gradients are calculated here
+            with torch.no_grad():
+                relation_gt_embeddings = get_embeddings_from_indices(self.knowledge_graph.entity_embedding, ong_gt_relation)
+                diff = self.knowledge_graph.absolute_difference(relation_gt_embeddings, ong_current_position) 
+                
+                dist_reward = torch.norm(diff, dim=-1, keepdim=True).squeeze()# < self.reached_destination_threshold
+
+            global_rewards[ongoing_episode_states] = dist_reward
 
         ########################################
         # Projections
@@ -554,7 +571,7 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
         #     kge_action=detached_actions,
         # )
         
-        return current_position, extrinsic_reward, done_flag
+        return global_positions, global_rewards, global_dones
 
     def get_llm_embeddings(self, questions_tokens: torch.Tensor) -> torch.Tensor:
         """

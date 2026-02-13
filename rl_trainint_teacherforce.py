@@ -286,6 +286,7 @@ def prepopulate_replay_buffer(
 
         # This bit is mostly for teacher forcing so that we have a max length to work with 
         nominal_max_path_len = torch.LongTensor([len(path) for path in paths])
+        nominal_max_path_steps_tiled = ((nominal_max_path_len - 1) // 2).unsqueeze(1).repeat(1,num_simulations_per_question).view(-1).to(gpu_device)
 
         bert_emb_dim = replay_buffer.get_question_bert_emb_dim()
 
@@ -313,6 +314,8 @@ def prepopulate_replay_buffer(
         init_states = get_embeddings_from_indices(env.knowledge_graph.entity_embedding, init_states)
         padded_path = torch.full([init_states.shape[0], max_env_steps*2 + 1, init_states.shape[1]], PATH_PADDING_VALUE, dtype=torch.float, device=gpu_device)
         padded_path[:,0,:] = init_states
+        gt_relations = torch.LongTensor([p[1] for p in paths.tolist()]).to(gpu_device)
+        gt_relations = gt_relations.unsqueeze(1).repeat(1,num_simulations_per_question).view(-1).to(gpu_device)
 
         #.... Action
 
@@ -324,7 +327,10 @@ def prepopulate_replay_buffer(
         # ... Environment step
         observation = ReinforcedUnsupervisedEnv.RUE_Observation(
             state=init_states,
-            answer_id=answer_graphemb_idxs
+            answer_id=answer_graphemb_idxs,
+            current_steps=torch.zeros(init_states.shape[0], dtype=torch.long).to(gpu_device),
+            gt_num_steps=nominal_max_path_steps_tiled,
+            relation_gt=gt_relations,
         )
         
         # TODO: Either get LLM reward inside of this function or remove this one.
@@ -457,11 +463,13 @@ def hydrate_replay_buffer(
     all_max_num_steps = ((replay_buffer.get_max_nominal_pathlen() - 1 ) // 2).to(device)
     max_experiences_per_question = replay_buffer.get_experiences_per_question()
 
+    entity_embeddings = env.knowledge_graph.entity_embedding
+    relation_embeddings = env.knowledge_graph.relation_embedding
 
     # Get Samples
     question_counts = Counter(random.choices(train_df.index, k=num_hydration_samples))
     question_counts = { #TODO: CHECK INDEXING, frankly this might be the culprit. This has added a level of non-determism that is scary
-        qid: min(count, max_experiences_per_question)
+        qid: min(count, max_experiences_per_question) # Avoid generating more experiences than RB can handle
         for qid, count in question_counts.items()
     } 
     (
@@ -494,12 +502,16 @@ def hydrate_replay_buffer(
 
     initial_ids: List[int] = []
     answer_ids: List[int] = []
+    relations_gt: List[int] = []
     mini_batch_size = len(mini_batch)
-    for path in mini_batch["triples_ints"].tolist():
+    for idx,path in enumerate(mini_batch["triples_ints"].tolist()):
         initial_ids.append(int(path[0]))
         answer_ids.append(int(path[-1]))
+        relations_gt.append(int(path[1]))
+
     initial_ids_tensor = torch.tensor(initial_ids, dtype=torch.long, device=device)
     answer_ids_tensor = torch.tensor(answer_ids, dtype=torch.long, device=device)
+    relations_gt_tensor = torch.tensor(relations_gt, dtype=torch.long, device=device)
 
     # if torch.max(step_counter).item() == 3:
     #     debugpy.breakpoint()
@@ -518,28 +530,46 @@ def hydrate_replay_buffer(
         ).to(device)
         new_paths[torch.arange(num_done_samples, device=device), 0, :] = reset_states
         path_states[frozen_done_flags] = new_paths
-        step_counter[frozen_done_flags] = 0
+        step_counter[frozen_done_flags] = -1
         done_flags[done_flags] = False
 
     notdone_flags = ~frozen_done_flags
     if notdone_flags.any():
         notdone_steps = step_counter[notdone_flags]
         notdone_max_num_steps = batch_max_num_steps[notdone_flags] + 1 # NOTE: +1 to allow for final "stop action"
+        paths = mini_batch.loc[notdone_flags.cpu().numpy(),"triples_ints"] #NOTE: Check this
+
+        next_actions = []
+        next_entities = []
+        assert (step_counter[notdone_flags] <= batch_max_num_steps[notdone_flags]).all(), "You should have ensured not to exceed path_length"
+
+        for ix,p in enumerate(paths):
+            next_actions.append(p[notdone_steps[ix]*2+1])
+            next_entities.append(p[notdone_steps[ix]*2+2])
+        # TODO: Step counter max, when should answer] done..
+        path_states[notdone_flags, (notdone_steps * 2) + 1] = (
+            get_embeddings_from_indices(
+                relation_embeddings, torch.tensor(next_actions, device=device)
+            ).squeeze(0)
+        )
+        path_states[notdone_flags, (notdone_steps * 2) + 2] = (
+            get_embeddings_from_indices(
+                entity_embeddings, torch.tensor(next_entities, device=device)
+            )
+        )
 
         # Advancement from where they were
-        path_states[notdone_flags, (notdone_steps*2) + 1] = actions[notdone_flags]
-        path_states[notdone_flags, (notdone_steps*2) + 2] = next_states[notdone_flags]
+        # path_states[notdone_flags, (notdone_steps*2) + 1] = actions[notdone_flags]
+        # path_states[notdone_flags, (notdone_steps*2) + 2] = next_states[notdone_flags]
 
         # Check if its done
         step_counter[notdone_flags]  += 1
         done_flags[notdone_flags] = notdone_steps == notdone_max_num_steps  # TODO: Fix this. AFter it says done something should be done 
 
-    # if torch.max(step_counter) >= 3:
-    #     debugpy.breakpoint()
 
     valid_mask = torch.zeros((actual_num_experiences, max_path_len), dtype=torch.bool)
     for row_idx in range(step_counter.shape[0]):
-        valid_mask[row_idx, :step_counter[row_idx] + 1] = True
+        valid_mask[row_idx, :(step_counter[row_idx] * 2) + 1] = True
     graph_state_mask = valid_mask.unsqueeze(1).unsqueeze(2).to(device)
     valid_counts = valid_mask.sum(dim=-1)
 
@@ -549,22 +579,29 @@ def hydrate_replay_buffer(
         graph_state_mask=graph_state_mask,
         context_quest_bert_emb=bert_quest,
     )
-    # Rescale actions to the relation embedding magnitude
-    actions = actions# * action_scale
-    # The log_probs tweak is the change-of-variables correction: if you multiply a continuous action by a constant scale s, the density changes by -d * log(s)
-    log_probs = log_probs - actions.shape[-1] * math.log(action_scale)
+    
+    actions = actions# * action_scale # Rescale actions to the relation embedding magnitude
+    log_probs = log_probs - actions.shape[-1] * math.log(action_scale) # The log_probs tweak is the change-of-variables correction: if you multiply a continuous action by a constant scale s, the density changes by -d * log(s)
 
     row_idx = torch.arange(actual_num_experiences, device=device)
-    current_states = path_states[row_idx, valid_counts, :]
+    current_states = path_states[row_idx, valid_counts - 1, :]
 
+    ########################################
+    # Here is where I should be coming in.
+    ########################################
+
+    final_steps = step_counter == batch_max_num_steps
+    # Take a Step
     observation = ReinforcedUnsupervisedEnv.RUE_Observation(
         state=current_states,
         answer_id=answer_ids_tensor,
+        current_steps=step_counter,
+        gt_num_steps=batch_max_num_steps,
+        relation_gt=relations_gt_tensor,
     )
-
-    # Take a Step
     next_states, extrinsic_reward, done = env.step(observation, actions)
     done = done.squeeze()
+
     # Merge environment termination with replay-buffer saturation
     done_flags = done_flags | done
     done = done_flags
@@ -592,8 +629,6 @@ def hydrate_replay_buffer(
     # TODO: Truth action and truth entity here
     gt_action_id: List[int] = []
     gt_entity_id: List[int] = [] 
-    entity_embeddings = env.knowledge_graph.entity_embedding
-    relation_embeddings = env.knowledge_graph.relation_embedding
     entity_device = (
         entity_embeddings.device
         if isinstance(entity_embeddings, torch.Tensor)
@@ -649,16 +684,18 @@ def hydrate_replay_buffer(
     #         ).squeeze(0)
     #     )
 
-    relation_vecs = torch.stack(relation_vecs_list, dim=0)
-    entity_vecs = torch.stack(entity_vecs_list, dim=0)
+    # relation_vecs = torch.stack(relation_vecs_list, dim=0)
+    # entity_vecs = torch.stack(entity_vecs_list, dim=0)
 
     replay_buffer.add_transitions(
         questions_ids=sampled_qidx,
         quest_bert_emb=bert_quest.detach().to(cpu_device),
         cur_states=current_states.detach().to(cpu_device),
-        actions=relation_vecs.detach().to(cpu_device),
+        # actions=relation_vecs.detach().to(cpu_device),
+        actions=actions.detach().to(cpu_device),
         rewards=combined_reward.detach().to(cpu_device),
-        next_states=entity_vecs.detach().to(cpu_device),
+        # next_states=entity_vecs.detach().to(cpu_device),
+        next_states=next_states.detach().to(cpu_device),
         dones=done.squeeze(-1).detach().to(torch.bool).cpu(),
         path_states=path_states.detach().cpu(),
         log_probs=log_probs.detach().cpu(),

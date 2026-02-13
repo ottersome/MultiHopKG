@@ -20,5 +20,3 @@ relations_info["QID"] = relations_csv.iloc[:,1]
 relations_info["Title"] = relations_csv.iloc[:, 1]
 relations_info.to_csv(relationsinfo_dict_outpath, index=False)
 
-
-
