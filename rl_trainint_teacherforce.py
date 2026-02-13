@@ -824,10 +824,8 @@ def evaluate_seq2seq_outputs(
     answer_dist_count = 0
     answer_dist_min = float("inf")
 
-    # Samples for Humans
-    samples_idxs = np.random.choice(len(dataset), 4, replace=False).tolist()
-    samples_idxs = deque(sorted(samples_idxs))
-    samples_for_humans = []
+    # Full per-sample diagnostics to surface best/worst reasoning paths.
+    path_diagnostics: List[Dict[str, Any]] = []
 
     sample_logs: List[str] = []
 
@@ -889,6 +887,7 @@ def evaluate_seq2seq_outputs(
         # success_flags = torch.zeros(_batch_size, dtype=torch.bool, device=device)
         stop_step = torch.full((_batch_size,), -1, dtype=torch.long, device=device)
         answer_found_step = torch.full((_batch_size,), -1, dtype=torch.long, device=device)
+        best_answer_distance = torch.full((_batch_size,), float("inf"), dtype=torch.float32, device=device)
 
         step_active = torch.Tensor([])
 
@@ -957,6 +956,9 @@ def evaluate_seq2seq_outputs(
             answer_dist_sum += answer_distance.sum().item()
             answer_dist_count += answer_distance.numel()
             answer_dist_min = min(answer_dist_min, answer_distance.min().item())
+            best_answer_distance[active_idx] = torch.minimum(
+                best_answer_distance[active_idx], answer_distance.squeeze(-1)
+            )
             answer_found = answer_distance < env.reached_destination_threshold
             first_stop_mask = is_stop.squeeze(-1) & (stop_step[active_idx] < 0)
             if first_stop_mask.any():
@@ -1122,23 +1124,36 @@ def evaluate_seq2seq_outputs(
             1 for pred, ref in zip(pred_texts, ref_texts) if pred.strip() == ref.strip()
         )
 
-        # Samples For Humans collections
-        # Pop idxs to set apart
-        # Peek into deque if the id is mini_batch ids
-        while len(samples_idxs) > 0 and samples_idxs[0] in mini_batch.index:
-            sidx = samples_idxs.popleft()
-            _local_sidxs = sidx % batch_size
-            samples_for_humans.append({
-                "question": question_tokenizer.decode(padded_questions[_local_sidxs], skip_special_tokens=True),
-                "dataset_id" : sidx,
-                "path_states": path_trace[_local_sidxs,:, :],
-                "step_counter": step_counter[_local_sidxs],
-                "stop_step": stop_step[_local_sidxs],
-                "answer_found_step": answer_found_step[_local_sidxs],
-                "predicted_texts": pred_texts[_local_sidxs],
-                "reference_texts": ref_texts[_local_sidxs],
-                "ref_paths": mini_batch["triples_ints"].iloc[_local_sidxs]
-            })
+        for local_idx in range(_batch_size):
+            predicted_text = pred_texts[local_idx]
+            reference_text = ref_texts[local_idx]
+            exact_match = predicted_text.strip() == reference_text.strip()
+            did_stop = int(stop_step[local_idx].item() >= 0)
+            reached_answer = int(answer_found_step[local_idx].item() >= 0)
+            # Higher is better: prioritize semantic correctness, then policy behavior, then distance.
+            score = (
+                (3.0 if exact_match else 0.0)
+                + (1.0 if reached_answer else 0.0)
+                + (0.5 if did_stop else 0.0)
+                - float(best_answer_distance[local_idx].item())
+            )
+            path_diagnostics.append(
+                {
+                    "question": question_tokenizer.decode(
+                        padded_questions[local_idx], skip_special_tokens=True
+                    ),
+                    "dataset_id": int(mini_batch.index[local_idx]),
+                    "path_states": path_trace[local_idx, :, :].detach().cpu(),
+                    "step_counter": int(step_counter[local_idx].item()),
+                    "stop_step": int(stop_step[local_idx].item()),
+                    "answer_found_step": int(answer_found_step[local_idx].item()),
+                    "predicted_text": predicted_text,
+                    "reference_text": reference_text,
+                    "ref_paths": mini_batch["triples_ints"].iloc[local_idx],
+                    "best_answer_distance": float(best_answer_distance[local_idx].item()),
+                    "score": float(score),
+                }
+            )
 
 
     # TODO: reimplement
@@ -1178,70 +1193,79 @@ def evaluate_seq2seq_outputs(
         for line in sample_logs:
             logger.info(line)
 
-    # Process Metrics for Humans
-    for sample in samples_for_humans:
-        idx = sample["dataset_id"]
-        predicted_text = sample["predicted_texts"]
-        reference_text = sample["reference_texts"]
-        question = sample["question"]
+    # Process path diagnostics for humans: show best and worst reasoning paths.
+    best_samples = sorted(path_diagnostics, key=lambda s: s["score"], reverse=True)[
+        :num_samples_to_log
+    ]
+    worst_samples = sorted(path_diagnostics, key=lambda s: s["score"])[:num_samples_to_log]
 
-        # Now the piece of resistance: Ann Finding
-        step_counter = sample["step_counter"]
-        stop_step = sample["stop_step"]
-        answer_found_step = sample["answer_found_step"]
-        valid_len = int(2 * step_counter.item() + 1)
-        paths = sample["path_states"][:valid_len, :]
-        ref_path = sample["ref_paths"]
-        entities = paths[0::2,:]
-        relations = paths[1::2,:]
-        ref_entities = ref_path[0::2]
-        ref_relations = ref_path[1::2]
-        # use 
-        _, entity_indices = ann_index_manager_ent.search(entities,3)
-        _, rel_indices = ann_index_manager_rel.search(relations,3)
-        firstrank_qids = [eid2qid[ei[0]] for ei in entity_indices]
-        firstrank_pids = [eid2pid[ei[0]] for ei in rel_indices]
-        ent_titles = [qid_to_title[fq] for fq in firstrank_qids]
-        rel_titles = [pid_to_title[fp] for fp in firstrank_pids]
+    for bucket_name, selected_samples in [("BEST", best_samples), ("WORST", worst_samples)]:
+        if not selected_samples:
+            continue
+        logger.info("=== %s Reasoning Paths (%s) ===", bucket_name, prefix)
+        for sample in selected_samples:
+            idx = sample["dataset_id"]
+            predicted_text = sample["predicted_text"]
+            reference_text = sample["reference_text"]
+            question = sample["question"]
 
-        ref_firstrank_qids = [eid2qid[ei] for ei in ref_entities]
-        ref_firstrank_pids = [eid2pid[ei] for ei in ref_relations]
-        ref_ent_titles = [qid_to_title[fq] for fq in ref_firstrank_qids]
-        ref_rel_titles = [pid_to_title[fp] for fp in ref_firstrank_pids]
+            step_counter = sample["step_counter"]
+            stop_step = sample["stop_step"]
+            answer_found_step = sample["answer_found_step"]
+            valid_len = int(2 * step_counter + 1)
+            paths = sample["path_states"][:valid_len, :]
+            ref_path = sample["ref_paths"]
+            entities = paths[0::2, :]
+            relations = paths[1::2, :]
+            ref_entities = ref_path[0::2]
+            ref_relations = ref_path[1::2]
 
-        final_path_titles = []
-        for i in range(len(ent_titles) + len(rel_titles)):
-            if i % 2 == 0:
-                final_path_titles += [ent_titles[i//2]]
-            else:
-                final_path_titles += [rel_titles[i//2]]
+            _, entity_indices = ann_index_manager_ent.search(entities, 3)
+            _, rel_indices = ann_index_manager_rel.search(relations, 3)
+            firstrank_qids = [eid2qid[ei[0]] for ei in entity_indices]
+            firstrank_pids = [eid2pid[ei[0]] for ei in rel_indices]
+            ent_titles = [qid_to_title[fq] for fq in firstrank_qids]
+            rel_titles = [pid_to_title[fp] for fp in firstrank_pids]
 
-        ref_path_titles = []
-        for i in range(len(ref_path)):
-            if i % 2 == 0:
-                ref_path_titles += [ref_ent_titles[i//2]]
-            else:
-                ref_path_titles += [ref_rel_titles[i//2]]
+            ref_firstrank_qids = [eid2qid[ei] for ei in ref_entities]
+            ref_firstrank_pids = [eid2pid[ei] for ei in ref_relations]
+            ref_ent_titles = [qid_to_title[fq] for fq in ref_firstrank_qids]
+            ref_rel_titles = [pid_to_title[fp] for fp in ref_firstrank_pids]
 
-        stop_label = "no_stop_action"
-        if stop_step.item() >= 0:
-            stop_label = f"stopped_at_step={int(stop_step.item())}"
-        elif answer_found_step.item() >= 0:
-            stop_label = f"should_have_stopped_at_step={int(answer_found_step.item())}"
-        elif step_counter.item() >= max_transitions:
-            stop_label = "hit_max_steps"
+            final_path_titles = []
+            for i in range(len(ent_titles) + len(rel_titles)):
+                if i % 2 == 0:
+                    final_path_titles += [ent_titles[i // 2]]
+                else:
+                    final_path_titles += [rel_titles[i // 2]]
 
-        logger.info(
-            "----------------------------------------\n"
-            f"The following is the {idx}th sample.\n"
-            f"Question is: {question}\n"
-            f"Reference Text is: {reference_text}\n"
-            f"Predicted Text is: {predicted_text}\n"
-            f"Predicted Path is: {final_path_titles}\n"
-            f"Ref Path Path is: {ref_path_titles}\n"
-            f"Stop Label is: {stop_label}\n"
-            "----------------------------------------\n"
-        )
+            ref_path_titles = []
+            for i in range(len(ref_path)):
+                if i % 2 == 0:
+                    ref_path_titles += [ref_ent_titles[i // 2]]
+                else:
+                    ref_path_titles += [ref_rel_titles[i // 2]]
+
+            stop_label = "no_stop_action"
+            if stop_step >= 0:
+                stop_label = f"stopped_at_step={stop_step}"
+            elif answer_found_step >= 0:
+                stop_label = f"should_have_stopped_at_step={answer_found_step}"
+            elif step_counter >= max_transitions:
+                stop_label = "hit_max_steps"
+
+            logger.info(
+                "----------------------------------------\n"
+                f"[{bucket_name}] Dataset id: {idx}\n"
+                f"Score: {sample['score']:.4f} | best_answer_distance: {sample['best_answer_distance']:.4f}\n"
+                f"Question: {question}\n"
+                f"Reference Text: {reference_text}\n"
+                f"Predicted Text: {predicted_text}\n"
+                f"Predicted Path: {final_path_titles}\n"
+                f"Reference Path: {ref_path_titles}\n"
+                f"Stop Label: {stop_label}\n"
+                "----------------------------------------\n"
+            )
 
     nav_agent.train()
     hunch_llm.train()
