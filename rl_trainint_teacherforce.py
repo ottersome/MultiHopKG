@@ -530,41 +530,79 @@ def hydrate_replay_buffer(
         ).to(device)
         new_paths[torch.arange(num_done_samples, device=device), 0, :] = reset_states
         path_states[frozen_done_flags] = new_paths
-        step_counter[frozen_done_flags] = -1
-        done_flags[done_flags] = False
+        step_counter[frozen_done_flags] = 0
+        done_flags[frozen_done_flags] = False
 
     notdone_flags = ~frozen_done_flags
     if notdone_flags.any():
         notdone_steps = step_counter[notdone_flags]
-        notdone_max_num_steps = batch_max_num_steps[notdone_flags] + 1 # NOTE: +1 to allow for final "stop action"
-        paths = mini_batch.loc[notdone_flags.cpu().numpy(),"triples_ints"] #NOTE: Check this
+        notdone_global_idxs = torch.where(notdone_flags)[0]
+        notdone_paths = mini_batch.loc[notdone_flags.cpu().numpy(), "triples_ints"].tolist()
 
-        next_actions = []
-        next_entities = []
-        assert (step_counter[notdone_flags] <= batch_max_num_steps[notdone_flags]).all(), "You should have ensured not to exceed path_length"
-
-        for ix,p in enumerate(paths):
-            next_actions.append(p[notdone_steps[ix]*2+1])
-            next_entities.append(p[notdone_steps[ix]*2+2])
-        # TODO: Step counter max, when should answer] done..
-        path_states[notdone_flags, (notdone_steps * 2) + 1] = (
-            get_embeddings_from_indices(
-                relation_embeddings, torch.tensor(next_actions, device=device)
-            ).squeeze(0)
+        relation_count = (
+            relation_embeddings.shape[0]
+            if isinstance(relation_embeddings, torch.Tensor)
+            else relation_embeddings.weight.shape[0]
         )
-        path_states[notdone_flags, (notdone_steps * 2) + 2] = (
-            get_embeddings_from_indices(
-                entity_embeddings, torch.tensor(next_entities, device=device)
+        entity_count = (
+            entity_embeddings.shape[0]
+            if isinstance(entity_embeddings, torch.Tensor)
+            else entity_embeddings.weight.shape[0]
+        )
+
+        valid_global_idxs: List[int] = []
+        valid_steps: List[int] = []
+        next_actions: List[int] = []
+        next_entities: List[int] = []
+        skipped_path_oob = 0
+        skipped_id_oob = 0
+
+        for local_ix, discrete_path in enumerate(notdone_paths):
+            step_value = int(notdone_steps[local_ix].item())
+            action_pos = step_value * 2 + 1
+            entity_pos = step_value * 2 + 2
+            global_ix = int(notdone_global_idxs[local_ix].item())
+
+            # No more GT hops available for this sample: terminate it before embedding lookup.
+            if entity_pos >= len(discrete_path):
+                done_flags[global_ix] = True
+                skipped_path_oob += 1
+                continue
+
+            action_id = int(discrete_path[action_pos])
+            entity_id = int(discrete_path[entity_pos])
+            if not (0 <= action_id < relation_count and 0 <= entity_id < entity_count):
+                done_flags[global_ix] = True
+                skipped_id_oob += 1
+                continue
+
+            valid_global_idxs.append(global_ix)
+            valid_steps.append(step_value)
+            next_actions.append(action_id)
+            next_entities.append(entity_id)
+
+        if valid_global_idxs:
+            valid_global_idxs_t = torch.tensor(valid_global_idxs, dtype=torch.long, device=device)
+            valid_steps_t = torch.tensor(valid_steps, dtype=torch.long, device=device)
+            next_actions_t = torch.tensor(next_actions, dtype=torch.long, device=device)
+            next_entities_t = torch.tensor(next_entities, dtype=torch.long, device=device)
+
+            path_states[valid_global_idxs_t, (valid_steps_t * 2) + 1] = get_embeddings_from_indices(
+                relation_embeddings, next_actions_t
             )
-        )
+            path_states[valid_global_idxs_t, (valid_steps_t * 2) + 2] = get_embeddings_from_indices(
+                entity_embeddings, next_entities_t
+            )
 
-        # Advancement from where they were
-        # path_states[notdone_flags, (notdone_steps*2) + 1] = actions[notdone_flags]
-        # path_states[notdone_flags, (notdone_steps*2) + 2] = next_states[notdone_flags]
-
-        # Check if its done
-        step_counter[notdone_flags]  += 1
-        done_flags[notdone_flags] = notdone_steps == notdone_max_num_steps  # TODO: Fix this. AFter it says done something should be done 
+            new_steps_t = valid_steps_t + 1
+            step_counter[valid_global_idxs_t] = new_steps_t
+            done_flags[valid_global_idxs_t] = new_steps_t >= batch_max_num_steps[valid_global_idxs_t]
+        if skipped_path_oob or skipped_id_oob:
+            logger.warning(
+                "Hydration skipped invalid GT transitions: path_oob=%d id_oob=%d",
+                skipped_path_oob,
+                skipped_id_oob,
+            )
 
 
     valid_mask = torch.zeros((actual_num_experiences, max_path_len), dtype=torch.bool)
@@ -608,9 +646,20 @@ def hydrate_replay_buffer(
 
     # Calculate Reward
     # TODO: Confirm this works well
-    next_state_path = torch.cat([path_states.clone(), torch.zeros((path_states.shape[0], 2, path_states.shape[-1]), device=device)], dim=1)
-    next_state_path[row_idx, (step_counter + 1) * 2 + 1, :] = actions
-    next_state_path[row_idx, (step_counter + 1) * 2 + 2, :] = next_states
+    next_state_path = torch.cat(
+        [
+            path_states.clone(),
+            torch.zeros((path_states.shape[0], 2, path_states.shape[-1]), device=device),
+        ],
+        dim=1,
+    )
+    action_positions = (2 * step_counter + 1).to(torch.long)
+    next_state_positions = (2 * step_counter + 2).to(torch.long)
+    assert (
+        next_state_positions.max().item() < next_state_path.shape[1]
+    ), f"next_state_path index overflow: max next_state_positions={next_state_positions.max().item()} path_len={next_state_path.shape[1]}"
+    next_state_path[row_idx, action_positions, :] = actions
+    next_state_path[row_idx, next_state_positions, :] = next_states
     llm_reward, _ = calculate_llm_reward_supasoft(
         hunch_llm,
         next_state_path,
