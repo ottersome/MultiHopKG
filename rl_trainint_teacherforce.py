@@ -865,6 +865,10 @@ def evaluate_seq2seq_outputs(
         paths = mini_batch["triples_ints"].tolist()
         answer_entity_ids = torch.tensor([path[-1] for path in paths], dtype=torch.long, device=device)
         question_entity_ids = torch.tensor([path[0] for path in paths], dtype=torch.long, device=device)
+        gt_num_steps = torch.tensor(
+            [max(0, (len(path) - 1) // 2) for path in paths], dtype=torch.long, device=device
+        )
+        relation_gt_ids = torch.tensor([int(path[1]) for path in paths], dtype=torch.long, device=device)
 
         init_states = question_entity_ids
         init_states = get_embeddings_from_indices(env.knowledge_graph.entity_embedding, init_states)
@@ -913,6 +917,9 @@ def evaluate_seq2seq_outputs(
             observation = ReinforcedUnsupervisedEnv.RUE_Observation(
                 state=current_states,
                 answer_id=answer_entity_ids[active_idx],
+                current_steps=step_active,
+                gt_num_steps=gt_num_steps[active_idx],
+                relation_gt=relation_gt_ids[active_idx],
             )
 
             # Agent Take Step
