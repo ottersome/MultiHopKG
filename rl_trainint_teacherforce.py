@@ -512,6 +512,7 @@ def hydrate_replay_buffer(
     initial_ids_tensor = torch.tensor(initial_ids, dtype=torch.long, device=device)
     answer_ids_tensor = torch.tensor(answer_ids, dtype=torch.long, device=device)
     relations_gt_tensor = torch.tensor(relations_gt, dtype=torch.long, device=device)
+    relation_gt_for_step = relations_gt_tensor.clone()
 
     # if torch.max(step_counter).item() == 3:
     #     debugpy.breakpoint()
@@ -586,6 +587,7 @@ def hydrate_replay_buffer(
             valid_steps_t = torch.tensor(valid_steps, dtype=torch.long, device=device)
             next_actions_t = torch.tensor(next_actions, dtype=torch.long, device=device)
             next_entities_t = torch.tensor(next_entities, dtype=torch.long, device=device)
+            relation_gt_for_step[valid_global_idxs_t] = next_actions_t
 
             path_states[valid_global_idxs_t, (valid_steps_t * 2) + 1] = get_embeddings_from_indices(
                 relation_embeddings, next_actions_t
@@ -618,7 +620,7 @@ def hydrate_replay_buffer(
         context_quest_bert_emb=bert_quest,
     )
     
-    actions = actions# * action_scale # Rescale actions to the relation embedding magnitude
+    actions = actions * action_scale  # Keep rollout action scale consistent with SAC updates/eval
     log_probs = log_probs - actions.shape[-1] * math.log(action_scale) # The log_probs tweak is the change-of-variables correction: if you multiply a continuous action by a constant scale s, the density changes by -d * log(s)
 
     row_idx = torch.arange(actual_num_experiences, device=device)
@@ -635,7 +637,7 @@ def hydrate_replay_buffer(
         answer_id=answer_ids_tensor,
         current_steps=step_counter,
         gt_num_steps=batch_max_num_steps,
-        relation_gt=relations_gt_tensor,
+        relation_gt=relation_gt_for_step,
     )
     next_states, extrinsic_reward, done = env.step(observation, actions)
     done = done.squeeze()
@@ -818,6 +820,9 @@ def evaluate_seq2seq_outputs(
     total_actions = 0
     stop_episode_count = 0
     action_scale = _compute_relation_scale(env.knowledge_graph.relation_embedding)
+    answer_dist_sum = 0.0
+    answer_dist_count = 0
+    answer_dist_min = float("inf")
 
     # Samples for Humans
     samples_idxs = np.random.choice(len(dataset), 4, replace=False).tolist()
@@ -868,7 +873,6 @@ def evaluate_seq2seq_outputs(
         gt_num_steps = torch.tensor(
             [max(0, (len(path) - 1) // 2) for path in paths], dtype=torch.long, device=device
         )
-        relation_gt_ids = torch.tensor([int(path[1]) for path in paths], dtype=torch.long, device=device)
 
         init_states = question_entity_ids
         init_states = get_embeddings_from_indices(env.knowledge_graph.entity_embedding, init_states)
@@ -913,13 +917,24 @@ def evaluate_seq2seq_outputs(
             row_idx = torch.arange(active_idx.size(0), device=device)
             # TODO: confirm this looks okay
             current_states = path_active[row_idx, 2 * step_active, :]
+            relation_gt_active = []
+            for local_row, dataset_row in enumerate(active_idx.tolist()):
+                path_ids = paths[dataset_row]
+                rel_pos = int(2 * step_active[local_row].item() + 1)
+                if 0 <= rel_pos < len(path_ids):
+                    relation_gt_active.append(int(path_ids[rel_pos]))
+                else:
+                    relation_gt_active.append(int(path_ids[1]))
+            relation_gt_active_t = torch.tensor(
+                relation_gt_active, dtype=torch.long, device=device
+            )
 
             observation = ReinforcedUnsupervisedEnv.RUE_Observation(
                 state=current_states,
                 answer_id=answer_entity_ids[active_idx],
                 current_steps=step_active,
                 gt_num_steps=gt_num_steps[active_idx],
-                relation_gt=relation_gt_ids[active_idx],
+                relation_gt=relation_gt_active_t,
             )
 
             # Agent Take Step
@@ -938,9 +953,11 @@ def evaluate_seq2seq_outputs(
                 env.knowledge_graph.entity_embedding, answer_entity_ids[active_idx]
             )
             diff = env.knowledge_graph.absolute_difference(answer_embeddings, next_states)
-            answer_found = (
-                torch.norm(diff, dim=-1, keepdim=True) < env.reached_destination_threshold
-            )
+            answer_distance = torch.norm(diff, dim=-1, keepdim=True)
+            answer_dist_sum += answer_distance.sum().item()
+            answer_dist_count += answer_distance.numel()
+            answer_dist_min = min(answer_dist_min, answer_distance.min().item())
+            answer_found = answer_distance < env.reached_destination_threshold
             first_stop_mask = is_stop.squeeze(-1) & (stop_step[active_idx] < 0)
             if first_stop_mask.any():
                 stop_step[active_idx[first_stop_mask]] = step_active[first_stop_mask]
@@ -1058,7 +1075,11 @@ def evaluate_seq2seq_outputs(
         ref_texts = answer_tokenizer.batch_decode(answer_tokens_list, skip_special_tokens=True)
 
         total_sequences += _batch_size
-        # success_count += success_flags.sum().item()
+        # Sequence-level success for evaluation:
+        # - explicit stop was taken, or
+        # - trajectory reached answer proximity threshold.
+        batch_success = ((stop_step >= 0) | (answer_found_step >= 0)).sum().item()
+        success_count += int(batch_success)
         total_steps += step_counter.float().mean().item()
         total_generated_len += sum(generated_lengths)
 
@@ -1140,6 +1161,9 @@ def evaluate_seq2seq_outputs(
         metrics[f"{prefix}/stop_episode_rate"] = (
             stop_episode_count / max(total_sequences, 1)
         )
+    if answer_dist_count > 0:
+        metrics[f"{prefix}/answer_distance_mean"] = answer_dist_sum / answer_dist_count
+        metrics[f"{prefix}/answer_distance_min"] = answer_dist_min
     if mse_alignment_count > 0:
         metrics[f"{prefix}/bert_alignment_mse"] = (
             mse_alignment_sum / mse_alignment_count
@@ -1980,9 +2004,9 @@ def main():
         nav_start_emb_type=args.nav_start_emb_type,
         reached_destination_threshold=args.reached_destination_threshold,
     )
-    # Align stop threshold with relation embedding scale so stop actions remain reachable after scaling
+    # Align stop threshold with relation embedding scale so stop actions remain reachable after scaling.
     relation_scale = _compute_relation_scale(kge_model.relation_embedding)
-    #env.stop_action_threshold = env.stop_action_threshold * relation_scale
+    env.stop_action_threshold = env.stop_action_threshold * relation_scale
 
     meep = torch.rand(10, 100).to(args.device)
     init_states = env.reset(meep)
