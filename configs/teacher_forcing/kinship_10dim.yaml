@@ -25,12 +25,12 @@ critic_v_hiddim: 256
 
 # Environment: 
 max_env_steps: 3
-reached_destination_threshold: 0.5
+reached_destination_threshold: 1.8
 experiences_per_question: 4
 num_simulations_per_ques: 100
     
 # Training Duration & Rollout
-epochs: 2000
+epochs: 20000
 start_epoch: 0
 num_update_steps: 1000000
     

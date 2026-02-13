@@ -782,6 +782,8 @@ def evaluate_seq2seq_outputs(
     qid_to_title: Dict[str, str],
     pid_to_title: Dict[str, str],
     num_samples_to_log: int = 5,
+    action_selection: str = "stochastic",
+    num_beams: int = 3,
 ) -> Dict[str, float]:
     """Run policy evaluation on a dataset and log seq2seq decoder outputs."""
 
@@ -811,6 +813,7 @@ def evaluate_seq2seq_outputs(
     total_token_correct = 0
     total_sequences = 0
     exact_match_count = 0
+    exact_match_at_k_count = 0
     success_count = 0
     total_steps = 0.0
     total_generated_len = 0.0
@@ -820,6 +823,11 @@ def evaluate_seq2seq_outputs(
     total_actions = 0
     stop_episode_count = 0
     action_scale = _compute_relation_scale(env.knowledge_graph.relation_embedding)
+    if action_selection not in {"stochastic", "deterministic"}:
+        raise ValueError(
+            f"Unsupported action_selection={action_selection}. Expected 'stochastic' or 'deterministic'."
+        )
+    num_beams_eval = max(1, int(num_beams))
     answer_dist_sum = 0.0
     answer_dist_count = 0
     answer_dist_min = float("inf")
@@ -902,10 +910,13 @@ def evaluate_seq2seq_outputs(
             step_active = step_counter[active_idx]
             mask_active = seq_positions <= (2 * step_active).unsqueeze(1)
 
-            actions, _, _, _, _ = nav_agent(
+            sampled_actions, _, _, mu_actions, _ = nav_agent(
                 path_active,
                 graph_state_mask=mask_active,
                 context_quest_bert_emb=bert_quest[active_idx],
+            )
+            actions = (
+                mu_actions if action_selection == "deterministic" else sampled_actions
             )
             actions = actions * action_scale
             stop_distance = torch.norm(actions - stop_embed, dim=-1, keepdim=True)
@@ -1055,25 +1066,34 @@ def evaluate_seq2seq_outputs(
             # eos_token_id=answer_tokenizer.eos_token_id,
             # pad_token_id=pad_token_id,
             max_length=100,
-            num_beams=3,
+            num_beams=num_beams_eval,
+            num_return_sequences=num_beams_eval,
         )
 
         pred_texts: List[str] = []
+        pred_beam_texts: List[List[str]] = []
         generated_lengths: List[int] = []
-        for sample_idx in range(generated_ids.size(0)):
+        for sample_idx in range(_batch_size):
             prompt_len = prompt_lengths[sample_idx]
-            answer_candidate = generated_ids[sample_idx][prompt_len:]
-            trimmed_tokens: List[int] = []
-            for token_id in answer_candidate.tolist():
-                if decoder_eos_token_id is not None and token_id == decoder_eos_token_id:
-                    break
-                if token_id == bart_pad_token_id:
-                    continue
-                trimmed_tokens.append(token_id)
-            generated_lengths.append(len(trimmed_tokens))
-            pred_texts.append(
-                answer_tokenizer.decode(trimmed_tokens, skip_special_tokens=True).strip()
-            )
+            beam_texts_for_sample: List[str] = []
+            for beam_idx in range(num_beams_eval):
+                flat_idx = sample_idx * num_beams_eval + beam_idx
+                answer_candidate = generated_ids[flat_idx][prompt_len:]
+                trimmed_tokens: List[int] = []
+                for token_id in answer_candidate.tolist():
+                    if decoder_eos_token_id is not None and token_id == decoder_eos_token_id:
+                        break
+                    if token_id == bart_pad_token_id:
+                        continue
+                    trimmed_tokens.append(token_id)
+                beam_text = answer_tokenizer.decode(
+                    trimmed_tokens, skip_special_tokens=True
+                ).strip()
+                beam_texts_for_sample.append(beam_text)
+                if beam_idx == 0:
+                    generated_lengths.append(len(trimmed_tokens))
+            pred_beam_texts.append(beam_texts_for_sample)
+            pred_texts.append(beam_texts_for_sample[0] if beam_texts_for_sample else "")
         ref_texts = answer_tokenizer.batch_decode(answer_tokens_list, skip_special_tokens=True)
 
         total_sequences += _batch_size
@@ -1123,6 +1143,11 @@ def evaluate_seq2seq_outputs(
         exact_match_count += sum(
             1 for pred, ref in zip(pred_texts, ref_texts) if pred.strip() == ref.strip()
         )
+        exact_match_at_k_count += sum(
+            1
+            for beam_preds, ref in zip(pred_beam_texts, ref_texts)
+            if any(pred.strip() == ref.strip() for pred in beam_preds)
+        )
 
         for local_idx in range(_batch_size):
             predicted_text = pred_texts[local_idx]
@@ -1166,6 +1191,9 @@ def evaluate_seq2seq_outputs(
     if total_sequences > 0:
         metrics[f"{prefix}/success_rate"] = success_count / total_sequences
         metrics[f"{prefix}/exact_match"] = exact_match_count / total_sequences
+        metrics[f"{prefix}/exact_match_at_{num_beams_eval}"] = (
+            exact_match_at_k_count / total_sequences
+        )
         metrics[f"{prefix}/avg_step_count"] = total_steps / max(total_sequences, 1)
         metrics[f"{prefix}/avg_generated_length"] = (
             total_generated_len / max(total_sequences, 1)
@@ -1739,6 +1767,31 @@ def train_multihopkg(
                 eid2pid = eid2pid,
                 qid_to_title = qid_to_title,
                 pid_to_title = pid_to_title,
+                action_selection="stochastic",
+                num_beams=3,
+            )
+            evaluate_seq2seq_outputs(
+                env=env,
+                ann_index_manager_ent=ann_index_manager_ent,
+                ann_index_manager_rel=ann_index_manager_rel,
+                nav_agent=nav_agent,
+                hunch_llm=hunch_llm,
+                dataset=data_partitions.validation,
+                question_tokenizer=question_tokenizer,
+                answer_tokenizer=answer_tokenizer,
+                batch_size=batch_size_dev,
+                bert_dim=bert_dim,
+                max_env_steps=replay_buffer.max_env_steps,
+                bart_pad_token_id=bart_pad_token_id,
+                global_step=total_gradient_updates,
+                prefix="dev_det",
+                writer=writer,
+                eid2qid=eid2qid,
+                eid2pid=eid2pid,
+                qid_to_title=qid_to_title,
+                pid_to_title=pid_to_title,
+                action_selection="deterministic",
+                num_beams=3,
             )
 
             # evaluate_seq2seq_outputs(
