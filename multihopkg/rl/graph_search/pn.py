@@ -517,9 +517,11 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
             final_distance = torch.norm(final_actions - self.stop_action_embedding.to(action.device), dim=-1,keepdim=False)
             where_good = final_distance < self.stop_action_threshold
             global_positions[global_dones] = cur_state.state[global_dones]#Just keep them in place
+            done_idxs = torch.where(global_dones)[0]
             if where_good.any():
-                global_rewards[global_dones][where_good] = 10 # TODO: Obviously refine these hard coded stuff
-                global_rewards[global_dones][~where_good] = -10
+                global_rewards[done_idxs[where_good]] = 10  # TODO: Obviously refine these hard coded stuff
+            if (~where_good).any():
+                global_rewards[done_idxs[~where_good]] = -10
 
         ########################################
         # Remaining Ongoing States
@@ -548,7 +550,7 @@ class ReinforcedUnsupervisedEnv(OffPolicyEnvironment):
             # TODO: We need to double check this 'done' determinator
             # No gradients are calculated here
             with torch.no_grad():
-                relation_gt_embeddings = get_embeddings_from_indices(self.knowledge_graph.entity_embedding, ong_gt_relation)
+                relation_gt_embeddings = get_embeddings_from_indices(self.knowledge_graph.relation_embedding, ong_gt_relation)
                 diff = self.knowledge_graph.absolute_difference(relation_gt_embeddings, ong_current_position) 
                 
                 dist_reward = torch.norm(diff, dim=-1, keepdim=True).squeeze()# < self.reached_destination_threshold

@@ -1,6 +1,6 @@
 # -------------------- General Parameters --------------------
 seed: 42
-epochs: 500
+epochs: 250
 batch_size: 64
 val_every_n_batches: 50
 num_warmup_steps: 200
@@ -10,8 +10,8 @@ path_qna_data: "./data/Kinship/kinship_hinton_qna.csv"
 path_entities_dict: "./data/Kinship/entities.dict"
 path_relations_dict: "./data/Kinship/relations.dict"
 
-path_cache_dir: "./cache/kinship_aligned/"
-path_cached_metadata: "./cache/kinship_aligned/metadata.json"
+path_cache_dir: ".cache/kinship_aligned/"
+path_cached_metadata: ".cache/kinship_aligned/kinship.json"
 
 tvt_split: [0.8, 0.1, 0.1]
 path_graph_emb_data: "./models/graph_embeddings/Kinship"

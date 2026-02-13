@@ -1,0 +1,58 @@
+
+# Data Info
+pretrained_gtllm_path: "./models/gtllm_bert_aligned/gtllm_first_kinship_pretraining_02042026_104339.pt"
+path_entities_info: "data/Kinship/entities_info.csv"
+path_relations_info: "data/Kinship/relations_info.csv"
+pretraining_metadata_cache_path: ".cache/kinship_aligned/kinship.json"
+
+# Buffer
+replay_buffer_cache_path: ".cache/replay_buffer/kinship_replay_buffer.json"
+num_hydration_samples: 256
+
+
+# Agent:
+num_enc_layers: 3
+num_enc_heads: 2
+enc_dropout:  0.9
+enc_ff_dim: 768
+log_std_min: -20
+log_std_max: 2
+
+# Critics
+critic_q_hiddim: 256
+critic_v_hiddim: 256  
+
+
+# Environment: 
+max_env_steps: 3
+reached_destination_threshold: 0.001
+experiences_per_question: 4
+num_simulations_per_ques: 100
+    
+# Training Duration & Rollout
+epochs: 2000
+start_epoch: 0
+num_update_steps: 1000000
+    
+# Batch Settings
+batch_size: 256
+batch_size_dev: 64
+batches_b4_eval: 3
+num_gradupdates_till_eval: 1000
+
+# Training Hyperparameters
+learning_rate: 0.001
+teacherforce_reg_lambda: 0.0
+nav_start_emb_type: "centroid"
+reached_destination_threshold: 0.001
+beta: 0.0
+gamma: 12
+rl_gamma: 0.9
+supervised_adapter_scalar: 0.5
+supervised_sigma_scalar: 0.1
+supervised_expected_sigma: 0.1
+stop_reward_weight: 1.0 
+step_penalty: 0.0
+
+# Wandb
+wandb_project_name: "rl_teachforce_kinship_10dim"

@@ -36,7 +36,7 @@ def get_args() -> argparse.Namespace:
     # Agent
     ap.add_argument('--num_enc_layers', type=int, default=3, help="How many layers for the agent's graph encoder.")
     ap.add_argument('--num_enc_heads', type=int, default=4, help="How many heads for the agent's graph encoder.")
-    ap.add_argument('--enc_dropout', type=int, default=0.9, help="Dropout Rate for the agents encoder")
+    ap.add_argument('--enc_dropout', type=float, default=0.9, help="Dropout rate for the agent encoder")
     ap.add_argument('--enc_ff_dim', type=int, default=768, help="Encoder fast forward dimension")
     ap.add_argument('--log_std_min', type=float, default=-20)
     ap.add_argument('--log_std_max', type=float, default=2)
@@ -46,8 +46,8 @@ def get_args() -> argparse.Namespace:
     ap.add_argument('--bert_tokenizer', type=str, default="bert-base-uncased")
 
     # Critics
-    ap.add_argument('--critic_q_hiddim', type=float, default=256)
-    ap.add_argument('--critic_v_hiddim', type=float, default=256)
+    ap.add_argument('--critic_q_hiddim', type=int, default=256)
+    ap.add_argument('--critic_v_hiddim', type=int, default=256)
 
     # Learning Hyperparameters
     ap.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimizer (default: 1e-5)')

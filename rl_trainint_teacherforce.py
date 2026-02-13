@@ -670,7 +670,7 @@ def hydrate_replay_buffer(
 
     combined_reward = (
         llm_reward.squeeze()
-        + stop_reward_weight * extrinsic_reward.squeeze(-1)
+        - stop_reward_weight * extrinsic_reward.squeeze(-1)
         + step_penalty
     )
     summary_writer.add_scalar("hydration_llm_reward", combined_reward.mean().item(), global_step)
