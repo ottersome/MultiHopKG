@@ -1,0 +1,78 @@
+program: src.experiments
+method: bayes
+metric:
+  name: dev/mrr
+  goal: maximize
+early_terminate:
+  type: hyperband
+  min_iter: 2
+  eta: 2
+command:
+  - ${env}
+  - python
+  - -m
+  - src.experiments
+  - --train
+  - --wandb
+  - --wandb_project
+  - salesforce-entity_training
+  - --wandb_group
+  - mquake_st-conve-prelim
+  - --wandb_tags
+  - conve,mquake_st,prelim-sweep
+  - --data_dir
+  - data/mquake_st
+  - --model
+  - conve
+  - --add_reversed_training_edges
+  - --group_examples_by_query
+  - --entity_dim
+  - "200"
+  - --relation_dim
+  - "200"
+  - --emb_2D_d1
+  - "10"
+  - --emb_2D_d2
+  - "20"
+  - --num_epochs
+  - "8"
+  - --num_wait_epochs
+  - "8"
+  - --num_peek_epochs
+  - "1"
+  - --batch_size
+  - "64"
+  - --train_batch_size
+  - "64"
+  - --dev_batch_size
+  - "16"
+  - --beam_size
+  - "128"
+  - --grad_norm
+  - "0"
+  - --num_rollouts
+  - "1"
+  - --bucket_interval
+  - "10"
+  - --gpu
+  - "0"
+  - ${args}
+parameters:
+  learning_rate:
+    values: [0.0005, 0.001, 0.003, 0.005]
+  emb_dropout_rate:
+    values: [0.1, 0.2, 0.3]
+  hidden_dropout_rate:
+    values: [0.2, 0.3, 0.4]
+  feat_dropout_rate:
+    values: [0.1, 0.2, 0.3]
+  label_smoothing_epsilon:
+    values: [0.0, 0.05, 0.1]
+  num_out_channels:
+    values: [16, 32, 64]
+  kernel_size:
+    values: [2, 3]
+  train_batch_size:
+    values: [32, 64, 128]
+  batch_size:
+    values: [32, 64, 128]

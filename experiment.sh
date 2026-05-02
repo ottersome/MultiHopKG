@@ -21,6 +21,15 @@ if [[ $use_action_space_bucketing = *"True"* ]]; then
     use_action_space_bucketing_flag='--use_action_space_bucketing'
 fi
 
+# Defaults for optional ConvE/fact-network args. Many older configs omit these
+# and rely on argparse defaults; keep experiment.sh usable for those configs.
+: ${hidden_dropout_rate:=0.3}
+: ${feat_dropout_rate:=0.2}
+: ${emb_2D_d1:=10}
+: ${emb_2D_d2:=20}
+: ${num_out_channels:=32}
+: ${kernel_size:=3}
+
 # Language conditioning flags
 use_question_encoder_flag=''
 if [[ $use_question_encoder = *"True"* ]]; then
@@ -50,6 +59,12 @@ cmd="python3 -m src.experiments \
     --baseline $baseline \
     --grad_norm $grad_norm \
     --emb_dropout_rate $emb_dropout_rate \
+    --hidden_dropout_rate $hidden_dropout_rate \
+    --feat_dropout_rate $feat_dropout_rate \
+    --emb_2D_d1 $emb_2D_d1 \
+    --emb_2D_d2 $emb_2D_d2 \
+    --num_out_channels $num_out_channels \
+    --kernel_size $kernel_size \
     --ff_dropout_rate $ff_dropout_rate \
     --action_dropout_rate $action_dropout_rate \
     --action_dropout_anneal_interval $action_dropout_anneal_interval \
