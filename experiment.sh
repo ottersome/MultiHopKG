@@ -60,13 +60,15 @@ cmd="python3 -m src.experiments \
     $group_examples_by_query_flag \
     $use_action_space_bucketing_flag \
     $use_question_encoder_flag \
-    --bert_model_name "$bert_model_name" \
-    --max_question_len $max_question_len \
-    --question_texts_path "$question_texts_path" \
-    --QAData_path $QAData_path \
     --gpu $gpu \
     $ARGS"
 
+# NOTE: This might be needed later as arguments to the command above
+# --max_question_len $max_question_len \
+# --question_texts_path "$question_texts_path" \
+# --QAData_path $QAData_path \
+
 echo "Executing $cmd"
+
 
 $cmd

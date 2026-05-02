@@ -129,7 +129,7 @@ class PolicyGradient(LFramework):
         path_components = []
 
         path_trace = [(r_s, e_s)]
-        pn.initialize_path((r_s, e_s), kg)
+        pn.initialize_path((r_s, e_s), kg) # Uses dummy relation and the source entity to encode a path
 
         for t in range(num_steps):
             last_r, e = path_trace[-1]

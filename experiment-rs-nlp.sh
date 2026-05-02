@@ -36,6 +36,8 @@ cmd="python3 -m src.experiments \
     --model $model \
     --bandwidth $bandwidth \
     --entity_dim $entity_dim \
+    --emb_2D_d1 $emb_2D_d1 \
+    --emb_2D_d2 $emb_2D_d2 \
     --relation_dim $relation_dim \
     --history_dim $history_dim \
     --history_num_layers $history_num_layers \

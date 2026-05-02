@@ -151,7 +151,7 @@ parser.add_argument('--feat_dropout_rate', type=float, default=0.2,
                     help='ConvE feature dropout rate (default: 0.2)')
 parser.add_argument('--emb_2D_d1', type=int, default=10,
                     help='ConvE embedding 2D shape dimension 1 (default: 10)')
-parser.add_argument('--emb_2D_d2', type=int, default=10,
+parser.add_argument('--emb_2D_d2', type=int, default=20,
                     help='ConvE embedding 2D shape dimension 2 (default: 20)')
 parser.add_argument('--num_out_channels', type=int, default=32,
                     help='ConvE number of output channels of the convolution layer (default: 32)')

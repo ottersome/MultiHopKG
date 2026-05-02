@@ -90,7 +90,7 @@ class GraphSearchPolicy(nn.Module):
             E_s = kg.get_entity_embeddings(e_s)
             E = kg.get_entity_embeddings(e)
             X = torch.cat([E, H, E_s, Q], dim=-1)
-        else:
+        else: # This is the one that we are using
             E = kg.get_entity_embeddings(e)
             X = torch.cat([E, H, Q], dim=-1)
 
@@ -130,7 +130,7 @@ class GraphSearchPolicy(nn.Module):
             references = []
             db_action_spaces, db_references = self.get_action_space_in_buckets(e, obs, kg)
             for action_space_b, reference_b in zip(db_action_spaces, db_references):
-                X2_b = X2[reference_b, :] # Get the states for the set of entities in this bucket
+                X2_b = X2[reference_b, :] # Get the states for this set of entities in this bucket
                 # 💫 The policy is run here
                 action_dist_b, entropy_b = policy_nn_fun(X2_b, action_space_b)
                 references.extend(reference_b)
@@ -239,30 +239,30 @@ class GraphSearchPolicy(nn.Module):
             raise NotImplementedError
         else:
             entity2bucketid = kg.entity2bucketid[e.tolist()]
-            key1 = entity2bucketid[:, 0]
-            key2 = entity2bucketid[:, 1]
+            key1 = entity2bucketid[:, 0] # Bucket size key
+            key2 = entity2bucketid[:, 1] # Linked List Key
             batch_ref = {}
             for i in range(len(e)):
-                key = int(key1[i])
+                key = int(key1[i]) # What is the bucket size for the ith entity
                 if not key in batch_ref:
                     batch_ref[key] = []
-                batch_ref[key].append(i)
-            for key in batch_ref:
-                action_space = kg.action_space_buckets[key]
+                batch_ref[key].append(i) # What internal entity ids are in batch size `key`
+            for key in batch_ref: # FOr bucket size
+                action_space = kg.action_space_buckets[key] # Get Bucket in This Bucket SIze
                 # l_batch_refs: ids of the examples in the current batch of examples
                 # g_bucket_ids: ids of the examples in the corresponding KG action space bucket
-                l_batch_refs = batch_ref[key]
-                g_bucket_ids = key2[l_batch_refs].tolist()
+                l_batch_refs = batch_ref[key] # Get intenral entities ids in this bucket
+                g_bucket_ids = key2[l_batch_refs].tolist() # Get Linked Lists Index for this entity
                 r_space_b = action_space[0][0][g_bucket_ids]
                 e_space_b = action_space[0][1][g_bucket_ids]
                 action_mask_b = action_space[1][g_bucket_ids]
-                e_b = e[l_batch_refs]
-                last_r_b = last_r[l_batch_refs]
-                e_s_b = e_s[l_batch_refs]
-                q_b = q[l_batch_refs]
-                e_t_b = e_t[l_batch_refs]
+                e_b = e[l_batch_refs] # Source entities in this bucket
+                last_r_b = last_r[l_batch_refs] # Last relationship in this bucket
+                e_s_b = e_s[l_batch_refs] # Source entity in this bucket
+                q_b = q[l_batch_refs] # Question in this bucket
+                e_t_b = e_t[l_batch_refs] # Target Entity in this bucket
                 seen_nodes_b = seen_nodes[l_batch_refs]
-                obs_b = [e_s_b, q_b, e_t_b, last_step, last_r_b, seen_nodes_b]
+                obs_b = [e_s_b, q_b, e_t_b, last_step, last_r_b, seen_nodes_b] # Observation in this bucket
                 action_space_b = ((r_space_b, e_space_b), action_mask_b)
                 action_space_b = self.apply_action_masks(action_space_b, e_b, obs_b, kg)
                 db_action_spaces.append(action_space_b)

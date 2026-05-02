@@ -157,6 +157,7 @@ class LFramework(nn.Module):
                 mini_batch = train_data[example_id:example_id + self.batch_size]
                 if len(mini_batch) < self.batch_size:
                     continue
+                # 🎯 Pay close attention here. 
                 loss = self.loss(mini_batch)
                 loss['model_loss'].backward()
                 if self.grad_norm > 0:
@@ -352,31 +353,33 @@ class LFramework(nn.Module):
             batch_e1.append(e1)
             batch_e2.append(e2)
             q_inputs.append(q)
+        # TODO: Why is e2 not receiving the same treatment
         batch_e1 = var_cuda(torch.LongTensor(batch_e1), requires_grad=False)
 
         # Prepare query/question tensor
         if self.use_question_encoder and any(isinstance(x, list) for x in q_inputs):
             # q_inputs is a list of token id lists (already tokenized without specials)
             # Build input_ids with [CLS] and [SEP] if tokenizer is available
-            max_len_cfg = int(getattr(self.args, 'max_question_len', 64))
+            #TODO: Why do we use max_question_len here ?... I dont think we do 
+            # max_len_cfg = int(getattr(self.args, 'max_question_len', 64))
 
             assert self._q_tokenizer is not None, "q_tokenizer expected in format_batch for nlp mode "
+
+            # TODO: Is this a correct use of tokens with this specific tokenizer?
             cls_id = int(self._q_tokenizer.cls_token_id)
             sep_id = int(self._q_tokenizer.sep_token_id)
 
             proc_ids: List[List[int]] = []
             for toks in q_inputs:
-                if isinstance(toks, list):
-                    core = toks[: max(0, max_len_cfg - 2)]
-                    seq = [cls_id] + core + [sep_id]
-                else:
-                    # Missing tokens; use just [CLS][SEP]
-                    seq = [cls_id, sep_id]
+                assert isinstance(toks,list), "Your input is empty, remove it from the dataset"
+                assert len(toks) < self.args.max_question_len, "Your question is pretty long"
+                seq = [cls_id] + toks + [sep_id]
                 proc_ids.append(seq)
 
             # Pad to batch max length
-            max_len = max(len(x) for x in proc_ids) if proc_ids else 2
-            input_ids = torch.full((len(proc_ids), max_len), fill_value=0, dtype=torch.long)
+            max_len = max(len(x) for x in proc_ids) 
+            # TODO: Ensure this padding value is the correct one. This might be the trigger.
+            input_ids = torch.full((len(proc_ids), max_len), fill_value=self._q_tokenizer.pad_token_id, dtype=torch.long) 
             attention_mask = torch.zeros((len(proc_ids), max_len), dtype=torch.long)
             for i, seq in enumerate(proc_ids):
                 L = len(seq)
@@ -391,8 +394,8 @@ class LFramework(nn.Module):
                 self._q_encoder.to(input_ids.device)
                 out = self._q_encoder(input_ids=input_ids, attention_mask=attention_mask)
                 # Prefer pooler_output; else take [CLS] token representation
-                pooled = out.pooler_output if hasattr(out, 'pooler_output') and out.pooler_output is not None \
-                    else out.last_hidden_state[:, 0, :]
+                pooled = out.pooler_output# if hasattr(out, 'pooler_output') and out.pooler_output is not None \
+                    #else out.last_hidden_state[:, 0, :]
 
             # Project to relation_dim expected by policy network
             assert self._q_proj is not None, "You also need q_proj for format_batch"

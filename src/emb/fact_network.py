@@ -118,7 +118,8 @@ class ConvE(nn.Module):
         super(ConvE, self).__init__()
         self.entity_dim = args.entity_dim
         self.relation_dim = args.relation_dim
-        assert(args.emb_2D_d1 * args.emb_2D_d2 == args.entity_dim)
+        assert(args.emb_2D_d1 * args.emb_2D_d2 == args.entity_dim), \
+            f"Mismatch of dimensions: {args.emb_2D_d1} * {args.emb_2D_d2} != {args.entity_dim}"
         assert(args.emb_2D_d1 * args.emb_2D_d2 == args.relation_dim)
         self.emb_2D_d1 = args.emb_2D_d1
         self.emb_2D_d2 = args.emb_2D_d2

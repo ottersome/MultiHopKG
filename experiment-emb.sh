@@ -23,6 +23,8 @@ cmd="python3 -m src.experiments \
     --model $model \
     --entity_dim $entity_dim \
     --relation_dim $relation_dim \
+    --emb_2D_d1=$emb_2D_d1 \
+    --emb_2D_d2=$emb_2D_d2 \
     --num_rollouts $num_rollouts \
     --bucket_interval $bucket_interval \
     --num_epochs $num_epochs \
