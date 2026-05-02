@@ -101,6 +101,67 @@ def hits_and_ranks(examples, scores, all_answers, verbose=False):
 
     return hits_at_1, hits_at_3, hits_at_5, hits_at_10, mrr
 
+
+def hits_and_ranks_counts(examples, scores, all_answers):
+    """
+    Compute unnormalized ranking counts for a score batch.
+
+    This mirrors hits_and_ranks but returns counts so callers can stream large
+    evaluations without concatenating every batch's full entity-score matrix.
+    """
+    assert (len(examples) == scores.shape[0])
+    dummy_mask = [DUMMY_ENTITY_ID, NO_OP_ENTITY_ID]
+    for i, example in enumerate(examples):
+        e1, e2, query = example
+        answer_mask = _get_answer_mask(all_answers, e1, query)
+        e2_multi = list(dict.fromkeys(dummy_mask + answer_mask))
+        target_score = float(scores[i, e2])
+        scores[i, e2_multi] = 0
+        scores[i, e2] = target_score
+
+    _, top_k_targets = torch.topk(scores, min(scores.size(1), args.beam_size))
+    top_k_targets = top_k_targets.cpu().numpy()
+
+    hits_at_1 = 0
+    hits_at_3 = 0
+    hits_at_5 = 0
+    hits_at_10 = 0
+    mrr = 0
+    for i, example in enumerate(examples):
+        _, e2, _ = example
+        pos = np.where(top_k_targets[i] == e2)[0]
+        if len(pos) > 0:
+            pos = pos[0]
+            if pos < 10:
+                hits_at_10 += 1
+                if pos < 5:
+                    hits_at_5 += 1
+                    if pos < 3:
+                        hits_at_3 += 1
+                        if pos < 1:
+                            hits_at_1 += 1
+            mrr += 1.0 / (pos + 1)
+
+    return hits_at_1, hits_at_3, hits_at_5, hits_at_10, mrr, len(examples)
+
+
+def format_hits_and_ranks_counts(counts, verbose=False):
+    hits_at_1, hits_at_3, hits_at_5, hits_at_10, mrr, total = counts
+    hits_at_1 = float(hits_at_1) / total
+    hits_at_3 = float(hits_at_3) / total
+    hits_at_5 = float(hits_at_5) / total
+    hits_at_10 = float(hits_at_10) / total
+    mrr = float(mrr) / total
+
+    if verbose:
+        print('Hits@1 = {:.3f}'.format(hits_at_1))
+        print('Hits@3 = {:.3f}'.format(hits_at_3))
+        print('Hits@5 = {:.3f}'.format(hits_at_5))
+        print('Hits@10 = {:.3f}'.format(hits_at_10))
+        print('MRR = {:.3f}'.format(mrr))
+
+    return hits_at_1, hits_at_3, hits_at_5, hits_at_10, mrr
+
 def hits_at_k(examples, scores, all_answers, verbose=False):
     """
     Hits at k metrics.

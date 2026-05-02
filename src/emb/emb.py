@@ -52,7 +52,7 @@ class EmbeddingBasedMethod(LFramework):
         loss = self.loss_fun(pred_scores, e2_label)
         loss_dict = {}
         loss_dict['model_loss'] = loss
-        loss_dict['print_loss'] = float(loss)
+        loss_dict['print_loss'] = float(loss.detach())
         return loss_dict
 
     def predict(self, mini_batch, verbose=False):

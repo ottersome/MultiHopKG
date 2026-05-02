@@ -230,12 +230,23 @@ class LFramework(nn.Module):
                 self.eval()
                 self.batch_size = self.dev_batch_size
                 with torch.no_grad():
-                    dev_scores = self.forward(dev_data, verbose=False)
+                    dev_metrics, dev_metrics_all = self.forward_hits_and_ranks(
+                        dev_data, [self.kg.dev_objects, self.kg.all_objects])
                 print('Dev set performance: (correct evaluation)')
-                h1, h3, h5, h10, mrr = src.eval.hits_and_ranks(dev_data, dev_scores, self.kg.dev_objects, verbose=True)
+                h1, h3, h5, h10, mrr = dev_metrics
+                print('Hits@1 = {:.3f}'.format(h1))
+                print('Hits@3 = {:.3f}'.format(h3))
+                print('Hits@5 = {:.3f}'.format(h5))
+                print('Hits@10 = {:.3f}'.format(h10))
+                print('MRR = {:.3f}'.format(mrr))
                 metrics = mrr
                 print('Dev set performance: (include test set labels)')
-                src.eval.hits_and_ranks(dev_data, dev_scores, self.kg.all_objects, verbose=True)
+                h1_all, h3_all, h5_all, h10_all, mrr_all = dev_metrics_all
+                print('Hits@1 = {:.3f}'.format(h1_all))
+                print('Hits@3 = {:.3f}'.format(h3_all))
+                print('Hits@5 = {:.3f}'.format(h5_all))
+                print('Hits@10 = {:.3f}'.format(h10_all))
+                print('MRR = {:.3f}'.format(mrr_all))
 
                 rollout_metrics = None
                 if self.supports_rollout_evaluation():
@@ -328,6 +339,21 @@ class LFramework(nn.Module):
             pred_scores.append(pred_score[:mini_batch_size])
         scores = torch.cat(pred_scores)
         return scores
+
+    def forward_hits_and_ranks(self, examples, all_answers_list):
+        counts_list = [[0, 0, 0, 0, 0.0, 0] for _ in all_answers_list]
+        for example_id in tqdm(range(0, len(examples), self.batch_size)):
+            mini_batch = examples[example_id:example_id + self.batch_size]
+            mini_batch_size = len(mini_batch)
+            if len(mini_batch) < self.batch_size:
+                self.make_full_batch(mini_batch, self.batch_size)
+            pred_score = self.predict(mini_batch, verbose=False)[:mini_batch_size]
+            eval_batch = mini_batch[:mini_batch_size]
+            for i, all_answers in enumerate(all_answers_list):
+                batch_counts = src.eval.hits_and_ranks_counts(eval_batch, pred_score.clone(), all_answers)
+                for j in range(len(counts_list[i])):
+                    counts_list[i][j] += batch_counts[j]
+        return [src.eval.format_hits_and_ranks_counts(counts, verbose=False) for counts in counts_list]
 
     def format_batch(self, batch_data, num_labels=-1, num_tiles=1):
         """
