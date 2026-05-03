@@ -42,6 +42,7 @@ cmd="python3 -m src.experiments \
     --relation_dim $relation_dim \
     --history_dim $history_dim \
     --history_num_layers $history_num_layers \
+    --use_action_space_bucketing \
     --num_rollouts $num_rollouts \
     --num_rollout_steps $num_rollout_steps \
     --bucket_interval $bucket_interval \
