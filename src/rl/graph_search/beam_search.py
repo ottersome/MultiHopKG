@@ -146,7 +146,10 @@ def beam_search(pn, e_s, q, e_t, kg, num_steps, beam_size, return_path_component
         # TODO: maybe place q_b checks on this
         k = int(e.size()[0] / batch_size)
         # => [batch_size*k]
-        q_b = ops.tile_along_beam(q.view(batch_size, -1), k)
+        if isinstance(q, torch.Tensor) and q.dtype in (torch.int64, torch.int32) and q.dim() == 1:
+            q_b = ops.tile_along_beam(q, k)
+        else:
+            q_b = ops.tile_along_beam(q.view(batch_size, -1), k)
         e_s = ops.tile_along_beam(e_s.view(batch_size, -1)[:, 0], k)
         e_t = ops.tile_along_beam(e_t.view(batch_size, -1)[:, 0], k)
         obs = [e_s, q_b, e_t, t==(num_steps-1), last_r, seen_nodes]
