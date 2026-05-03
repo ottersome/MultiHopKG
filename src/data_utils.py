@@ -789,10 +789,14 @@ def load_qa_data(
 
     # At this point we need to make it more compatible w/ sales force
 
-    # Convert it into a list rather than the array that comes in
-    train_df['Question'] = train_df['Question'].apply(lambda x: x.tolist())
-    dev_df['Question'] = dev_df['Question'].apply(lambda x: x.tolist())
-    test_df['Question'] = test_df['Question'].apply(lambda x: x.tolist())
+    # Convert token containers into plain Python lists. Freshly processed data
+    # may already be list-valued; parquet-loaded data often comes back as ndarrays.
+    def normalize_question_tokens(tokens):
+        return tokens.tolist() if hasattr(tokens, 'tolist') else list(tokens)
+
+    train_df['Question'] = train_df['Question'].apply(normalize_question_tokens)
+    dev_df['Question'] = dev_df['Question'].apply(normalize_question_tokens)
+    test_df['Question'] = test_df['Question'].apply(normalize_question_tokens)
 
     train_list = train_df[['Source-Entity', 'Answer-Entity', 'Question']].values.tolist()
     dev_list = dev_df[['Source-Entity', 'Answer-Entity', 'Question']].values.tolist()
