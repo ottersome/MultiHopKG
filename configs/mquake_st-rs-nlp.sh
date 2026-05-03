@@ -11,7 +11,7 @@ use_action_space_bucketing="True"
 use_question_encoder="True"
 bert_model_name="bert-base-uncased"
 cached_qa_metadata_path="./.cache/mquake_st/mquake_clean.json"
-raw_QAData_path="data/mquake_st_salesforce_compatible/mquake_qa_2hop.csv" # This ought to change a lot depending on what it is that you are testing.
+raw_QAData_path="data/mquake_st/" # This ought to change a lot depending on what it is that you are testing.
 recompute_qadata_cache="False"
 max_question_len=200
 

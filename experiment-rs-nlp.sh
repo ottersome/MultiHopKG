@@ -38,6 +38,7 @@ cmd="python3 -m src.experiments \
     --entity_dim $entity_dim \
     --emb_2D_d1 $emb_2D_d1 \
     --emb_2D_d2 $emb_2D_d2 \
+    --kernel_size $kernel_size \
     --relation_dim $relation_dim \
     --history_dim $history_dim \
     --history_num_layers $history_num_layers \
@@ -45,6 +46,7 @@ cmd="python3 -m src.experiments \
     --num_rollout_steps $num_rollout_steps \
     --bucket_interval $bucket_interval \
     --num_epochs $num_epochs \
+    --num_out_channels $num_out_channels \
     --num_wait_epochs $num_wait_epochs \
     --num_peek_epochs $num_peek_epochs \
     --batch_size $batch_size \

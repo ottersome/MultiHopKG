@@ -1,0 +1,74 @@
+program: src.experiments
+method: bayes
+metric:
+  name: dev/mrr
+  goal: maximize
+early_terminate:
+  type: hyperband
+  min_iter: 4
+  eta: 2
+command:
+  - ${env}
+  - python
+  - -m
+  - src.experiments
+  - --train
+  - --wandb
+  - --wandb_project
+  - salesforce-entity_training
+  - --wandb_group
+  - kinshiphinton_latest-conve-prelim
+  - --wandb_tags
+  - conve,kinshiphinton_latest,micro-sweep
+  - --data_dir
+  - data/KinshipHintonLatest
+  - --model
+  - conve
+  - --add_reversed_training_edges
+  - --group_examples_by_query
+  - --entity_dim
+  - "36"
+  - --relation_dim
+  - "36"
+  - --emb_2D_d1
+  - "6"
+  - --emb_2D_d2
+  - "6"
+  - --num_epochs
+  - "40"
+  - --num_wait_epochs
+  - "12"
+  - --num_peek_epochs
+  - "1"
+  - --dev_batch_size
+  - "32"
+  - --beam_size
+  - "32"
+  - --grad_norm
+  - "0"
+  - --num_rollouts
+  - "1"
+  - --bucket_interval
+  - "10"
+  - --gpu
+  - "0"
+  - ${args}
+parameters:
+  learning_rate:
+    values: [0.0003, 0.001, 0.003, 0.01]
+  emb_dropout_rate:
+    values: [0.0, 0.05, 0.1, 0.2]
+  hidden_dropout_rate:
+    values: [0.0, 0.1, 0.2, 0.3]
+  feat_dropout_rate:
+    values: [0.0, 0.1, 0.2]
+  label_smoothing_epsilon:
+    values: [0.0, 0.02, 0.05, 0.1]
+  num_out_channels:
+    values: [4, 8, 16]
+  kernel_size:
+    values: [2, 3]
+  train_batch_size:
+    values: [4, 8, 16]
+  batch_size:
+    values: [4, 8, 16]

@@ -21,8 +21,8 @@ bucket_interval=10
 num_epochs=1000
 num_wait_epochs=400
 num_peek_epochs=5
-batch_size=128
-train_batch_size=128
+batch_size=64
+train_batch_size=64
 dev_batch_size=64
 learning_rate=0.001
 baseline="n/a"
@@ -34,6 +34,9 @@ action_dropout_anneal_interval=1000
 beta=0.05
 relation_only="False"
 beam_size=128
+
+wandb="True"
+wandb_project="conve_salesforce_training"
 
 num_paths_per_entity=-1
 margin=-1

@@ -23,4 +23,7 @@ For a quick local smoke test without creating a sweep, run:
     --learning_rate 0.003 --emb_dropout_rate 0.2 \\
     --hidden_dropout_rate 0.3 --feat_dropout_rate 0.2 \\
     --num_out_channels 32 --kernel_size 3 --beam_size 128 --gpu 0
+
+KinshipHintonLatest micro-dataset sweep:
+  wandb sweep sweeps/conve_kinshiphinton_latest_prelim.yaml
 EOF

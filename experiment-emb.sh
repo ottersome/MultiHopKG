@@ -23,8 +23,8 @@ cmd="python3 -m src.experiments \
     --model $model \
     --entity_dim $entity_dim \
     --relation_dim $relation_dim \
-    --emb_2D_d1=$emb_2D_d1 \
-    --emb_2D_d2=$emb_2D_d2 \
+    --emb_2D_d1 $emb_2D_d1 \
+    --emb_2D_d2 $emb_2D_d2 \
     --num_rollouts $num_rollouts \
     --bucket_interval $bucket_interval \
     --num_epochs $num_epochs \
@@ -37,7 +37,13 @@ cmd="python3 -m src.experiments \
     --learning_rate $learning_rate \
     --grad_norm $grad_norm \
     --emb_dropout_rate $emb_dropout_rate \
+    --num_out_channels $num_out_channels \
+    --hidden_dropout_rate $hidden_dropout_rate \
+    --feat_dropout_rate $feat_dropout_rate\
+    --label_smoothing_epsilon $label_smoothing_epsilon \
+    --kernel_size $kernel_size \
     --beam_size $beam_size \
+    --wandb_run_name $wandb_run_name \
     $group_examples_by_query_flag \
     $add_reversed_training_edges_flag \
     --gpu $gpu \
