@@ -1,0 +1,100 @@
+program: src.experiments
+method: bayes
+metric:
+  name: dev/mrr
+  goal: maximize
+early_terminate:
+  type: hyperband
+  min_iter: 2
+  eta: 2
+command:
+  - ${env}
+  - python
+  - -m
+  - src.experiments
+  - --train
+  - --wandb
+  - --wandb_project
+  - salesforce-rsnlp-conve-mquake-microsweep
+  - --wandb_group
+  - mquake_st-rs-nlp-final
+  - --wandb_tags
+  - point.rs.conve,mquake_st,nlp,final-sweep
+  - --data_dir
+  - data/mquake_salesforce_compatible
+  - --model
+  - point.rs.conve
+  - --use_action_space_bucketing
+  - --use_question_encoder
+  - --bert_model_name
+  - bert-base-uncased
+  - --cached_qa_metadata_path
+  - ./.cache/mquake_st/mquake_clean.json
+  - --raw_QAData_path
+  - data/mquake_st/
+  - --max_question_len
+  - "200"
+  - --conve_state_dict_path
+  - model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar
+  - --distmult_state_dict_path
+  - model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar
+  - --complex_state_dict_path
+  - model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar
+  - --entity_dim
+  - "100"
+  - --relation_dim
+  - "100"
+  - --history_dim
+  - "200"
+  - --history_num_layers
+  - "3"
+  - --bucket_interval
+  - "10"
+  - --num_epochs
+  - "12"
+  - --num_rollout_steps
+  - "4"
+  - --num_wait_epochs
+  - "12"
+  - --num_peek_epochs
+  - "1"
+  - --batch_size
+  - "64"
+  - --train_batch_size
+  - "16"
+  - --dev_batch_size
+  - "16"
+  - --grad_norm
+  - "0"
+  - --baseline
+  - n/a
+  - --action_dropout_anneal_interval
+  - "1000"
+  - --beam_size
+  - "64"
+  - --num_paths_per_entity
+  - "-1"
+  - --margin
+  - "-1"
+  - --gpu
+  - "0"
+  - ${args}
+parameters:
+  learning_rate:
+    values: [0.0003, 0.001, 0.003]
+  num_rollouts:
+    values: [20, 50, 100]
+  bandwidth:
+    values: [200, 400]
+  action_dropout_rate:
+    values: [0.2, 0.4, 0.6]
+  ff_dropout_rate:
+    values: [0.0, 0.1, 0.2]
+  emb_dropout_rate:
+    values: [0.1, 0.2, 0.3]
+  beta:
+    values: [0.0, 0.01, 0.02, 0.05]
+  mu:
+    values: [0.25, 0.5, 1.0]
+  reward_shaping_threshold:
+    values: [0.0, 0.05, 0.1, 0.2]

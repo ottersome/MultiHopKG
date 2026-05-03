@@ -26,4 +26,7 @@ For a quick local smoke test without creating a sweep, run:
 
 KinshipHintonLatest micro-dataset sweep:
   wandb sweep sweeps/conve_kinshiphinton_latest_prelim.yaml
+
+Final MQuAKE-ST NLP reward-shaping sweep:
+  wandb sweep sweeps/rs_nlp_mquake_st_final.yaml
 EOF

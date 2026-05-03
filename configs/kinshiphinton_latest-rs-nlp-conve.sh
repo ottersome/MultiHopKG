@@ -21,10 +21,11 @@ emb_dropout_rate=0.2
 beam_size=128
 num_out_channels=8
 kernel_size=2
+use_question_encoder="True"
 
 history_dim=64
 history_num_layers=2
-num_rollout_steps=2
+num_rollout_steps=3
 num_peek_epochs=2
 baseline="n/a"
 ff_dropout_rate=0.1

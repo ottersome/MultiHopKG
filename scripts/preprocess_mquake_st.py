@@ -20,6 +20,8 @@ def main():
     ap = ArgumentParser()
     ap.add_argument("--triplets_path", default="./raw_data/mquake_st/kg/triplets.txt", help="Location of data")
     ap.add_argument("--output_raw_kb_path", default="./data/mquake_st/raw.kb", help="Location of data")
+    ap.add_argument("--qa_ds_path", default="./raw_data/mquake_st/qa/single_answers/qa_nhop.csv", help="Location of data")
+    # TODO: MultiAnswer
 
     args = ap.parse_args()
 
@@ -87,6 +89,33 @@ def main():
         header=False,
     )
 
+
+    ## NOw we focus on the QA data so that it has the following columsn
+    # Question-Number, Question, Answer, Hops, Source-Entity, Answer-Entity, Paths, SplitLabel
+    qa_ds_path = Path(args.qa_ds_path)
+    if not qa_ds_path.exists():
+        raise RuntimeError("Could not find the Q&A data")
+    qa_df = pd.read_csv(qa_ds_path)
+    qna_df = pd.DataFrame()
+    qna_df["Question"] = qa_df["Question"]
+    qna_df["Answer"] = qa_df["Answer"]
+    qna_df["Hops"] = qa_df["Hops"]
+    qna_df["Source-Entity"] = qa_df["Source-Entity"]
+    qna_df["Answer-Entity"] = qa_df["Answer-Entity"]
+    qna_df["Paths"] = qa_df["Paths"]
+    qna_df["SplitLabel"] = qa_df["SplitLabel"]
+    # TODO Add paraphrased questionshere
+    # Seems like it was split specifically for salesforce input pipeline. 
+
+    output_path_qna_df = output_path.joinpath("mquake_st-qa_nhop.csv")
+    qna_df.to_csv(
+        output_path_qna_df,
+        sep=",",
+        index=True,
+    )
+    print(f"Saved qna datset to {output_path_qna_df}")
+
+    # raw.pgrk is calculated in an extraneous repo
 
 if __name__ == "__main__":
 
