@@ -367,11 +367,13 @@ class LFramework(nn.Module):
 
         # Will fill an array with (batch_size, num_labels) with 1's where the label is 1
         def convert_to_binary_multi_object(e2):
-            print(f"len(e2)={len(e2)} and {num_labels}")
             e2_label = zeros_var_cuda([len(e2), num_labels])
             for i in range(len(e2)):
                 e2_label[i][e2[i]] = 1
             return e2_label
+
+        def convert_to_single_object(e2):
+            return [targets[0] if isinstance(targets, list) else targets for targets in e2]
         batch_e1, batch_e2 = [], []
         # q_inputs collects either relation ids or token id lists depending on mode
         q_inputs: List = []
@@ -431,8 +433,10 @@ class LFramework(nn.Module):
             # Legacy path: q_inputs is a list of relation ids
             batch_r = var_cuda(torch.LongTensor(q_inputs), requires_grad=False)
 
-        if type(batch_e2[0]) is list:
+        if type(batch_e2[0]) is list and num_labels > 0:
             batch_e2 = convert_to_binary_multi_object(batch_e2)
+        elif type(batch_e2[0]) is list:
+            batch_e2 = var_cuda(torch.LongTensor(convert_to_single_object(batch_e2)), requires_grad=False)
         elif type(batch_e1[0]) is list:
             batch_e1 = convert_to_binary_multi_subject(batch_e1)
         else:
