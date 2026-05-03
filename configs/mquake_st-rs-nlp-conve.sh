@@ -2,7 +2,7 @@
 
 # BERT-conditioned Reward Shaping on MQuake-ST
 
-data_dir="data/mquake_salesforce_compatible"
+data_dir="data/mquake_st"
 model="point.rs.conve"
 group_examples_by_query="False"
 use_action_space_bucketing="True"
@@ -19,9 +19,13 @@ bandwidth=400
 relation_dim=100
 entity_dim=100
 history_dim=200
+emb_2D_d1=10
+emb_2D_d2=10
+kernel_size=2
 history_num_layers=3
 num_rollouts=100
-num_rollout_steps=2
+num_rollout_steps=4
+num_out_channels=8
 bucket_interval=10
 num_epochs=100
 num_wait_epochs=100
@@ -42,9 +46,9 @@ relation_only="False"
 beam_size=128
 
 # Reference placeholders for other FNs (unused here)
-distmult_state_dict_path="model/FB15K-237-distmult-xavier-200-200-0.003-0.3-0.1/model_best.tar"
-complex_state_dict_path="model/FB15K-237-complex-RV-xavier-200-200-0.003-0.3-0.1/model_best.tar"
-conve_state_dict_path="model/mquake_st/_standdata_full-graph/model_best.tar"
+distmult_state_dict_path="model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar"
+complex_state_dict_path="model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar"
+conve_state_dict_path="model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar"
 
 num_paths_per_entity=-1
 margin=-1
