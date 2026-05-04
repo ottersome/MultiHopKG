@@ -74,6 +74,7 @@ cmd="python3 -m src.experiments \
     $recompute_qadata_cache_flag \
     --bert_model_name $bert_model_name \
     --max_question_len $max_question_len \
+    --mu $mu \
     --distmult_state_dict_path $distmult_state_dict_path \
     --complex_state_dict_path $complex_state_dict_path \
     --conve_state_dict_path $conve_state_dict_path \

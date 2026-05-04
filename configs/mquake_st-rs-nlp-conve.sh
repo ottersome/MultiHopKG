@@ -15,7 +15,7 @@ raw_QAData_path="data/mquake_st/mquake_st-qa_nhop.csv" # This ought to change a 
 recompute_qadata_cache="False"
 max_question_len=200
 
-bandwidth=400
+bandwidth=200
 relation_dim=200
 entity_dim=200
 history_dim=200
@@ -33,17 +33,18 @@ num_peek_epochs=2
 batch_size=128
 train_batch_size=32
 dev_batch_size=32
-learning_rate=0.003
+learning_rate=0.001
 baseline="n/a"
 grad_norm=0
-emb_dropout_rate=0.3
-ff_dropout_rate=0.1
-action_dropout_rate=0.5
+emb_dropout_rate=0.1
+ff_dropout_rate=0.2
+action_dropout_rate=0.4
 action_dropout_anneal_interval=1000
-reward_shaping_threshold=0
-beta=0.02
+reward_shaping_threshold=0.1
+beta=0.00
 relation_only="False"
 beam_size=128
+mu=0.25
 
 # Reference placeholders for other FNs (unused here)
 distmult_state_dict_path="model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar"
