@@ -57,6 +57,14 @@ parser.add_argument('--test', action='store_true',
                     help='perform inference on the test set (default: False)')
 parser.add_argument('--group_examples_by_query', action='store_true',
                     help='group examples by topic entity + query relation (default: False)')
+parser.add_argument('--train_data_fraction', type=float, default=1.0,
+                    help='fraction of loaded training examples to use (default: 1.0)')
+parser.add_argument('--dev_data_fraction', type=float, default=1.0,
+                    help='fraction of loaded dev examples to use (default: 1.0)')
+parser.add_argument('--max_train_examples', type=int, default=0,
+                    help='maximum number of loaded training examples to use (default: 0, no cap)')
+parser.add_argument('--max_dev_examples', type=int, default=0,
+                    help='maximum number of loaded dev examples to use (default: 0, no cap)')
 
 # Network Architecture
 parser.add_argument('--model', type=str, default='point',

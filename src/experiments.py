@@ -369,6 +369,27 @@ def construct_model(args):
         raise NotImplementedError
     return lf
 
+def subsample_examples(examples, fraction=1.0, max_examples=0, seed=0, split_name='data'):
+    fraction = float(fraction)
+    max_examples = int(max_examples or 0)
+    if fraction >= 1.0 and max_examples <= 0:
+        return examples
+    if fraction <= 0:
+        raise ValueError('{} fraction must be > 0, got {}'.format(split_name, fraction))
+    original_size = len(examples)
+    target_size = original_size
+    if fraction < 1.0:
+        target_size = max(1, int(round(original_size * fraction)))
+    if max_examples > 0:
+        target_size = min(target_size, max_examples)
+    if target_size >= original_size:
+        return examples
+    rng = random.Random(seed)
+    sampled_examples = rng.sample(examples, target_size)
+    print('Using {}/{} {} examples (fraction={}, max_examples={})'.format(
+        len(sampled_examples), original_size, split_name, fraction, max_examples))
+    return sampled_examples
+
 def train(lf):
     train_path = data_utils.get_train_path(args)
     dev_path = os.path.join(args.data_dir, 'dev.triples')
@@ -400,6 +421,10 @@ def train(lf):
         else:
             seen_entities = set()
         dev_data = data_utils.load_triples(dev_path, entity_index_path, relation_index_path, seen_entities=seen_entities)
+    train_data = subsample_examples(
+        train_data, args.train_data_fraction, args.max_train_examples, args.seed, 'train')
+    dev_data = subsample_examples(
+        dev_data, args.dev_data_fraction, args.max_dev_examples, args.seed + 1, 'dev')
     if args.checkpoint_path is not None:
         lf.load_checkpoint(args.checkpoint_path)
     # Ensure wandb is initialized before training if requested

@@ -35,6 +35,10 @@ fi
 : ${raw_QAData_path:=./datasets/data_preprocessed/mquake/mquake_qa_2hop.csv}
 : ${recompute_qadata_cache:=False}
 : ${disable_checkpoint_saving:=False}
+: ${train_data_fraction:=1.0}
+: ${dev_data_fraction:=1.0}
+: ${max_train_examples:=0}
+: ${max_dev_examples:=0}
 : ${reward_shaping_threshold:=0}
 : ${mu:=1.0}
 : ${distmult_state_dict_path:=}
@@ -112,6 +116,10 @@ cmd="python3 -m src.experiments \
     --max_question_len $max_question_len \
     --cached_qa_metadata_path $cached_qa_metadata_path \
     --raw_QAData_path $raw_QAData_path \
+    --train_data_fraction $train_data_fraction \
+    --dev_data_fraction $dev_data_fraction \
+    --max_train_examples $max_train_examples \
+    --max_dev_examples $max_dev_examples \
     --reward_shaping_threshold $reward_shaping_threshold \
     --mu $mu \
     $distmult_state_dict_path_arg \
