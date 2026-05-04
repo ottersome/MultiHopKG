@@ -5,7 +5,7 @@ metric:
   goal: maximize
 early_terminate:
   type: hyperband
-  min_iter: 2
+  min_iter: 4
   eta: 2
 command:
   - ${env}
@@ -15,63 +15,65 @@ command:
   - --train
   - --wandb
   - --wandb_project
-  - salesforce-rsnlp-conve-mquake-microsweep
+  - rs-nlp-conve-kinship
   - --wandb_group
-  - mquake_st-rs-nlp-final
+  - kinshiphinton_latest-rs-nlp-final
   - --wandb_tags
-  - point.rs.conve,mquake_st,nlp,final-sweep
+  - point.rs.conve,kinshiphinton_latest,nlp,micro-sweep
   - --data_dir
-  - data/mquake_st
+  - data/KinshipHintonLatest
   - --model
   - point.rs.conve
-  - --use_action_space_bucketing
+  - --add_reversed_training_edges
+  - --group_examples_by_query
   - --use_question_encoder
+  - --use_action_space_bucketing
   - --bert_model_name
   - bert-base-uncased
   - --cached_qa_metadata_path
-  - ./.cache/mquake_st/mquake_clean.json
+  - ./.cache/kinshiphinton_latest/kinshiphinton_clean.json
   - --raw_QAData_path
-  - data/mquake_st/mquake_st-qa_nhop.csv
+  - data/KinshipHintonLatest/kinship_qa_nhop.csv
   - --max_question_len
-  - "200"
+  - "100"
   - --conve_state_dict_path
-  - model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar
+  - model/KinshipHintonLatest-conve-RV-xavier-36-36-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-50.tar
   - --distmult_state_dict_path
-  - model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar
+  - model/KinshipHintonLatest-conve-RV-xavier-36-36-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-50.tar
   - --complex_state_dict_path
-  - model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar
+  - model/KinshipHintonLatest-conve-RV-xavier-36-36-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-50.tar
   - --entity_dim
-  - "200"
+  - "36"
   - --relation_dim
-  - "200"
+  - "36"
   - --emb_2D_d1
-  - "10"
+  - "6"
   - --emb_2D_d2
-  - "20"
+  - "6"
   - --num_out_channels
-  - "32"
+  - "8"
   - --kernel_size
   - "2"
-  - --history_dim
-  - "200"
-  - --history_num_layers
+  - --num_rollout_steps
   - "3"
+  - --history_dim
+  - "64"
+  - --history_num_layers
+  - "2"
   - --bucket_interval
   - "10"
   - --num_epochs
-  - "12"
-  - --num_rollout_steps
-  - "4"
+  - "60"
   - --num_wait_epochs
   - "12"
   - --num_peek_epochs
   - "1"
   - --batch_size
-  - "64"
+  - "16"
   - --train_batch_size
-  - "16"
+  - "8"
   - --dev_batch_size
-  - "16"
+  - "32"
   - --grad_norm
   - "0"
   - --baseline
@@ -79,30 +81,32 @@ command:
   - --action_dropout_anneal_interval
   - "1000"
   - --beam_size
-  - "64"
+  - "32"
   - --num_paths_per_entity
   - "-1"
   - --margin
-  - "-1"
+  - "0.5"
   - --gpu
   - "0"
   - ${args}
 parameters:
   learning_rate:
-    values: [0.0003, 0.001, 0.003]
+    values: [0.0003, 0.001, 0.003, 0.01]
   num_rollouts:
-    values: [20, 50, 100]
+    values: [4, 8, 16, 32]
   bandwidth:
-    values: [200, 400]
+    values: [25, 50, 100]
   action_dropout_rate:
-    values: [0.2, 0.4, 0.6]
+    values: [0.0, 0.1, 0.3, 0.5]
   ff_dropout_rate:
     values: [0.0, 0.1, 0.2]
   emb_dropout_rate:
-    values: [0.1, 0.2, 0.3]
+    values: [0.0, 0.1, 0.2]
   beta:
     values: [0.0, 0.01, 0.02, 0.05]
   mu:
     values: [0.25, 0.5, 1.0]
   reward_shaping_threshold:
-    values: [0.0, 0.05, 0.1, 0.2]
+    values: [0.0, 0.05, 0.1]
+  train_batch_size:
+    values: [4, 8, 16]

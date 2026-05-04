@@ -29,11 +29,37 @@ fi
 : ${emb_2D_d2:=20}
 : ${num_out_channels:=32}
 : ${kernel_size:=3}
+: ${bert_model_name:=bert-base-uncased}
+: ${max_question_len:=64}
+: ${cached_qa_metadata_path:=./.cache}
+: ${raw_QAData_path:=./datasets/data_preprocessed/mquake/mquake_qa_2hop.csv}
+: ${recompute_qadata_cache:=False}
+: ${reward_shaping_threshold:=0}
+: ${mu:=1.0}
+: ${distmult_state_dict_path:=}
+: ${complex_state_dict_path:=}
+: ${conve_state_dict_path:=}
 
 # Language conditioning flags
 use_question_encoder_flag=''
 if [[ $use_question_encoder = *"True"* ]]; then
     use_question_encoder_flag='--use_question_encoder'
+fi
+recompute_qadata_cache_flag=''
+if [[ $recompute_qadata_cache = *"True"* ]]; then
+    recompute_qadata_cache_flag='--recompute_qadata_cache'
+fi
+distmult_state_dict_path_arg=''
+if [[ -n "$distmult_state_dict_path" ]]; then
+    distmult_state_dict_path_arg="--distmult_state_dict_path $distmult_state_dict_path"
+fi
+complex_state_dict_path_arg=''
+if [[ -n "$complex_state_dict_path" ]]; then
+    complex_state_dict_path_arg="--complex_state_dict_path $complex_state_dict_path"
+fi
+conve_state_dict_path_arg=''
+if [[ -n "$conve_state_dict_path" ]]; then
+    conve_state_dict_path_arg="--conve_state_dict_path $conve_state_dict_path"
 fi
 
 cmd="python3 -m src.experiments \
@@ -75,6 +101,16 @@ cmd="python3 -m src.experiments \
     $group_examples_by_query_flag \
     $use_action_space_bucketing_flag \
     $use_question_encoder_flag \
+    $recompute_qadata_cache_flag \
+    --bert_model_name $bert_model_name \
+    --max_question_len $max_question_len \
+    --cached_qa_metadata_path $cached_qa_metadata_path \
+    --raw_QAData_path $raw_QAData_path \
+    --reward_shaping_threshold $reward_shaping_threshold \
+    --mu $mu \
+    $distmult_state_dict_path_arg \
+    $complex_state_dict_path_arg \
+    $conve_state_dict_path_arg \
     --gpu $gpu \
     $ARGS"
 

@@ -53,3 +53,5 @@ add_reverse_relations="True"
 
 num_negative_samples=12
 margin=0.5
+
+wandb_project="rs-nlp-conve-kinship"

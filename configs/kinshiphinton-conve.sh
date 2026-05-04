@@ -28,3 +28,5 @@ bandwith=300
 
 num_negative_samples=20
 margin=0.5
+
+wandb_project="kinship_hinton_linkpred_emb"

@@ -29,4 +29,7 @@ KinshipHintonLatest micro-dataset sweep:
 
 Final MQuAKE-ST NLP reward-shaping sweep:
   wandb sweep sweeps/rs_nlp_mquake_st_final.yaml
+
+Final KinshipHintonLatest NLP reward-shaping sweep:
+  wandb sweep sweeps/rs_nlp_kinshiphinton_latest_final.yaml
 EOF

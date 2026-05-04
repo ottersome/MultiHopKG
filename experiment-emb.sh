@@ -43,7 +43,7 @@ cmd="python3 -m src.experiments \
     --label_smoothing_epsilon $label_smoothing_epsilon \
     --kernel_size $kernel_size \
     --beam_size $beam_size \
-    --wandb_run_name $wandb_run_name \
+    --wandb_project $wandb_project \
     $group_examples_by_query_flag \
     $add_reversed_training_edges_flag \
     --gpu $gpu \

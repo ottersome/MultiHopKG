@@ -50,6 +50,12 @@ class RewardShapingPolicyGradient(PolicyGradient):
         else:
             raise NotImplementedError
         self.fn_kg.load_state_dict(fn_kg_state_dict)
+        if getattr(args, 'use_question_encoder', False):
+            try:
+                self.kg.load_state_dict(fn_kg_state_dict, strict=False)
+                print('Initialized policy KG embeddings from pretrained {} fact network.'.format(fn_model))
+            except Exception as exc:
+                print('Could not initialize policy KG embeddings from pretrained fact network: {}'.format(exc))
         if fn_model == 'hypere':
             complex_state_dict = torch.load(args.complex_state_dict_path)
             complex_kg_state_dict = get_complex_kg_state_dict(complex_state_dict)
@@ -68,6 +74,12 @@ class RewardShapingPolicyGradient(PolicyGradient):
             oracle_reward = forward_fact_oracle(e1, r, pred_e2, self.kg)
             return oracle_reward
         else:
+            if not (isinstance(r, torch.Tensor) and r.dtype in (torch.int64, torch.int32)):
+                # NLP-conditioned queries are dense question vectors, not relation ids.
+                # A pretrained one-hop fact network was not trained to score
+                # (source, question-vector, target) triples, so fall back to the
+                # sparse task reward instead of injecting a misleading dense reward.
+                return (pred_e2 == e2).float()
             if self.fn_secondary_kg:
                 real_reward = self.fn.forward_fact(e1, r, pred_e2, self.fn_kg, [self.fn_secondary_kg]).squeeze(1)
             else:

@@ -25,6 +25,6 @@ kernel_size=2
 label_smoothing_epsilon=0.05
 beam_size=32
 
-wandb_run_name="final_optimized_run"
+wandb_project="kinship_hinton_linkpred_emb"
 num_negative_samples=20
 margin=0.5

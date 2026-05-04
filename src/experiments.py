@@ -379,7 +379,8 @@ def train(lf):
             args.raw_QAData_path,
             args.bert_model_name,
             entity_index_path,
-            relation_index_path
+            relation_index_path,
+            force_recompute=args.recompute_qadata_cache
         )
         assert 'NELL' not in args.data_dir,  "We have not accounted for NELL yet"
         seen_entities = set()

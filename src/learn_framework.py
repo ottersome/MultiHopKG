@@ -128,7 +128,7 @@ class LFramework(nn.Module):
 
         for epoch_id in range(self.start_epoch, self.num_epochs):
             print('Epoch {}'.format(epoch_id))
-            if self.rl_variation_tag.startswith('rs'):
+            if self.rl_variation_tag.startswith('rs') and not self.use_question_encoder:
                 # Reward shaping module sanity check:
                 #   Make sure the reward shaping module output value is in the correct range
                 train_scores = self.test_fn(train_data)
@@ -421,10 +421,15 @@ class LFramework(nn.Module):
             with torch.no_grad():
                 # Ensure encoder on the same device
                 self._q_encoder.to(input_ids.device)
+                # LFramework.train() recursively puts registered submodules in
+                # train mode; keep the frozen encoder deterministic.
+                self._q_encoder.eval()
                 out = self._q_encoder(input_ids=input_ids, attention_mask=attention_mask)
-                # Prefer pooler_output; else take [CLS] token representation
-                pooled = out.pooler_output# if hasattr(out, 'pooler_output') and out.pooler_output is not None \
-                    #else out.last_hidden_state[:, 0, :]
+                # Mean pooling is more stable than BERT's NSP-trained pooler for
+                # frozen semantic query representations.
+                token_embeddings = out.last_hidden_state
+                mask = attention_mask.unsqueeze(-1).to(token_embeddings.dtype)
+                pooled = (token_embeddings * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
 
             # Project to relation_dim expected by policy network
             assert self._q_proj is not None, "You also need q_proj for format_batch"
