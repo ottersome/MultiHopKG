@@ -479,6 +479,11 @@ class LFramework(nn.Module):
         :param epoch_id: Model epoch index assigned by training loop.
         :param is_best: if set, the model being saved is the best model on dev set.
         """
+        if getattr(self.args, 'disable_checkpoint_saving', False):
+            if not getattr(self, '_checkpoint_saving_disabled_logged', False):
+                print('=> checkpoint saving disabled; skipping all model checkpoint writes')
+                setattr(self, '_checkpoint_saving_disabled_logged', True)
+            return
         checkpoint_dict = dict()
         checkpoint_dict['state_dict'] = self.state_dict()
         checkpoint_dict['epoch_id'] = epoch_id

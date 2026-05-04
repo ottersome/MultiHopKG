@@ -1,4 +1,6 @@
 program: src.experiments
+entity: halcyon-solutions
+project: rs-nlp-conve-kinship-microsweep
 method: bayes
 metric:
   name: dev/mrr
@@ -14,6 +16,7 @@ command:
   - src.experiments
   - --train
   - --wandb
+  - --disable_checkpoint_saving
   - --wandb_project
   - rs-nlp-conve-kinship
   - --wandb_group

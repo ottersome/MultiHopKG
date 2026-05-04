@@ -34,6 +34,7 @@ fi
 : ${cached_qa_metadata_path:=./.cache}
 : ${raw_QAData_path:=./datasets/data_preprocessed/mquake/mquake_qa_2hop.csv}
 : ${recompute_qadata_cache:=False}
+: ${disable_checkpoint_saving:=False}
 : ${reward_shaping_threshold:=0}
 : ${mu:=1.0}
 : ${distmult_state_dict_path:=}
@@ -48,6 +49,10 @@ fi
 recompute_qadata_cache_flag=''
 if [[ $recompute_qadata_cache = *"True"* ]]; then
     recompute_qadata_cache_flag='--recompute_qadata_cache'
+fi
+disable_checkpoint_saving_flag=''
+if [[ $disable_checkpoint_saving = *"True"* ]]; then
+    disable_checkpoint_saving_flag='--disable_checkpoint_saving'
 fi
 distmult_state_dict_path_arg=''
 if [[ -n "$distmult_state_dict_path" ]]; then
@@ -102,6 +107,7 @@ cmd="python3 -m src.experiments \
     $use_action_space_bucketing_flag \
     $use_question_encoder_flag \
     $recompute_qadata_cache_flag \
+    $disable_checkpoint_saving_flag \
     --bert_model_name $bert_model_name \
     --max_question_len $max_question_len \
     --cached_qa_metadata_path $cached_qa_metadata_path \

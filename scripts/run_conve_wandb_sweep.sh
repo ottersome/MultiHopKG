@@ -8,7 +8,7 @@ SWEEP_CONFIG="${1:-sweeps/conve_mquake_st_prelim.yaml}"
 
 cat <<EOF
 Create the sweep:
-  wandb sweep "$SWEEP_CONFIG"
+  wandb sweep --entity halcyon-solutions --project <project-from-yaml> "$SWEEP_CONFIG"
 
 Run an agent after W&B prints the sweep id:
   wandb agent <entity>/<project>/<sweep_id>
@@ -25,11 +25,11 @@ For a quick local smoke test without creating a sweep, run:
     --num_out_channels 32 --kernel_size 3 --beam_size 128 --gpu 0
 
 KinshipHintonLatest micro-dataset sweep:
-  wandb sweep sweeps/conve_kinshiphinton_latest_prelim.yaml
+  wandb sweep --entity halcyon-solutions --project salesforce-entity_training sweeps/conve_kinshiphinton_latest_prelim.yaml
 
 Final MQuAKE-ST NLP reward-shaping sweep:
-  wandb sweep sweeps/rs_nlp_mquake_st_final.yaml
+  wandb sweep --entity halcyon-solutions --project salesforce-rsnlp-conve-mquake-microsweep sweeps/rs_nlp_mquake_st_final.yaml
 
 Final KinshipHintonLatest NLP reward-shaping sweep:
-  wandb sweep sweeps/rs_nlp_kinshiphinton_latest_final.yaml
+  wandb sweep --entity halcyon-solutions --project rs-nlp-conve-kinship sweeps/rs_nlp_kinshiphinton_latest_final.yaml
 EOF

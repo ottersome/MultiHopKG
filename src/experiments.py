@@ -80,6 +80,9 @@ def setup_wandb(args, job_type='train'):
         init_kwargs['tags'] = tags
     try:
         wandb.init(**init_kwargs)
+        if getattr(wandb.run, 'sweep_id', None) or os.environ.get('WANDB_SWEEP_ID'):
+            setattr(args, 'disable_checkpoint_saving', True)
+            print('W&B sweep detected; checkpoint saving disabled for this run.')
         # Define a common step metric for nice charts
         wandb.define_metric('epoch')
         wandb.define_metric('train/*', step_metric='epoch')
