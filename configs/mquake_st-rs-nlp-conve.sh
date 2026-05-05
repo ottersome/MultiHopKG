@@ -16,23 +16,23 @@ recompute_qadata_cache="False"
 max_question_len=200
 
 bandwidth=200
-relation_dim=200
-entity_dim=200
+relation_dim=100
+entity_dim=100
 history_dim=200
 emb_2D_d1=10
-emb_2D_d2=20
+emb_2D_d2=10
 kernel_size=2
 history_num_layers=3
 num_rollouts=100
 num_rollout_steps=4
-num_out_channels=32
+num_out_channels=64
 bucket_interval=10
 num_epochs=100
 num_wait_epochs=100
 num_peek_epochs=2
 batch_size=128
-train_batch_size=32
-dev_batch_size=32
+train_batch_size=128
+dev_batch_size=64
 learning_rate=0.001
 baseline="n/a"
 grad_norm=0
@@ -47,9 +47,12 @@ beam_size=128
 mu=0.25
 
 # Reference placeholders for other FNs (unused here)
-distmult_state_dict_path="model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar"
-complex_state_dict_path="model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar"
-conve_state_dict_path="model/good_mquake_st-conve-RV-xavier-200-200-0.005-32-2-0.2-0.2-0.2-0.1/checkpoint-92.tar"
+distmult_state_dict_path="model/mquake_st-conve-RV-xavier-100-100-0.005-64-2-0.1-0.1-0.2-0.05/model_best.tar"
+complex_state_dict_path="model/mquake_st-conve-RV-xavier-100-100-0.005-64-2-0.1-0.1-0.2-0.05/model_best.tar"
+conve_state_dict_path="model/mquake_st-conve-RV-xavier-100-100-0.005-64-2-0.1-0.1-0.2-0.05/model_best.tar"
 
 num_paths_per_entity=-1
 margin=-1
+
+wandb_project="rs-nlp-conve-mquake-final_run"
+seed=12

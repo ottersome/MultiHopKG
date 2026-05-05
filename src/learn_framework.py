@@ -265,6 +265,27 @@ class LFramework(nn.Module):
                             f"Dev rollout evaluation (num_rollouts={num_rollouts_used}, pool={pool_mode}): "
                             f"{metrics_summary} mrr={rollout_metrics['mrr']:.4f}"
                         )
+                        if rollout_metrics.get('faithfulness/examples', 0):
+                            print(
+                                "Dev faithfulness: edge_f1={:.4f} rel_edit={:.4f} path_edit={:.4f} answer_set_f1={:.4f}".format(
+                                    rollout_metrics.get('faithfulness/edge_f1', 0.0),
+                                    rollout_metrics.get('faithfulness/relation_edit_distance', 0.0),
+                                    rollout_metrics.get('faithfulness/path_edit_distance', 0.0),
+                                    rollout_metrics.get('faithfulness/answer_set_f1', 0.0)
+                                )
+                            )
+                        per_hop_summary = []
+                        for k in sorted(k for k in rollout_metrics if k.startswith('per_hop/') and k.endswith('hits@1')):
+                            hop_prefix = k.rsplit('_', 1)[0]
+                            per_hop_summary.append(
+                                "{} h@1={:.4f} mrr={:.4f}".format(
+                                    k.split('/')[1].replace('_hits@1', ''),
+                                    rollout_metrics[k],
+                                    rollout_metrics.get(f'{hop_prefix}_mrr', 0.0)
+                                )
+                            )
+                        if per_hop_summary:
+                            print("Dev per-hop rollout: {}".format(' '.join(per_hop_summary)))
                 # wandb: log dev metrics
                 if _wandb_enabled:
                     log_dict = {
@@ -279,6 +300,10 @@ class LFramework(nn.Module):
                         for k, v in rollout_metrics.items():
                             if k.startswith('hits@') or k == 'mrr':
                                 log_dict[f'dev_rollout/{k}'] = float(v)
+                            elif k.startswith('faithfulness/'):
+                                log_dict[f'dev_{k}'] = float(v)
+                            elif k.startswith('per_hop/'):
+                                log_dict[f'dev_{k}'] = float(v)
                         if 'examples' in rollout_metrics:
                             log_dict['dev_rollout/examples'] = float(rollout_metrics['examples'])
                         if 'num_rollouts' in rollout_metrics:
@@ -378,7 +403,7 @@ class LFramework(nn.Module):
         # q_inputs collects either relation ids or token id lists depending on mode
         q_inputs: List = []
         for i in range(len(batch_data)):
-            e1, e2, q = batch_data[i]
+            e1, e2, q = batch_data[i][:3]
             batch_e1.append(e1)
             batch_e2.append(e2)
             q_inputs.append(q)

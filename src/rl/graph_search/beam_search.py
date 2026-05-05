@@ -13,7 +13,8 @@ import src.utils.ops as ops
 from src.utils.ops import unique_max, var_cuda, zeros_var_cuda, int_var_cuda, int_fill_var_cuda, var_to_numpy
 
 
-def beam_search(pn, e_s, q, e_t, kg, num_steps, beam_size, return_path_components=False):
+def beam_search(pn, e_s, q, e_t, kg, num_steps, beam_size,
+                return_path_components=False, return_search_traces=False):
     """
     Beam search from source.
 
@@ -24,7 +25,8 @@ def beam_search(pn, e_s, q, e_t, kg, num_steps, beam_size, return_path_component
     :param kg: Knowledge graph environment.
     :param num_steps: Number of search steps.
     :param beam_size: Beam size used in search.
-    :param return_path_components: If set, return all path components at the end of search.
+    :param return_path_components: If set, return formatted path components at the end of search.
+    :param return_search_traces: If set, return raw relation/entity trace tensors.
     """
     assert (num_steps >= 1)
     batch_size = len(e_s)
@@ -129,7 +131,8 @@ def beam_search(pn, e_s, q, e_t, kg, num_steps, beam_size, return_path_component
     init_action = (r_s, e_s)
     # path encoder
     pn.initialize_path(init_action, kg)
-    if kg.args.save_beam_search_paths:
+    keep_search_trace = kg.args.save_beam_search_paths or return_path_components or return_search_traces
+    if keep_search_trace:
         search_trace = [(r_s, e_s)]
 
     # Run beam search for num_steps
@@ -154,8 +157,9 @@ def beam_search(pn, e_s, q, e_t, kg, num_steps, beam_size, return_path_component
         e_t = ops.tile_along_beam(e_t.view(batch_size, -1)[:, 0], k)
         obs = [e_s, q_b, e_t, t==(num_steps-1), last_r, seen_nodes]
         # one step forward in search
+        use_action_space_bucketing = getattr(kg.args, 'use_action_space_bucketing', False)
         db_outcomes, _, _ = pn.transit(
-            e, obs, kg, use_action_space_bucketing=True, merge_aspace_batching_outcome=True)
+            e, obs, kg, use_action_space_bucketing=use_action_space_bucketing, merge_aspace_batching_outcome=True)
         action_space, action_dist = db_outcomes[0]
         # => [batch_size*k, action_space_size]
         log_action_dist = log_action_prob.view(-1, 1) + ops.safe_log(action_dist)
@@ -169,7 +173,7 @@ def beam_search(pn, e_s, q, e_t, kg, num_steps, beam_size, return_path_component
             log_action_probs.append(log_action_prob)
         pn.update_path(action, kg, offset=action_offset)
         seen_nodes = torch.cat([seen_nodes[action_offset], action[1].unsqueeze(1)], dim=1)
-        if kg.args.save_beam_search_paths:
+        if keep_search_trace:
             adjust_search_trace(search_trace, action_offset)
             search_trace.append(action)
 
@@ -178,7 +182,7 @@ def beam_search(pn, e_s, q, e_t, kg, num_steps, beam_size, return_path_component
     beam_search_output = dict()
     beam_search_output['pred_e2s'] = action[1].view(batch_size, -1)
     beam_search_output['pred_e2_scores'] = log_action_prob.view(batch_size, -1)
-    if kg.args.save_beam_search_paths:
+    if keep_search_trace:
         beam_search_output['search_traces'] = search_trace
 
     if return_path_components:

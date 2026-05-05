@@ -78,6 +78,8 @@ cmd="python3 -m src.experiments \
     --distmult_state_dict_path $distmult_state_dict_path \
     --complex_state_dict_path $complex_state_dict_path \
     --conve_state_dict_path $conve_state_dict_path \
+    --wandb_project $wandb_project \
+    --seed $seed \
     --gpu $gpu \
     $ARGS"
 

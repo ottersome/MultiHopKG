@@ -12,7 +12,7 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
-from src.eval import RolloutEvaluator
+from src.eval import FaithfulnessEvaluator, RolloutEvaluator, get_example_hops
 from src.learn_framework import LFramework
 import src.rl.graph_search.beam_search as search
 import src.utils.ops as ops
@@ -273,6 +273,8 @@ class PolicyGradient(LFramework):
         eval_batch_size = max(1, int(eval_batch_size))
 
         evaluator = RolloutEvaluator(positive_reward=1.0, pool=pool_mode)
+        hop_evaluators: Dict[int, RolloutEvaluator] = {}
+        faithfulness_evaluator = FaithfulnessEvaluator(self.kg)
 
         disable_dropout = not getattr(self.args, 'keep_rollout_eval_dropout', False)
         prev_dropout = getattr(self, 'action_dropout_rate', 0.0)
@@ -297,7 +299,8 @@ class PolicyGradient(LFramework):
                         e2,
                         self.kg,
                         self.num_rollout_steps,
-                        eval_rollouts
+                        eval_rollouts,
+                        return_search_traces=True
                     )
 
                     pred_entities = beam_output['pred_e2s']
@@ -316,6 +319,36 @@ class PolicyGradient(LFramework):
                         rewards_np[invalid_mask] = 0.0
 
                     evaluator.update(pred_scores_np, rewards_np, pred_entities_np)
+                    for row, example in enumerate(mini_batch):
+                        hop = get_example_hops(example)
+                        if hop is None:
+                            continue
+                        hop = int(hop)
+                        hop_evaluator = hop_evaluators.setdefault(
+                            hop,
+                            RolloutEvaluator(positive_reward=1.0, pool=pool_mode)
+                        )
+                        hop_evaluator.update(
+                            pred_scores_np[row:row + 1],
+                            rewards_np[row:row + 1],
+                            pred_entities_np[row:row + 1]
+                        )
+                    if 'search_traces' in beam_output:
+                        search_traces = beam_output['search_traces']
+                        output_beam_size = pred_entities.size(1)
+                        for row, example in enumerate(mini_batch):
+                            top_ind = row * output_beam_size
+                            pred_path = []
+                            for step in range(self.num_rollout_steps):
+                                h = int(search_traces[step][1][top_ind])
+                                rel = int(search_traces[step + 1][0][top_ind])
+                                t = int(search_traces[step + 1][1][top_ind])
+                                pred_path.append((h, rel, t))
+                            faithfulness_evaluator.update(
+                                example,
+                                pred_path,
+                                pred_entities_np[row].tolist()
+                            )
         finally:
             if disable_dropout:
                 self.action_dropout_rate = prev_dropout
@@ -326,6 +359,16 @@ class PolicyGradient(LFramework):
             return None
 
         metrics = evaluator.compute()
+        for hop, hop_evaluator in sorted(hop_evaluators.items()):
+            hop_metrics = hop_evaluator.compute()
+            metrics[f'per_hop/{hop}hop_examples'] = hop_metrics['examples']
+            metrics[f'per_hop/{hop}hop_hits@1'] = hop_metrics.get('hits@1', 0.0)
+            metrics[f'per_hop/{hop}hop_hits@3'] = hop_metrics.get('hits@3', 0.0)
+            metrics[f'per_hop/{hop}hop_hits@5'] = hop_metrics.get('hits@5', 0.0)
+            metrics[f'per_hop/{hop}hop_hits@10'] = hop_metrics.get('hits@10', 0.0)
+            metrics[f'per_hop/{hop}hop_hits@20'] = hop_metrics.get('hits@20', 0.0)
+            metrics[f'per_hop/{hop}hop_mrr'] = hop_metrics['mrr']
+        metrics.update(faithfulness_evaluator.compute())
         metrics['num_rollouts'] = eval_rollouts
         metrics['pool'] = pool_mode
         metrics['split'] = split_name

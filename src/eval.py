@@ -11,12 +11,13 @@
 import numpy as np
 import pickle
 from numbers import Integral
-from typing import Dict, Iterable, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Set, Tuple
 
 import torch
 
 from src.parse_args import args
 from src.data_utils import NO_OP_ENTITY_ID, DUMMY_ENTITY_ID
+from src.data_utils import DUMMY_RELATION_ID, START_RELATION_ID, NO_OP_RELATION_ID
 
 
 def _get_answer_mask(all_answers, e1, query):
@@ -44,6 +45,29 @@ def _get_answer_mask(all_answers, e1, query):
     return list(candidates)
 
 
+def _core_example(example):
+    return example[:3]
+
+
+def get_gold_path(example):
+    if len(example) < 4 or example[3] is None or isinstance(example[3], str):
+        return None
+    raw_path = example[3].tolist() if hasattr(example[3], 'tolist') else example[3]
+    if not isinstance(raw_path, (list, tuple)):
+        return None
+    return [tuple(int(x) for x in edge) for edge in raw_path]
+
+
+def get_example_hops(example):
+    if len(example) >= 5:
+        try:
+            return int(example[4])
+        except Exception:
+            return None
+    gold_path = get_gold_path(example)
+    return len(gold_path) if gold_path is not None else None
+
+
 def hits_and_ranks(examples, scores, all_answers, verbose=False):
     """
     Compute ranking based metrics.
@@ -52,7 +76,7 @@ def hits_and_ranks(examples, scores, all_answers, verbose=False):
     # mask false negatives in the predictions
     dummy_mask = [DUMMY_ENTITY_ID, NO_OP_ENTITY_ID]
     for i, example in enumerate(examples):
-        e1, e2, query = example
+        e1, e2, query = _core_example(example)
         answer_mask = _get_answer_mask(all_answers, e1, query)
         e2_multi = list(dict.fromkeys(dummy_mask + answer_mask))
         # save the relevant prediction
@@ -72,7 +96,7 @@ def hits_and_ranks(examples, scores, all_answers, verbose=False):
     hits_at_10 = 0
     mrr = 0
     for i, example in enumerate(examples):
-        e1, e2, r = example
+        e1, e2, r = _core_example(example)
         pos = np.where(top_k_targets[i] == e2)[0]
         if len(pos) > 0:
             pos = pos[0]
@@ -112,7 +136,7 @@ def hits_and_ranks_counts(examples, scores, all_answers):
     assert (len(examples) == scores.shape[0])
     dummy_mask = [DUMMY_ENTITY_ID, NO_OP_ENTITY_ID]
     for i, example in enumerate(examples):
-        e1, e2, query = example
+        e1, e2, query = _core_example(example)
         answer_mask = _get_answer_mask(all_answers, e1, query)
         e2_multi = list(dict.fromkeys(dummy_mask + answer_mask))
         target_score = float(scores[i, e2])
@@ -128,7 +152,7 @@ def hits_and_ranks_counts(examples, scores, all_answers):
     hits_at_10 = 0
     mrr = 0
     for i, example in enumerate(examples):
-        _, e2, _ = example
+        _, e2, _ = _core_example(example)
         pos = np.where(top_k_targets[i] == e2)[0]
         if len(pos) > 0:
             pos = pos[0]
@@ -175,7 +199,7 @@ def hits_at_k(examples, scores, all_answers, verbose=False):
     # mask false negatives in the predictions
     dummy_mask = [DUMMY_ENTITY_ID, NO_OP_ENTITY_ID]
     for i, example in enumerate(examples):
-        e1, e2, query = example
+        e1, e2, query = _core_example(example)
         answer_mask = _get_answer_mask(all_answers, e1, query)
         e2_multi = list(dict.fromkeys(answer_mask + dummy_mask))
         # save the relevant prediction
@@ -195,9 +219,9 @@ def hits_at_k(examples, scores, all_answers, verbose=False):
     hits_at_5 = 0
     hits_at_10 = 0
     for i, example in enumerate(examples):
-        e1, e2, r = example
+        e1, e2, r = _core_example(example)
         pos = np.where(top_k_targets[i] == e2)[0]
-        if pos:
+        if len(pos) > 0:
             pos = pos[0]
             if pos < 10:
                 hits_at_10 += 1
@@ -225,7 +249,7 @@ def hits_and_ranks_by_seen_queries(examples, scores, all_answers, seen_queries, 
     seen_exps, unseen_exps = [], []
     seen_ids, unseen_ids = [], []
     for i, example in enumerate(examples):
-        e1, e2, r = example
+        e1, e2, r = _core_example(example)
         if (e1, r) in seen_queries:
             seen_exps.append(example)
             seen_ids.append(i)
@@ -245,7 +269,7 @@ def hits_and_ranks_by_relation_type(examples, scores, all_answers, relation_by_t
     to_M_exps, to_1_exps = [], []
     to_M_ids, to_1_ids = [], []
     for i, example in enumerate(examples):
-        e1, e2, r = example
+        e1, e2, r = _core_example(example)
         if r in to_M_rels:
             to_M_exps.append(example)
             to_M_ids.append(i)
@@ -267,7 +291,7 @@ def link_MAP(examples, scores, labels, all_answers, verbose=False):
     assert (len(examples) == len(scores))
     queries = {}
     for i, example in enumerate(examples):
-        e1, e2, r = example
+        e1, e2, r = _core_example(example)
         if not e1 in queries:
             queries[e1] = []
         queries[e1].append((examples[i], labels[i], scores[i][e2]))
@@ -280,7 +304,7 @@ def link_MAP(examples, scores, labels, all_answers, verbose=False):
         acc_precision, offset, num_pos = 0, 0, 0
         for i in range(len(ranked_examples)):
             triple, label, score = ranked_examples[i]
-            _, r, e2 = triple
+            e1, e2, r = _core_example(triple)
             if label == '+':
                 num_pos += 1
                 acc_precision += float(num_pos) / (i + 1 - offset)
@@ -307,7 +331,7 @@ def export_error_cases(examples, scores, all_answers, output_path):
     # mask false negatives in the predictions
     dummy_mask = [DUMMY_ENTITY_ID, NO_OP_ENTITY_ID]
     for i, example in enumerate(examples):
-        e1, e2, r = example
+        e1, e2, r = _core_example(example)
         e2_multi = dummy_mask + list(all_answers[e1][r])
         # save the relevant prediction
         target_score = float(scores[i, e2])
@@ -322,7 +346,7 @@ def export_error_cases(examples, scores, all_answers, output_path):
 
     top_1_errors, top_10_errors = [], []
     for i, example in enumerate(examples):
-        e1, e2, r = example
+        e1, e2, r = _core_example(example)
         pos = np.where(top_k_targets[i] == e2)[0]
         if len(pos) <= 0 or pos[0] > 0:
             top_1_errors.append(i)
@@ -333,6 +357,198 @@ def export_error_cases(examples, scores, all_answers, output_path):
                  
     print('{}/{} top-1 error cases written to {}'.format(len(top_1_errors), len(examples), output_path))
     print('{}/{} top-10 error cases written to {}'.format(len(top_10_errors), len(examples), output_path))
+
+
+def compute_precision_recall_f1(pred: Set, gt: Set, eps: float = 1e-8) -> Tuple[float, float, float]:
+    tp = len(pred & gt)
+    fp = len(pred - gt)
+    fn = len(gt - pred)
+    precision = tp / (tp + fp + eps)
+    recall = tp / (tp + fn + eps)
+    f1 = 2 * precision * recall / (precision + recall + eps)
+    return precision, recall, f1
+
+
+def edit_distance(seq1: Sequence, seq2: Sequence) -> Tuple[int, int, int]:
+    m = len(seq1)
+    n = len(seq2)
+    if m == 0 and n == 0:
+        return 0, m, n
+    if m == 0 or n == 0:
+        return max(m, n), m, n
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(m + 1):
+        dp[i][0] = i
+    for j in range(n + 1):
+        dp[0][j] = j
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if seq1[i - 1] == seq2[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1]
+            else:
+                dp[i][j] = min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + 1)
+    return dp[m][n], m, n
+
+
+def build_inverse_relation_mapping(kg) -> Dict[int, int]:
+    relation2id = getattr(kg, 'relation2id', {})
+    id2relation = getattr(kg, 'id2relation', {})
+    inverse_mapping = {}
+    for r_id, rel_name in id2relation.items():
+        if isinstance(rel_name, str) and rel_name.endswith('_inv'):
+            base_name = rel_name[:-4]
+            if base_name in relation2id:
+                inverse_mapping[int(r_id)] = int(relation2id[base_name])
+    return inverse_mapping
+
+
+def canon_edge(h: int, r: int, t: int, inverse_mapping: Dict[int, int]) -> Tuple[int, int, int]:
+    if r in inverse_mapping:
+        return int(t), int(inverse_mapping[r]), int(h)
+    return int(h), int(r), int(t)
+
+
+def canon_rel(r: int, inverse_mapping: Dict[int, int]) -> int:
+    return int(inverse_mapping.get(int(r), int(r)))
+
+
+def clean_path_edges(path: Sequence[Tuple[int, int, int]],
+                     special_tokens: Set[int],
+                     inverse_mapping: Dict[int, int]) -> List[Tuple[int, int, int]]:
+    return [
+        canon_edge(h, r, t, inverse_mapping)
+        for h, r, t in path
+        if int(r) not in special_tokens
+    ]
+
+
+def gt_edge_overlap_f1(pred_path: Sequence[Tuple[int, int, int]],
+                       gt_path: Sequence[Tuple[int, int, int]],
+                       special_tokens: Set[int],
+                       inverse_mapping: Dict[int, int]) -> Tuple[float, float, float]:
+    pred_edges = set(clean_path_edges(pred_path, special_tokens, inverse_mapping))
+    gt_edges = {tuple(int(x) for x in edge) for edge in gt_path}
+    return compute_precision_recall_f1(pred_edges, gt_edges)
+
+
+def relation_edit_distance_norm(pred_relations: Sequence[int],
+                                gt_relations: Sequence[int],
+                                special_tokens: Set[int],
+                                inverse_mapping: Dict[int, int],
+                                eps: float = 1e-8) -> float:
+    pred_rels = [canon_rel(r, inverse_mapping) for r in pred_relations if int(r) not in special_tokens]
+    gt_rels = [int(r) for r in gt_relations]
+    dist, m, n = edit_distance(pred_rels, gt_rels)
+    return dist / (max(m, n) + eps)
+
+
+def path_edit_distance_norm(pred_path: Sequence[Tuple[int, int, int]],
+                            gt_path: Sequence[Tuple[int, int, int]],
+                            special_tokens: Set[int],
+                            inverse_mapping: Dict[int, int],
+                            eps: float = 1e-8) -> float:
+    pred_edges = clean_path_edges(pred_path, special_tokens, inverse_mapping)
+    gt_edges = [tuple(int(x) for x in edge) for edge in gt_path]
+    dist, m, n = edit_distance(pred_edges, gt_edges)
+    return dist / (max(m, n) + eps)
+
+
+def answer_set_f1(predicted_endpoints: Iterable[int],
+                  gold_answers: Iterable[int],
+                  eps: float = 1e-8) -> Tuple[float, float, float]:
+    pred_set = {int(x) for x in predicted_endpoints}
+    gold_set = {int(x) for x in gold_answers}
+    tp = len(pred_set & gold_set)
+    precision = tp / (len(pred_set) + eps)
+    recall = tp / (len(gold_set) + eps)
+    f1 = 2 * precision * recall / (precision + recall + eps)
+    return precision, recall, f1
+
+
+class FaithfulnessEvaluator:
+    """Aggregates path-faithfulness metrics for top rollout/beam paths."""
+
+    def __init__(self, kg) -> None:
+        self.inverse_mapping = build_inverse_relation_mapping(kg)
+        self.special_tokens = {DUMMY_RELATION_ID, START_RELATION_ID, NO_OP_RELATION_ID}
+        self.edge_precision = 0.0
+        self.edge_recall = 0.0
+        self.edge_f1 = 0.0
+        self.rel_edit = 0.0
+        self.path_edit = 0.0
+        self.answer_precision = 0.0
+        self.answer_recall = 0.0
+        self.answer_f1 = 0.0
+        self.num_examples = 0
+        self.by_hop: Dict[int, Dict[str, float]] = {}
+
+    def update(self,
+               example,
+               pred_path: Sequence[Tuple[int, int, int]],
+               predicted_endpoints: Iterable[int]) -> None:
+        gt_path = get_gold_path(example)
+        if not gt_path:
+            return
+        _, gold_answer, _ = _core_example(example)
+        if hasattr(gold_answer, 'tolist'):
+            gold_answer = gold_answer.tolist()
+        gold_answers = gold_answer if isinstance(gold_answer, (list, tuple, set)) else [gold_answer]
+        hop = get_example_hops(example) or len(gt_path)
+        gt_relations = [int(edge[1]) for edge in gt_path]
+        pred_relations = [int(edge[1]) for edge in pred_path]
+
+        edge_p, edge_r, edge_f = gt_edge_overlap_f1(
+            pred_path, gt_path, self.special_tokens, self.inverse_mapping)
+        rel_dist = relation_edit_distance_norm(
+            pred_relations, gt_relations, self.special_tokens, self.inverse_mapping)
+        path_dist = path_edit_distance_norm(
+            pred_path, gt_path, self.special_tokens, self.inverse_mapping)
+        ans_p, ans_r, ans_f = answer_set_f1(predicted_endpoints, gold_answers)
+
+        self.edge_precision += edge_p
+        self.edge_recall += edge_r
+        self.edge_f1 += edge_f
+        self.rel_edit += rel_dist
+        self.path_edit += path_dist
+        self.answer_precision += ans_p
+        self.answer_recall += ans_r
+        self.answer_f1 += ans_f
+        self.num_examples += 1
+
+        entry = self.by_hop.setdefault(int(hop), {
+            'examples': 0,
+            'edge_f1': 0.0,
+            'relation_edit_distance': 0.0,
+            'path_edit_distance': 0.0,
+            'answer_set_f1': 0.0,
+        })
+        entry['examples'] += 1
+        entry['edge_f1'] += edge_f
+        entry['relation_edit_distance'] += rel_dist
+        entry['path_edit_distance'] += path_dist
+        entry['answer_set_f1'] += ans_f
+
+    def compute(self) -> Dict[str, float]:
+        if self.num_examples == 0:
+            return {}
+        n = float(self.num_examples)
+        metrics = {
+            'faithfulness/examples': self.num_examples,
+            'faithfulness/edge_precision': self.edge_precision / n,
+            'faithfulness/edge_recall': self.edge_recall / n,
+            'faithfulness/edge_f1': self.edge_f1 / n,
+            'faithfulness/relation_edit_distance': self.rel_edit / n,
+            'faithfulness/path_edit_distance': self.path_edit / n,
+            'faithfulness/answer_set_precision': self.answer_precision / n,
+            'faithfulness/answer_set_recall': self.answer_recall / n,
+            'faithfulness/answer_set_f1': self.answer_f1 / n,
+        }
+        for hop, values in sorted(self.by_hop.items()):
+            count = float(values['examples'])
+            metrics[f'faithfulness/{hop}hop_examples'] = values['examples']
+            for key in ['edge_f1', 'relation_edit_distance', 'path_edit_distance', 'answer_set_f1']:
+                metrics[f'faithfulness/{hop}hop_{key}'] = values[key] / count
+        return metrics
 
 
 def _stable_logsumexp(values: Sequence[float]) -> float:

@@ -798,8 +798,14 @@ def load_qa_data(
     dev_df['Question'] = dev_df['Question'].apply(normalize_question_tokens)
     test_df['Question'] = test_df['Question'].apply(normalize_question_tokens)
 
-    train_list = train_df[['Source-Entity', 'Answer-Entity', 'Question']].values.tolist()
-    dev_list = dev_df[['Source-Entity', 'Answer-Entity', 'Question']].values.tolist()
-    test_list = test_df[['Source-Entity', 'Answer-Entity', 'Question']].values.tolist()
+    output_columns = ['Source-Entity', 'Answer-Entity', 'Question']
+    if 'Paths' in train_df.columns:
+        output_columns.append('Paths')
+    if 'Hops' in train_df.columns:
+        output_columns.append('Hops')
+
+    train_list = train_df[output_columns].values.tolist()
+    dev_list = dev_df[output_columns].values.tolist()
+    test_list = test_df[output_columns].values.tolist()
 
     return train_list, dev_list, test_list, train_metadata

@@ -87,6 +87,9 @@ def setup_wandb(args, job_type='train'):
         wandb.define_metric('epoch')
         wandb.define_metric('train/*', step_metric='epoch')
         wandb.define_metric('dev/*', step_metric='epoch')
+        wandb.define_metric('dev_rollout/*', step_metric='epoch')
+        wandb.define_metric('dev_faithfulness/*', step_metric='epoch')
+        wandb.define_metric('dev_per_hop/*', step_metric='epoch')
         # Optional inter-batch step metric
         wandb.define_metric('step')
         wandb.define_metric('train_step/*', step_metric='step')
@@ -486,6 +489,34 @@ def inference(lf):
             f"{split_name} rollout performance (num_rollouts={num_rollouts_used}, pool={pool_mode}): "
             f"{summary} mrr={metrics['mrr']:.4f}"
         )
+        if metrics.get('faithfulness/examples', 0):
+            print(
+                "{} faithfulness: edge_f1={:.4f} rel_edit={:.4f} path_edit={:.4f} answer_set_f1={:.4f}".format(
+                    split_name,
+                    metrics.get('faithfulness/edge_f1', 0.0),
+                    metrics.get('faithfulness/relation_edit_distance', 0.0),
+                    metrics.get('faithfulness/path_edit_distance', 0.0),
+                    metrics.get('faithfulness/answer_set_f1', 0.0)
+                )
+            )
+
+    def _log_rollout_metrics_to_wandb(prefix: str, metrics: Dict[str, float]) -> None:
+        if not _wandb_enabled or _wandb is None:
+            return
+        rollout_log = {}
+        for k, v in metrics.items():
+            if k.startswith('hits@') or k == 'mrr':
+                rollout_log[f'{prefix}_rollout/{k}'] = float(v)
+            elif k.startswith('faithfulness/'):
+                rollout_log[f'{prefix}_{k}'] = float(v)
+            elif k.startswith('per_hop/'):
+                rollout_log[f'{prefix}_{k}'] = float(v)
+        rollout_log[f'{prefix}_rollout/examples'] = float(metrics.get('examples', 0))
+        if 'num_rollouts' in metrics:
+            rollout_log[f'{prefix}_rollout/num_rollouts'] = float(metrics['num_rollouts'])
+        if 'pool' in metrics:
+            rollout_log[f'{prefix}_rollout/pool'] = metrics['pool']
+        _wandb.log(rollout_log)
 
     if args.compute_map:
         relation_sets = [
@@ -559,18 +590,7 @@ def inference(lf):
                     if k.startswith('hits@'):
                         eval_metrics['dev'][f'rollout_{k}'] = v
                 eval_metrics['dev']['rollout_mrr'] = rollout_dev_metrics['mrr']
-                if _wandb_enabled and _wandb is not None:
-                    rollout_log = {
-                        f'inference/dev_rollout/{k}': float(v)
-                        for k, v in rollout_dev_metrics.items()
-                        if k.startswith('hits@') or k == 'mrr'
-                    }
-                    rollout_log['inference/dev_rollout/examples'] = float(rollout_dev_metrics.get('examples', len(dev_data)))
-                    if 'num_rollouts' in rollout_dev_metrics:
-                        rollout_log['inference/dev_rollout/num_rollouts'] = float(rollout_dev_metrics['num_rollouts'])
-                    if 'pool' in rollout_dev_metrics:
-                        rollout_log['inference/dev_rollout/pool'] = rollout_dev_metrics['pool']
-                    _wandb.log(rollout_log)
+                _log_rollout_metrics_to_wandb('inference/dev', rollout_dev_metrics)
         if _wandb_enabled and _wandb is not None:
             dev_log = {
                 'inference/dev/hits@1': float(dev_metrics[0]),
@@ -597,18 +617,7 @@ def inference(lf):
                     if k.startswith('hits@'):
                         eval_metrics['test'][f'rollout_{k}'] = v
                 eval_metrics['test']['rollout_mrr'] = rollout_test_metrics['mrr']
-                if _wandb_enabled and _wandb is not None:
-                    rollout_log = {
-                        f'inference/test_rollout/{k}': float(v)
-                        for k, v in rollout_test_metrics.items()
-                        if k.startswith('hits@') or k == 'mrr'
-                    }
-                    rollout_log['inference/test_rollout/examples'] = float(rollout_test_metrics.get('examples', len(test_data)))
-                    if 'num_rollouts' in rollout_test_metrics:
-                        rollout_log['inference/test_rollout/num_rollouts'] = float(rollout_test_metrics['num_rollouts'])
-                    if 'pool' in rollout_test_metrics:
-                        rollout_log['inference/test_rollout/pool'] = rollout_test_metrics['pool']
-                    _wandb.log(rollout_log)
+                _log_rollout_metrics_to_wandb('inference/test', rollout_test_metrics)
         if _wandb_enabled and _wandb is not None:
             test_log = {
                 'inference/test/hits@1': float(test_metrics[0]),
