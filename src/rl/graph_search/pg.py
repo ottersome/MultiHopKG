@@ -43,7 +43,15 @@ class PolicyGradient(LFramework):
         self.num_path_types = 0
 
     def reward_fun(self, e1, r, e2, pred_e2):
-        return (pred_e2 == e2).float()
+        return self.binary_reward(e2, pred_e2)
+
+    def binary_reward(self, e2, pred_e2):
+        gold_answers = getattr(self, '_batch_gold_answers', None)
+        gold_answer_mask = getattr(self, '_batch_gold_answer_mask', None)
+        if gold_answers is None or gold_answer_mask is None or gold_answers.size(0) != pred_e2.size(0):
+            return (pred_e2 == e2).float()
+        hits = (pred_e2.unsqueeze(1) == gold_answers) & gold_answer_mask
+        return hits.any(dim=1).float()
 
     def loss(self, mini_batch):
         
@@ -309,8 +317,18 @@ class PolicyGradient(LFramework):
                     pred_entities_np = pred_entities.detach().cpu().numpy()
                     pred_scores_np = pred_scores.detach().cpu().numpy()
 
-                    target_entities_np = e2.detach().cpu().numpy().reshape(-1, 1)
-                    rewards_np = (pred_entities_np == target_entities_np).astype(np.float64)
+                    gold_answers = getattr(self, '_batch_gold_answers', None)
+                    gold_answer_mask = getattr(self, '_batch_gold_answer_mask', None)
+                    if gold_answers is not None and gold_answer_mask is not None:
+                        gold_answers_np = gold_answers.detach().cpu().numpy()
+                        gold_answer_mask_np = gold_answer_mask.detach().cpu().numpy().astype(bool)
+                        rewards_np = np.zeros_like(pred_entities_np, dtype=np.float64)
+                        for row in range(pred_entities_np.shape[0]):
+                            row_answers = gold_answers_np[row][gold_answer_mask_np[row]]
+                            rewards_np[row] = np.isin(pred_entities_np[row], row_answers).astype(np.float64)
+                    else:
+                        target_entities_np = e2.detach().cpu().numpy().reshape(-1, 1)
+                        rewards_np = (pred_entities_np == target_entities_np).astype(np.float64)
 
                     dummy_entity = int(self.kg.dummy_e)
                     invalid_mask = (pred_entities_np == dummy_entity)

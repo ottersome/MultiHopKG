@@ -398,16 +398,43 @@ class LFramework(nn.Module):
                 e2_label[i][e2[i]] = 1
             return e2_label
 
+        def normalize_targets(targets):
+            if hasattr(targets, 'tolist'):
+                targets = targets.tolist()
+            if isinstance(targets, tuple):
+                targets = list(targets)
+            return targets
+
         def convert_to_single_object(e2):
             return [targets[0] if isinstance(targets, list) else targets for targets in e2]
+
+        def build_gold_answer_tensor(e2, num_tiles):
+            normalized = [normalize_targets(targets) for targets in e2]
+            answer_lists = [targets if isinstance(targets, list) else [targets] for targets in normalized]
+            max_answers = max(len(targets) for targets in answer_lists)
+            gold_answers = torch.full((len(answer_lists), max_answers), self.kg.dummy_e, dtype=torch.long)
+            gold_mask = torch.zeros((len(answer_lists), max_answers), dtype=torch.bool)
+            for row, targets in enumerate(answer_lists):
+                for col, target in enumerate(targets):
+                    gold_answers[row, col] = int(target)
+                    gold_mask[row, col] = True
+            gold_answers = var_cuda(gold_answers, requires_grad=False)
+            gold_mask = var_cuda(gold_mask, requires_grad=False)
+            if num_tiles > 1:
+                gold_answers = ops.tile_along_beam(gold_answers, num_tiles)
+                gold_mask = ops.tile_along_beam(gold_mask, num_tiles)
+            setattr(self, '_batch_gold_answers', gold_answers)
+            setattr(self, '_batch_gold_answer_mask', gold_mask)
+
         batch_e1, batch_e2 = [], []
         # q_inputs collects either relation ids or token id lists depending on mode
         q_inputs: List = []
         for i in range(len(batch_data)):
             e1, e2, q = batch_data[i][:3]
             batch_e1.append(e1)
-            batch_e2.append(e2)
+            batch_e2.append(normalize_targets(e2))
             q_inputs.append(q)
+        build_gold_answer_tensor(batch_e2, num_tiles)
         # TODO: Why is e2 not receiving the same treatment
         batch_e1 = var_cuda(torch.LongTensor(batch_e1), requires_grad=False)
 

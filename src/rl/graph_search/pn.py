@@ -282,7 +282,7 @@ class GraphSearchPolicy(nn.Module):
 
         # Prevent the agent from selecting the ground truth edge
         ground_truth_edge_mask = self.get_ground_truth_edge_mask(e, r_space, e_space, e_s, q, e_t, kg)
-        action_mask -= ground_truth_edge_mask
+        action_mask = action_mask * (1 - ground_truth_edge_mask)
         self.validate_action_mask(action_mask)
 
         # Mask out false negatives in the final step
@@ -307,13 +307,13 @@ class GraphSearchPolicy(nn.Module):
         if not (isinstance(q, torch.Tensor) and q.dtype in (torch.int64, torch.int32)):
             mask_direct = ((e == e_s).unsqueeze(1) * (e_space == e_t.unsqueeze(1))).float()
             mask_inverse = ((e == e_t).unsqueeze(1) * (e_space == e_s.unsqueeze(1))).float()
-            return (mask_direct + mask_inverse) * (e_s.unsqueeze(1) != kg.dummy_e).float()
+            return ((mask_direct + mask_inverse) > 0).float() * (e_s.unsqueeze(1) != kg.dummy_e).float()
         ground_truth_edge_mask = \
             ((e == e_s).unsqueeze(1) * (r_space == q.unsqueeze(1)) * (e_space == e_t.unsqueeze(1)))
         inv_q = kg.get_inv_relation_id(q)
         inv_ground_truth_edge_mask = \
             ((e == e_t).unsqueeze(1) * (r_space == inv_q.unsqueeze(1)) * (e_space == e_s.unsqueeze(1)))
-        return ((ground_truth_edge_mask + inv_ground_truth_edge_mask) * (e_s.unsqueeze(1) != kg.dummy_e)).float()
+        return ((ground_truth_edge_mask + inv_ground_truth_edge_mask) > 0).float() * (e_s.unsqueeze(1) != kg.dummy_e).float()
 
     def get_answer_mask(self, e_space, e_s, q, kg):
         # If q is not relation ids, we cannot build an answer mask keyed by relation.
@@ -331,7 +331,7 @@ class GraphSearchPolicy(nn.Module):
                 answer_vector = var_cuda(torch.LongTensor([[kg.num_entities]]))
             else:
                 answer_vector = answer_vectors[_e_s][_q]
-            answer_mask = torch.sum(e_space[i].unsqueeze(0) == answer_vector, dim=0).long()
+            answer_mask = (torch.sum(e_space[i].unsqueeze(0) == answer_vector, dim=0) > 0).long()
             answer_masks.append(answer_mask)
         answer_mask = torch.cat(answer_masks).view(len(e_space), -1)
         return answer_mask

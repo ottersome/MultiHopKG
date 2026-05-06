@@ -160,7 +160,8 @@ def initialize_model_directory(args, random_seed=None):
             if args.mu != 1.0:
                 hyperparam_sig += '-{}'.format(args.mu)
         else:
-            hyperparam_sig = '{}-{}-{}-{}-{}-{}-{}-{}-{}-{}'.format(
+            hyperparam_sig = 's{}-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}'.format(
+                args.seed,
                 args.baseline,
                 args.entity_dim,
                 args.relation_dim,

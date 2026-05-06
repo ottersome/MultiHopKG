@@ -58,6 +58,15 @@ def get_gold_path(example):
     return [tuple(int(x) for x in edge) for edge in raw_path]
 
 
+def get_gold_answers(example):
+    _, answers, _ = _core_example(example)
+    if hasattr(answers, 'tolist'):
+        answers = answers.tolist()
+    if isinstance(answers, (list, tuple, set)):
+        return [int(answer) for answer in answers]
+    return [int(answers)]
+
+
 def get_example_hops(example):
     if len(example) >= 5:
         try:
@@ -77,14 +86,15 @@ def hits_and_ranks(examples, scores, all_answers, verbose=False):
     dummy_mask = [DUMMY_ENTITY_ID, NO_OP_ENTITY_ID]
     for i, example in enumerate(examples):
         e1, e2, query = _core_example(example)
+        gold_answers = get_gold_answers(example)
         answer_mask = _get_answer_mask(all_answers, e1, query)
-        e2_multi = list(dict.fromkeys(dummy_mask + answer_mask))
+        e2_multi = list(dict.fromkeys(dummy_mask + answer_mask + gold_answers))
         # save the relevant prediction
-        target_score = float(scores[i, e2])
+        target_scores = scores[i, gold_answers].clone()
         # mask all false negatives
         scores[i, e2_multi] = 0
         # write back the save prediction
-        scores[i, e2] = target_score
+        scores[i, gold_answers] = target_scores
     
     # sort and rank
     top_k_scores, top_k_targets = torch.topk(scores, min(scores.size(1), args.beam_size))
@@ -96,8 +106,8 @@ def hits_and_ranks(examples, scores, all_answers, verbose=False):
     hits_at_10 = 0
     mrr = 0
     for i, example in enumerate(examples):
-        e1, e2, r = _core_example(example)
-        pos = np.where(top_k_targets[i] == e2)[0]
+        gold_answers = set(get_gold_answers(example))
+        pos = np.where(np.isin(top_k_targets[i], list(gold_answers)))[0]
         if len(pos) > 0:
             pos = pos[0]
             if pos < 10:
@@ -137,11 +147,12 @@ def hits_and_ranks_counts(examples, scores, all_answers):
     dummy_mask = [DUMMY_ENTITY_ID, NO_OP_ENTITY_ID]
     for i, example in enumerate(examples):
         e1, e2, query = _core_example(example)
+        gold_answers = get_gold_answers(example)
         answer_mask = _get_answer_mask(all_answers, e1, query)
-        e2_multi = list(dict.fromkeys(dummy_mask + answer_mask))
-        target_score = float(scores[i, e2])
+        e2_multi = list(dict.fromkeys(dummy_mask + answer_mask + gold_answers))
+        target_scores = scores[i, gold_answers].clone()
         scores[i, e2_multi] = 0
-        scores[i, e2] = target_score
+        scores[i, gold_answers] = target_scores
 
     _, top_k_targets = torch.topk(scores, min(scores.size(1), args.beam_size))
     top_k_targets = top_k_targets.cpu().numpy()
@@ -152,8 +163,8 @@ def hits_and_ranks_counts(examples, scores, all_answers):
     hits_at_10 = 0
     mrr = 0
     for i, example in enumerate(examples):
-        _, e2, _ = _core_example(example)
-        pos = np.where(top_k_targets[i] == e2)[0]
+        gold_answers = set(get_gold_answers(example))
+        pos = np.where(np.isin(top_k_targets[i], list(gold_answers)))[0]
         if len(pos) > 0:
             pos = pos[0]
             if pos < 10:
@@ -200,15 +211,16 @@ def hits_at_k(examples, scores, all_answers, verbose=False):
     dummy_mask = [DUMMY_ENTITY_ID, NO_OP_ENTITY_ID]
     for i, example in enumerate(examples):
         e1, e2, query = _core_example(example)
+        gold_answers = get_gold_answers(example)
         answer_mask = _get_answer_mask(all_answers, e1, query)
-        e2_multi = list(dict.fromkeys(answer_mask + dummy_mask))
+        e2_multi = list(dict.fromkeys(answer_mask + dummy_mask + gold_answers))
         # save the relevant prediction
-        target_score = scores[i, e2]
+        target_scores = scores[i, gold_answers].clone()
         # mask all false negatives
         scores[i][e2_multi] = 0
         scores[i][dummy_mask] = 0
         # write back the save prediction
-        scores[i][e2] = target_score
+        scores[i][gold_answers] = target_scores
         
     # sort and rank
     top_k_scores, top_k_targets = torch.topk(scores, min(scores.size(1), args.beam_size))
@@ -219,8 +231,8 @@ def hits_at_k(examples, scores, all_answers, verbose=False):
     hits_at_5 = 0
     hits_at_10 = 0
     for i, example in enumerate(examples):
-        e1, e2, r = _core_example(example)
-        pos = np.where(top_k_targets[i] == e2)[0]
+        gold_answers = set(get_gold_answers(example))
+        pos = np.where(np.isin(top_k_targets[i], list(gold_answers)))[0]
         if len(pos) > 0:
             pos = pos[0]
             if pos < 10:
@@ -292,9 +304,10 @@ def link_MAP(examples, scores, labels, all_answers, verbose=False):
     queries = {}
     for i, example in enumerate(examples):
         e1, e2, r = _core_example(example)
+        gold_answers = get_gold_answers(example)
         if not e1 in queries:
             queries[e1] = []
-        queries[e1].append((examples[i], labels[i], scores[i][e2]))
+        queries[e1].append((examples[i], labels[i], scores[i][gold_answers].max()))
 
     aps = []
     dummy_mask = [DUMMY_ENTITY_ID, NO_OP_ENTITY_ID]
@@ -332,13 +345,14 @@ def export_error_cases(examples, scores, all_answers, output_path):
     dummy_mask = [DUMMY_ENTITY_ID, NO_OP_ENTITY_ID]
     for i, example in enumerate(examples):
         e1, e2, r = _core_example(example)
-        e2_multi = dummy_mask + list(all_answers[e1][r])
+        gold_answers = get_gold_answers(example)
+        e2_multi = list(dict.fromkeys(dummy_mask + list(all_answers[e1][r]) + gold_answers))
         # save the relevant prediction
-        target_score = float(scores[i, e2])
+        target_scores = scores[i, gold_answers].clone()
         # mask all false negatives
         scores[i, e2_multi] = 0
         # write back the save prediction
-        scores[i, e2] = target_score
+        scores[i, gold_answers] = target_scores
 
     # sort and rank
     top_k_scores, top_k_targets = torch.topk(scores, min(scores.size(1), args.beam_size))
@@ -346,8 +360,8 @@ def export_error_cases(examples, scores, all_answers, output_path):
 
     top_1_errors, top_10_errors = [], []
     for i, example in enumerate(examples):
-        e1, e2, r = _core_example(example)
-        pos = np.where(top_k_targets[i] == e2)[0]
+        gold_answers = set(get_gold_answers(example))
+        pos = np.where(np.isin(top_k_targets[i], list(gold_answers)))[0]
         if len(pos) <= 0 or pos[0] > 0:
             top_1_errors.append(i)
         if len(pos) <= 0 or pos[0] > 9:
@@ -490,9 +504,7 @@ class FaithfulnessEvaluator:
         if not gt_path:
             return
         _, gold_answer, _ = _core_example(example)
-        if hasattr(gold_answer, 'tolist'):
-            gold_answer = gold_answer.tolist()
-        gold_answers = gold_answer if isinstance(gold_answer, (list, tuple, set)) else [gold_answer]
+        gold_answers = get_gold_answers(example)
         hop = get_example_hops(example) or len(gt_path)
         gt_relations = [int(edge[1]) for edge in gt_path]
         pred_relations = [int(edge[1]) for edge in pred_path]

@@ -513,6 +513,23 @@ def extract_literals(column: Union[str, pd.Series], flatten: bool = False) -> Un
     return evaluated_column
 
 
+def parse_literal_if_needed(value):
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith(('[', '(', '{')):
+            return ast.literal_eval(stripped)
+    return value
+
+
+def normalize_answer_entities(value):
+    value = parse_literal_if_needed(value)
+    if hasattr(value, 'tolist'):
+        value = value.tolist()
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return value
+
+
 def process_and_cache_triviaqa_data(
     raw_QAData_path: str,
     cached_toked_qatriples_metadata_path: str,
@@ -575,7 +592,7 @@ def process_and_cache_triviaqa_data(
     # Extract required columns
     questions = csv_df["Question"]
     source_ent = csv_df["Source-Entity"] 
-    answer_ent = csv_df["Answer-Entity"]
+    answer_ent = csv_df["Answer-Entity"].map(normalize_answer_entities)
     
     # Extract optional columns
     if "Paths" in csv_df.columns:
@@ -600,7 +617,12 @@ def process_and_cache_triviaqa_data(
 
     # Map entities and relations to integer IDs
     mapped_source_ent = source_ent.map(lambda ent: entity2id[ent])
-    mapped_answer_ent = answer_ent.map(lambda ent: entity2id[ent])
+    def map_answer_entities(answer_value):
+        if isinstance(answer_value, list):
+            return [entity2id[ent] for ent in answer_value]
+        return entity2id[answer_value]
+
+    mapped_answer_ent = answer_ent.map(map_answer_entities)
     if paths is not None:
         mapped_paths = paths.map(
             lambda path: [
@@ -799,9 +821,18 @@ def load_qa_data(
     def normalize_question_tokens(tokens):
         return tokens.tolist() if hasattr(tokens, 'tolist') else list(tokens)
 
+    def normalize_cached_answers(answers):
+        answers = normalize_answer_entities(answers)
+        if isinstance(answers, list):
+            return [int(x) for x in answers]
+        return int(answers)
+
     train_df['Question'] = train_df['Question'].apply(normalize_question_tokens)
     dev_df['Question'] = dev_df['Question'].apply(normalize_question_tokens)
     test_df['Question'] = test_df['Question'].apply(normalize_question_tokens)
+    train_df['Answer-Entity'] = train_df['Answer-Entity'].apply(normalize_cached_answers)
+    dev_df['Answer-Entity'] = dev_df['Answer-Entity'].apply(normalize_cached_answers)
+    test_df['Answer-Entity'] = test_df['Answer-Entity'].apply(normalize_cached_answers)
 
     output_columns = ['Source-Entity', 'Answer-Entity', 'Question']
     if 'Paths' in train_df.columns:

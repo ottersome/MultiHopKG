@@ -79,7 +79,7 @@ class RewardShapingPolicyGradient(PolicyGradient):
                 # A pretrained one-hop fact network was not trained to score
                 # (source, question-vector, target) triples, so fall back to the
                 # sparse task reward instead of injecting a misleading dense reward.
-                return (pred_e2 == e2).float()
+                return self.binary_reward(e2, pred_e2)
             if self.fn_secondary_kg:
                 real_reward = self.fn.forward_fact(e1, r, pred_e2, self.fn_kg, [self.fn_secondary_kg]).squeeze(1)
             else:
@@ -91,7 +91,7 @@ class RewardShapingPolicyGradient(PolicyGradient):
             if self.model.endswith('rsc'):
                 return real_reward
             else:
-                binary_reward = (pred_e2 == e2).float()
+                binary_reward = self.binary_reward(e2, pred_e2)
                 return binary_reward + self.mu * (1 - binary_reward) * real_reward
 
     # TODO: LG: test_fn
