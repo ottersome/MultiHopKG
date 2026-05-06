@@ -1,6 +1,8 @@
 # How to call 
 # python -m scripts.preprocess_metaqa_st
 
+import shutil
+import os
 import ast
 from typing import List
 from networkx import pagerank
@@ -37,12 +39,15 @@ def normalize_pd_element(element: str):
 
 def main():
     ap = ArgumentParser()
-    ap.add_argument("--triplets_path", default="./raw_data/MetaQA/kb/kb.txt", help="Location of data")
-    ap.add_argument("--output_raw_kb_path", default="./data/MetaQA/raw.kb", help="Location of data")
-    ap.add_argument("--qa_ds_path", default="./raw_data/MetaQA/metaqa_nhop.csv", help="Location of data")
+    base_data_path = "./data/metaqa_encoded/"
+    ap.add_argument("--triplets_path", default="./raw_data/metaqa_encoded/kg/triplets.txt", help="Location of data")
+    ap.add_argument("--output_raw_kb_path", default=base_data_path+"raw.kb", help="Location of data")
+    ap.add_argument("--qa_ds_path", default="./raw_data/metaqa_encoded/metaqa_nhop.csv", help="Location of data")
     # TODO: MultiAnswer
 
     args = ap.parse_args()
+
+    os.makedirs(base_data_path, exist_ok=True)
 
     triplets_path = args.triplets_path
     kg_path = Path(triplets_path).resolve().parent 
@@ -53,15 +58,19 @@ def main():
 
     # Create raw.kb from all triplets
     # In MetaQA the format is Tail-Relation-Head
-    all_triplets = pd.read_csv(triplets_path, names=["A", "r", "B",], header=None, sep=r"|")
+    all_triplets = pd.read_csv(triplets_path, names=["A", "r", "B",], header=None, sep=r"\t")
     all_triplets["A"] = all_triplets["A"].apply(lambda x: x.strip().replace(" ", "_"))
     all_triplets["r"] = all_triplets["r"].apply(lambda x: x.strip().replace(" ", "_"))
     all_triplets["B"] = all_triplets["B"].apply(lambda x: x.strip().replace(" ", "_"))
-    train_triplets, train_leftover = train_test_split(all_triplets, test_size=0.2, random_state=42)
+
+    # train_triplets, train_leftover = train_test_split(all_triplets, test_size=0.2, random_state=42)
+    _, train_leftover = train_test_split(all_triplets, test_size=0.2, random_state=42)
     valid_triplets, test_triplets = train_test_split(train_leftover, test_size=0.5, random_state=42)
 
-    # Separate them into their appropriate splits.
+    # For when we want to train on all triples
+    train_triplets = all_triplets
 
+    # Separate them into their appropriate splits.
 
     raw_csv = train_triplets[["A","B", "r"]]
     print("raw_csv head:", raw_csv.head())
@@ -106,31 +115,31 @@ def main():
     )
     print(f"Resulting page rank csv has {len(pagerank_df.columns)} columns and {len(pagerank_df)} rows")
     pagerank_df.to_csv(
-        output_path.joinpath("pgrk_input_metaqa.csv"),
+        output_path.joinpath("pgrk_input_metaqa_encoded.csv"),
         sep=",",
         index=False,
         header=False,
     )
 
     # Grab the QnA data
-    data_path = Path("raw_data/MetaQA")
-    hops = ["1hop", "2hop", "3hop"]
-    qna_df = []
-    for hop in hops:
-        file_path = data_path.joinpath(f"metaqa_{hop}.csv")
-        df = pd.read_csv(file_path, sep=",")
-        print(f"Read {file_path} with columns:\n{df.columns}")
-        qna_df.append(df)
-    qna_df = (
-        pd.concat(qna_df, axis=0, ignore_index=True)
-        .reset_index(drop=True)
-        .drop(columns=["Question-Number"])
-    )
-    qna_df["Source-Entity"] = qna_df["Source-Entity"].apply(normalize_pd_element)
-    qna_df["Answer"] = qna_df["Answer"].apply(normalize_pd_element)
-    qna_df["Answer-Entity"] = qna_df["Answer-Entity"].apply(normalize_pd_element)
-    qna_df.to_csv(output_path.joinpath("metaqa_qa_nhop.csv"), sep=",", index=True)
+    data_path = Path("raw_data/metaqa_encoded/qa/metaqa_nhop.csv")
+    shutil.copy(data_path, args.qa_ds_path)
 
+    # for hop in hops:
+    #     file_path = data_path.joinpath(f"metaqa_{hop}.csv")
+    #     df = pd.read_csv(file_path, sep=",")
+    #     print(f"Read {file_path} with columns:\n{df.columns}")
+    #     qna_df.append(df)
+    # qna_df = (
+    #     pd.concat(qna_df, axis=0, ignore_index=True)
+    #     .reset_index(drop=True)
+    #     .drop(columns=["Question-Number"])
+    # )
+    # qna_df["Source-Entity"] = qna_df["Source-Entity"].apply(normalize_pd_element)
+    # qna_df["Answer"] = qna_df["Answer"].apply(normalize_pd_element)
+    # qna_df["Answer-Entity"] = qna_df["Answer-Entity"].apply(normalize_pd_element)
+    # qna_df.to_csv(output_path.joinpath("metaqa_qa_nhop.csv"), sep=",", index=True)
+    #
 if __name__ == "__main__":
 
     REPO_ROOT = Path(__file__).resolve().parent.parent

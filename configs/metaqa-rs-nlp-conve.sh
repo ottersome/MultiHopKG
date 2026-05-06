@@ -2,7 +2,7 @@
 
 # BERT-conditioned Reward Shaping on MQuake-ST
 
-data_dir="data/mquake_st"
+data_dir="data/MetaQA"
 model="point.rs.conve"
 group_examples_by_query="False"
 use_action_space_bucketing="True"
@@ -10,8 +10,8 @@ use_action_space_bucketing="True"
 # Language conditioning
 use_question_encoder="True"
 bert_model_name="bert-base-uncased"
-cached_qa_metadata_path="./.cache/mquake_st/mquake_clean.json"
-raw_QAData_path="data/mquake_st/mquake_st-qa_nhop.csv" # This ought to change a lot depending on what it is that you are testing.
+cached_qa_metadata_path="./.cache/metaqa/metaqa_clean.json"
+raw_QAData_path="data/MetaQA/metaqa_qa_nhop.csv" # This ought to change a lot depending on what it is that you are testing.
 recompute_qadata_cache="False"
 max_question_len=200
 
@@ -46,11 +46,12 @@ beta=0.00
 relation_only="False"
 beam_size=128
 mu=0.25
+checkpoint_keep_last=3
 
 # Reference placeholders for other FNs (unused here)
-distmult_state_dict_path="model/mquake_st-conve-RV-xavier-100-100-0.005-64-2-0.1-0.1-0.2-0.05/model_best.tar"
-complex_state_dict_path="model/mquake_st-conve-RV-xavier-100-100-0.005-64-2-0.1-0.1-0.2-0.05/model_best.tar"
-conve_state_dict_path="model/mquake_st-conve-RV-xavier-100-100-0.005-64-2-0.1-0.1-0.2-0.05/model_best.tar"
+distmult_state_dict_path="/home/ottersome/projects/llmbi/salesforce/model/MetaQA-conve-RV-xavier-100-100-0.005-64-2-0.1-0.1-0.2-0.05/checkpoint-57.tar"
+complex_state_dict_path="/home/ottersome/projects/llmbi/salesforce/model/MetaQA-conve-RV-xavier-100-100-0.005-64-2-0.1-0.1-0.2-0.05/checkpoint-57.tar"
+conve_state_dict_path="/home/ottersome/projects/llmbi/salesforce/model/MetaQA-conve-RV-xavier-100-100-0.005-64-2-0.1-0.1-0.2-0.05/checkpoint-57.tar"
 
 num_paths_per_entity=-1
 margin=-1

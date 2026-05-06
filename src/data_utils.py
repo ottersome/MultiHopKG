@@ -277,6 +277,8 @@ def prepare_kb_envrioment(raw_kb_path, train_path, dev_path, test_path, test_mod
         o_f.write('{}\t{}\n'.format(DUMMY_ENTITY, DUMMY_ENTITY_ID))
         o_f.write('{}\t{}\n'.format(NO_OP_ENTITY, NO_OP_ENTITY_ID))
         for e, freq in hist_to_vocab(entity_hist):
+            if e.lower() == "friðrik_þór_friðriksson":
+                exit
             o_f.write('{}\t{}\n'.format(e, freq))
     with open(os.path.join(data_dir, 'relation2id.txt'), 'w') as o_f:
         o_f.write('{}\t{}\n'.format(DUMMY_RELATION, DUMMY_RELATION_ID))
@@ -576,8 +578,11 @@ def process_and_cache_triviaqa_data(
     answer_ent = csv_df["Answer-Entity"]
     
     # Extract optional columns
-    paths = extract_literals(csv_df["Paths"]) if 'Paths' in csv_df.columns else None
-    assert isinstance(paths, pd.Series) # FOr us to use .map a few lines below.
+    if "Paths" in csv_df.columns:
+        paths = extract_literals(csv_df["Paths"]) 
+        assert isinstance(paths, pd.Series) # FOr us to use .map a few lines below.
+    else:
+        paths = None
     split_label = csv_df["SplitLabel"] if 'SplitLabel' in csv_df.columns else None
     hops = csv_df["Hops"] if 'Hops' in csv_df.columns else None
 

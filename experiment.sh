@@ -35,6 +35,7 @@ fi
 : ${raw_QAData_path:=./datasets/data_preprocessed/mquake/mquake_qa_2hop.csv}
 : ${recompute_qadata_cache:=False}
 : ${disable_checkpoint_saving:=False}
+: ${checkpoint_keep_last:=0}
 : ${train_data_fraction:=1.0}
 : ${dev_data_fraction:=1.0}
 : ${max_train_examples:=0}
@@ -112,6 +113,7 @@ cmd="python3 -m src.experiments \
     $use_question_encoder_flag \
     $recompute_qadata_cache_flag \
     $disable_checkpoint_saving_flag \
+    --checkpoint_keep_last $checkpoint_keep_last \
     --bert_model_name $bert_model_name \
     --max_question_len $max_question_len \
     --cached_qa_metadata_path $cached_qa_metadata_path \

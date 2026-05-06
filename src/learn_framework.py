@@ -9,6 +9,7 @@
 
 import os
 import random
+import re
 import shutil
 from tqdm import tqdm
 
@@ -521,6 +522,27 @@ class LFramework(nn.Module):
         else:
             torch.save(checkpoint_dict, out_tar)
             print('=> saving checkpoint to \'{}\''.format(out_tar))
+            self.prune_old_checkpoints()
+
+    def prune_old_checkpoints(self):
+        keep_last = int(getattr(self.args, 'checkpoint_keep_last', 0) or 0)
+        if keep_last <= 0:
+            return
+        checkpoint_pattern = re.compile(r'^checkpoint-(\d+)\.tar$')
+        checkpoints = []
+        for file_name in os.listdir(self.model_dir):
+            match = checkpoint_pattern.match(file_name)
+            if match:
+                checkpoints.append((int(match.group(1)), os.path.join(self.model_dir, file_name)))
+        if len(checkpoints) <= keep_last:
+            return
+        checkpoints.sort(key=lambda item: item[0])
+        for _, checkpoint_path in checkpoints[:-keep_last]:
+            try:
+                os.remove(checkpoint_path)
+                print('=> pruned old checkpoint \'{}\''.format(checkpoint_path))
+            except OSError as exc:
+                print('=> failed to prune old checkpoint \'{}\': {}'.format(checkpoint_path, exc))
 
     def load_checkpoint(self, input_file):
         """

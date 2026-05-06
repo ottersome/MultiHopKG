@@ -44,6 +44,7 @@ cmd="python3 -m src.experiments \
     --kernel_size $kernel_size \
     --beam_size $beam_size \
     --wandb_project $wandb_project \
+    --checkpoint_keep_last $checkpoint_keep_last \
     $group_examples_by_query_flag \
     $add_reversed_training_edges_flag \
     --gpu $gpu \

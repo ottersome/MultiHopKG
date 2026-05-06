@@ -27,6 +27,7 @@ history_dim=64
 history_num_layers=2
 num_rollout_steps=3
 num_peek_epochs=2
+checkpoint_keep_last=3
 baseline="n/a"
 ff_dropout_rate=0.1
 reward_shaping_threshold=0

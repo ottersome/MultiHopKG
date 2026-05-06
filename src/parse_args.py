@@ -45,6 +45,8 @@ parser.add_argument('--checkpoint_path', type=str, default=None,
                     help='path to a pretrained checkpoint')
 parser.add_argument('--disable_checkpoint_saving', action='store_true',
                     help='skip writing model checkpoints during training (default: False)')
+parser.add_argument('--checkpoint_keep_last', type=int, default=0,
+                    help='keep only the latest N epoch checkpoint-*.tar files; 0 keeps all (default: 0)')
 parser.add_argument('--dump_hparams', action='store_true',
                     help='print and optionally save resolved hyperparameters (default: False)')
 parser.add_argument('--dump_hparams_only', action='store_true',
