@@ -9,6 +9,7 @@ use_action_space_bucketing="True"
 
 # Language conditioning
 use_question_encoder="True"
+allow_direct_answer_edges="True"
 bert_model_name="bert-base-uncased"
 cached_qa_metadata_path="./.cache/mquake_st/mquake_clean.json"
 raw_QAData_path="data/mquake_st/mquake_st-qa_nhop.csv" # This ought to change a lot depending on what it is that you are testing.

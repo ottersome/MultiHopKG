@@ -93,6 +93,8 @@ parser.add_argument('--relation_only_in_path', action='store_true',
 # Language conditioning (BERT/question encoder)
 parser.add_argument('--use_question_encoder', action='store_true',
                     help='append a question representation to the policy state (default: False)')
+parser.add_argument('--allow_direct_answer_edges', action='store_true',
+                    help='do not mask direct source-target edges during path rollout (default: False)')
 parser.add_argument('--bert_model_name', type=str, default='bert-base-uncased',
                     help='HuggingFace model name or path for question encoder (default: bert-base-uncased)')
 parser.add_argument('--max_question_len', type=int, default=64,

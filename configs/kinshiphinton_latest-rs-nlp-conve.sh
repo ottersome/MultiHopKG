@@ -22,6 +22,7 @@ beam_size=128
 num_out_channels=8
 kernel_size=2
 use_question_encoder="True"
+allow_direct_answer_edges="True"
 
 history_dim=64
 history_num_layers=2

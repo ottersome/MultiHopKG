@@ -51,6 +51,10 @@ use_question_encoder_flag=''
 if [[ $use_question_encoder = *"True"* ]]; then
     use_question_encoder_flag='--use_question_encoder'
 fi
+allow_direct_answer_edges_flag=''
+if [[ $allow_direct_answer_edges = *"True"* ]]; then
+    allow_direct_answer_edges_flag='--allow_direct_answer_edges'
+fi
 recompute_qadata_cache_flag=''
 if [[ $recompute_qadata_cache = *"True"* ]]; then
     recompute_qadata_cache_flag='--recompute_qadata_cache'
@@ -111,6 +115,7 @@ cmd="python3 -m src.experiments \
     $group_examples_by_query_flag \
     $use_action_space_bucketing_flag \
     $use_question_encoder_flag \
+    $allow_direct_answer_edges_flag \
     $recompute_qadata_cache_flag \
     $disable_checkpoint_saving_flag \
     --checkpoint_keep_last $checkpoint_keep_last \

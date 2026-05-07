@@ -30,6 +30,11 @@ if [[ $use_question_encoder = *"True"* ]]; then
     use_question_encoder_flag="--use_question_encoder"
 fi
 
+allow_direct_answer_edges_flag=''
+if [[ $allow_direct_answer_edges = *"True"* ]]; then
+    allow_direct_answer_edges_flag='--allow_direct_answer_edges'
+fi
+
 cmd="python3 -m src.experiments \
     --data_dir $data_dir \
     $exp \
@@ -69,6 +74,7 @@ cmd="python3 -m src.experiments \
     $group_examples_by_query_flag \
     $use_action_space_bucketing_flag \
     $use_question_encoder_flag \
+    $allow_direct_answer_edges_flag \
     --cached_qa_metadata_path $cached_qa_metadata_path \
     --raw_QAData_path $raw_QAData_path \
     $recompute_qadata_cache_flag \

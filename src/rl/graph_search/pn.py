@@ -281,9 +281,10 @@ class GraphSearchPolicy(nn.Module):
         e_s, q, e_t, last_step, last_r, seen_nodes = obs
 
         # Prevent the agent from selecting the ground truth edge
-        ground_truth_edge_mask = self.get_ground_truth_edge_mask(e, r_space, e_space, e_s, q, e_t, kg)
-        action_mask = action_mask * (1 - ground_truth_edge_mask)
-        self.validate_action_mask(action_mask)
+        if not getattr(kg.args, 'allow_direct_answer_edges', False):
+            ground_truth_edge_mask = self.get_ground_truth_edge_mask(e, r_space, e_space, e_s, q, e_t, kg)
+            action_mask = action_mask * (1 - ground_truth_edge_mask)
+            self.validate_action_mask(action_mask)
 
         # Mask out false negatives in the final step
         if last_step:
