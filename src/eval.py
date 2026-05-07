@@ -111,7 +111,12 @@ def get_example_hops(example):
                 continue
             if isinstance(extra, (list, tuple)) or hasattr(extra, 'tolist'):
                 continue
-            return int(extra)
+            if isinstance(extra, float) and not float(extra).is_integer():
+                continue
+            hop = int(extra)
+            if hop <= 0:
+                continue
+            return hop
         except Exception:
             continue
     gold_path = get_gold_path(example)
@@ -119,6 +124,15 @@ def get_example_hops(example):
         return len(gold_path)
     gold_relations = get_gold_relations(example)
     return len(gold_relations) if gold_relations is not None else None
+
+
+def get_example_weight(example) -> float:
+    for extra in reversed(example[3:]):
+        if isinstance(extra, float):
+            return float(extra)
+        if isinstance(extra, np.floating):
+            return float(extra)
+    return 1.0
 
 
 def hits_and_ranks(examples, scores, all_answers, verbose=False):
@@ -586,11 +600,13 @@ class FaithfulnessEvaluator:
     def update(self,
                example,
                pred_path: Sequence[Tuple[int, int, int]],
-               predicted_endpoints: Iterable[int]) -> None:
+               predicted_endpoints: Iterable[int],
+               weight: float = 1.0) -> None:
         gt_path = get_gold_path(example)
         gt_relations = get_gold_relations(example)
         if not gt_path and not gt_relations:
             return
+        weight = float(weight)
         gold_answers = get_gold_answers(example)
         hop = get_example_hops(example) or len(gt_relations or gt_path)
         pred_relations = [int(edge[1]) for edge in pred_path]
@@ -610,24 +626,24 @@ class FaithfulnessEvaluator:
                 pred_path, gt_path, self.special_tokens, self.inverse_mapping)
             ped = path_edit_distance_raw(
                 pred_path, gt_path, self.special_tokens, self.inverse_mapping)
-            self.edge_precision += edge_p
-            self.edge_recall += edge_r
-            self.edge_f1 += edge_f
-            self.edge_examples += 1
-            self.subgraph_precision += edge_p
-            self.subgraph_recall += edge_r
-            self.subgraph_f1 += edge_f
-            self.path_edit += path_dist
-            self.ped += ped
-            self.path_examples += 1
-        self.rel_precision += rel_p
-        self.rel_recall += rel_r
-        self.rel_f1 += rel_f
-        self.rel_edit += rel_dist
-        self.answer_precision += ans_p
-        self.answer_recall += ans_r
-        self.answer_f1 += ans_f
-        self.num_examples += 1
+            self.edge_precision += edge_p * weight
+            self.edge_recall += edge_r * weight
+            self.edge_f1 += edge_f * weight
+            self.edge_examples += weight
+            self.subgraph_precision += edge_p * weight
+            self.subgraph_recall += edge_r * weight
+            self.subgraph_f1 += edge_f * weight
+            self.path_edit += path_dist * weight
+            self.ped += ped * weight
+            self.path_examples += weight
+        self.rel_precision += rel_p * weight
+        self.rel_recall += rel_r * weight
+        self.rel_f1 += rel_f * weight
+        self.rel_edit += rel_dist * weight
+        self.answer_precision += ans_p * weight
+        self.answer_recall += ans_r * weight
+        self.answer_f1 += ans_f * weight
+        self.num_examples += weight
 
         entry = self.by_hop.setdefault(int(hop), {
             'examples': 0,
@@ -647,23 +663,23 @@ class FaithfulnessEvaluator:
             'ped': 0.0,
             'answer_set_f1': 0.0,
         })
-        entry['examples'] += 1
+        entry['examples'] += weight
         if gt_path:
-            entry['edge_examples'] += 1
-            entry['edge_precision'] += edge_p
-            entry['edge_recall'] += edge_r
-            entry['edge_f1'] += edge_f
-            entry['subgraph_precision'] += edge_p
-            entry['subgraph_recall'] += edge_r
-            entry['subgraph_f1'] += edge_f
-            entry['path_examples'] += 1
-            entry['path_edit_distance'] += path_dist
-            entry['ped'] += ped
-        entry['relation_precision'] += rel_p
-        entry['relation_recall'] += rel_r
-        entry['relation_f1'] += rel_f
-        entry['relation_edit_distance'] += rel_dist
-        entry['answer_set_f1'] += ans_f
+            entry['edge_examples'] += weight
+            entry['edge_precision'] += edge_p * weight
+            entry['edge_recall'] += edge_r * weight
+            entry['edge_f1'] += edge_f * weight
+            entry['subgraph_precision'] += edge_p * weight
+            entry['subgraph_recall'] += edge_r * weight
+            entry['subgraph_f1'] += edge_f * weight
+            entry['path_examples'] += weight
+            entry['path_edit_distance'] += path_dist * weight
+            entry['ped'] += ped * weight
+        entry['relation_precision'] += rel_p * weight
+        entry['relation_recall'] += rel_r * weight
+        entry['relation_f1'] += rel_f * weight
+        entry['relation_edit_distance'] += rel_dist * weight
+        entry['answer_set_f1'] += ans_f * weight
 
     def compute(self) -> Dict[str, float]:
         if self.num_examples == 0:
@@ -771,13 +787,17 @@ def _rollout_totals(log_probs_arr: np.ndarray,
                     entities_arr: np.ndarray,
                     positive_reward: float,
                     pool: str,
-                    hits_ks: Tuple[int, ...]) -> Tuple[Dict[int, int], float, int]:
-    hits_counts = {k: 0 for k in hits_ks}
+                    hits_ks: Tuple[int, ...],
+                    weights_arr: Optional[np.ndarray] = None) -> Tuple[Dict[int, float], float, float]:
+    hits_counts = {k: 0.0 for k in hits_ks}
     mrr_total = 0.0
     batch_size = log_probs_arr.shape[0]
+    if weights_arr is None:
+        weights_arr = np.ones(batch_size, dtype=np.float64)
     sorted_indices = np.argsort(-log_probs_arr, axis=1)
 
     for row in range(batch_size):
+        row_weight = float(weights_arr[row])
         if pool == 'max':
             answer_pos = _find_answer_position_max(sorted_indices[row], rewards_arr[row], entities_arr[row], positive_reward)
         else:
@@ -788,10 +808,10 @@ def _rollout_totals(log_probs_arr: np.ndarray,
 
         for k in hits_ks:
             if answer_pos < k:
-                hits_counts[k] += 1
-        mrr_total += 1.0 / (answer_pos + 1)
+                hits_counts[k] += row_weight
+        mrr_total += row_weight / (answer_pos + 1)
 
-    return hits_counts, mrr_total, batch_size
+    return hits_counts, mrr_total, float(np.sum(weights_arr))
 
 
 def evaluate_rollout_batch(log_probs: Sequence[Sequence[float]],
@@ -858,10 +878,12 @@ class RolloutEvaluator:
     def update(self,
                log_probs: Sequence[Sequence[float]],
                rewards: Sequence[Sequence[float]],
-               final_entities: Sequence[Sequence[int]]) -> None:
+               final_entities: Sequence[Sequence[int]],
+               weights: Optional[Sequence[float]] = None) -> None:
         log_probs_arr = np.asarray(log_probs, dtype=np.float64)
         rewards_arr = np.asarray(rewards, dtype=np.float64)
         entities_arr = np.asarray(final_entities)
+        weights_arr = None if weights is None else np.asarray(weights, dtype=np.float64)
 
         if log_probs_arr.ndim != 2:
             raise ValueError('log_probs must be a 2-D array-like structure')
@@ -869,6 +891,8 @@ class RolloutEvaluator:
             raise ValueError('rewards must have the same shape as log_probs')
         if entities_arr.shape != log_probs_arr.shape:
             raise ValueError('final_entities must have the same shape as log_probs')
+        if weights_arr is not None and weights_arr.shape[0] != log_probs_arr.shape[0]:
+            raise ValueError('weights must have one value per example')
         if log_probs_arr.shape[0] == 0:
             raise ValueError('log_probs must contain at least one example')
 
@@ -878,7 +902,8 @@ class RolloutEvaluator:
             entities_arr,
             self.positive_reward,
             self.pool,
-            self.hits_ks
+            self.hits_ks,
+            weights_arr
         )
 
         for k in self.hits_ks:

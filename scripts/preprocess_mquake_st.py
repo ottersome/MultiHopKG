@@ -103,8 +103,13 @@ def main():
     qna_df["Source-Entity"] = qa_df["Source-Entity"]
     qna_df["Answer-Entity"] = qa_df["Answer-Entity"]
     qna_df["Paths"] = qa_df["Paths"]
+    if "Question-Paraphrased" in qa_df.columns:
+        qna_df["Question-Paraphrased"] = qa_df["Question-Paraphrased"]
+    if "Question-Disambiguated" in qa_df.columns:
+        qna_df["Question-Disambiguated"] = qa_df["Question-Disambiguated"]
+    if "Path-Key" in qa_df.columns:
+        qna_df["Path-Key"] = qa_df["Path-Key"]
     qna_df["SplitLabel"] = qa_df["SplitLabel"]
-    # TODO Add paraphrased questionshere
     # Seems like it was split specifically for salesforce input pipeline. 
 
     output_path_qna_df = output_path.joinpath("mquake_st-qa_nhop.csv")

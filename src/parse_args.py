@@ -105,6 +105,10 @@ parser.add_argument('--raw_QAData_path', default="./datasets/data_preprocessed/m
                     type=str, help="Path to the n-hop detaset containing the questions")
 parser.add_argument('--recompute_qadata_cache', action="store_true", 
                      help="Force recompute of the Q&A cache.")
+parser.add_argument('--evaluate_paraphrases', action='store_true',
+                    help='expand QA dev/test examples over Question-Paraphrased entries during evaluation')
+parser.add_argument('--filter_original_paraphrases', action='store_true',
+                    help='drop paraphrases identical to the original question during paraphrase evaluation')
 
 # Knowledge Graph
 parser.add_argument('--num_graph_convolution_layers', type=int, default=0,

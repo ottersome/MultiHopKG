@@ -12,7 +12,7 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
-from src.eval import FaithfulnessEvaluator, RolloutEvaluator, get_example_hops
+from src.eval import FaithfulnessEvaluator, RolloutEvaluator, get_example_hops, get_example_weight
 from src.learn_framework import LFramework
 import src.rl.graph_search.beam_search as search
 import src.utils.ops as ops
@@ -336,7 +336,11 @@ class PolicyGradient(LFramework):
                         pred_scores_np = np.where(invalid_mask, -1e10, pred_scores_np)
                         rewards_np[invalid_mask] = 0.0
 
-                    evaluator.update(pred_scores_np, rewards_np, pred_entities_np)
+                    example_weights = np.asarray(
+                        [get_example_weight(example) for example in mini_batch],
+                        dtype=np.float64
+                    )
+                    evaluator.update(pred_scores_np, rewards_np, pred_entities_np, weights=example_weights)
                     for row, example in enumerate(mini_batch):
                         hop = get_example_hops(example)
                         if hop is None:
@@ -349,7 +353,8 @@ class PolicyGradient(LFramework):
                         hop_evaluator.update(
                             pred_scores_np[row:row + 1],
                             rewards_np[row:row + 1],
-                            pred_entities_np[row:row + 1]
+                            pred_entities_np[row:row + 1],
+                            weights=example_weights[row:row + 1]
                         )
                     if 'search_traces' in beam_output:
                         search_traces = beam_output['search_traces']
@@ -365,7 +370,8 @@ class PolicyGradient(LFramework):
                             faithfulness_evaluator.update(
                                 example,
                                 pred_path,
-                                pred_entities_np[row].tolist()
+                                pred_entities_np[row].tolist(),
+                                weight=float(example_weights[row])
                             )
         finally:
             if disable_dropout:

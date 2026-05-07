@@ -34,6 +34,14 @@ allow_direct_answer_edges_flag=''
 if [[ $allow_direct_answer_edges = *"True"* ]]; then
     allow_direct_answer_edges_flag='--allow_direct_answer_edges'
 fi
+evaluate_paraphrases_flag=''
+if [[ $evaluate_paraphrases = *"True"* ]]; then
+    evaluate_paraphrases_flag='--evaluate_paraphrases'
+fi
+filter_original_paraphrases_flag=''
+if [[ $filter_original_paraphrases = *"True"* ]]; then
+    filter_original_paraphrases_flag='--filter_original_paraphrases'
+fi
 
 cmd="python3 -m src.experiments \
     --data_dir $data_dir \
@@ -75,6 +83,8 @@ cmd="python3 -m src.experiments \
     $use_action_space_bucketing_flag \
     $use_question_encoder_flag \
     $allow_direct_answer_edges_flag \
+    $evaluate_paraphrases_flag \
+    $filter_original_paraphrases_flag \
     --cached_qa_metadata_path $cached_qa_metadata_path \
     --raw_QAData_path $raw_QAData_path \
     $recompute_qadata_cache_flag \

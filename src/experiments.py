@@ -408,7 +408,9 @@ def train(lf):
             args.bert_model_name,
             entity_index_path,
             relation_index_path,
-            force_recompute=args.recompute_qadata_cache
+            force_recompute=args.recompute_qadata_cache,
+            evaluate_paraphrases=False,
+            filter_original_paraphrases=args.filter_original_paraphrases
         )
         assert 'NELL' not in args.data_dir,  "We have not accounted for NELL yet"
         seen_entities = set()
@@ -575,7 +577,9 @@ def inference(lf):
                 args.bert_model_name,
                 entity_index_path,
                 relation_index_path,
-                force_recompute=args.recompute_qadata_cache
+                force_recompute=args.recompute_qadata_cache,
+                evaluate_paraphrases=args.evaluate_paraphrases,
+                filter_original_paraphrases=args.filter_original_paraphrases
             )
             for split_name, split_data in [('Dev', dev_data), ('Test', test_data)]:
                 if hasattr(lf, 'supports_rollout_evaluation') and lf.supports_rollout_evaluation():

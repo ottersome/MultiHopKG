@@ -591,6 +591,7 @@ def process_and_cache_triviaqa_data(
     
     # Extract required columns
     questions = csv_df["Question"]
+    paraphrased_questions = csv_df["Question-Paraphrased"] if "Question-Paraphrased" in csv_df.columns else None
     source_ent = csv_df["Source-Entity"] 
     answer_ent = csv_df["Answer-Entity"].map(normalize_answer_entities)
     
@@ -612,6 +613,13 @@ def process_and_cache_triviaqa_data(
     tokenized_questions = questions.map(
         lambda x: question_tokenizer.encode(x, add_special_tokens=False)
     )
+    if paraphrased_questions is not None:
+        tokenized_paraphrases = extract_literals(paraphrased_questions).map(
+            lambda paraphrases: [
+                question_tokenizer.encode(str(question), add_special_tokens=False)
+                for question in paraphrases
+            ]
+        )
      
     entity2id, _ = load_index(entity2id_path)
     relation2id, _ = load_index(relation2id_path)
@@ -661,6 +669,8 @@ def process_and_cache_triviaqa_data(
 
     # Combine all processed data into final DataFrame
     data_columns = [tokenized_questions, mapped_source_ent, mapped_answer_ent]
+    if paraphrased_questions is not None:
+        data_columns.append(tokenized_paraphrases.rename("Question-Paraphrased"))
     if paths is not None:
         data_columns.append(mapped_paths)
     if path_keys is not None:
@@ -719,6 +729,7 @@ def process_and_cache_triviaqa_data(
     metadata: Dict[str, Any] = {
         "question_tokenizer": question_tokenizer.name_or_path,
         "question_column": "Question",
+        "paraphrased_question_column": "Question-Paraphrased",
         "source_entities_column": "Source-Entity",
         "answer_entity_column": "Answer-Entity",
         "paths_column": "Paths",
@@ -748,6 +759,8 @@ def load_qa_data(
     logger: Optional[logging.Logger] = None,
     force_recompute: bool = False,
     override_split: bool = True,
+    evaluate_paraphrases: bool = False,
+    filter_original_paraphrases: bool = False,
 ) -> Tuple[List, List, List, Dict[str, Any]]:
     """
     Load QA dataset with intelligent caching and fallback processing.
@@ -833,6 +846,13 @@ def load_qa_data(
     def normalize_question_tokens(tokens):
         return tokens.tolist() if hasattr(tokens, 'tolist') else list(tokens)
 
+    def normalize_paraphrase_tokens(paraphrases):
+        if hasattr(paraphrases, 'tolist'):
+            paraphrases = paraphrases.tolist()
+        if paraphrases is None or (isinstance(paraphrases, float) and pd.isna(paraphrases)):
+            return []
+        return [normalize_question_tokens(tokens) for tokens in paraphrases]
+
     def normalize_cached_answers(answers):
         answers = normalize_answer_entities(answers)
         if isinstance(answers, list):
@@ -842,6 +862,10 @@ def load_qa_data(
     train_df['Question'] = train_df['Question'].apply(normalize_question_tokens)
     dev_df['Question'] = dev_df['Question'].apply(normalize_question_tokens)
     test_df['Question'] = test_df['Question'].apply(normalize_question_tokens)
+    if 'Question-Paraphrased' in train_df.columns:
+        train_df['Question-Paraphrased'] = train_df['Question-Paraphrased'].apply(normalize_paraphrase_tokens)
+        dev_df['Question-Paraphrased'] = dev_df['Question-Paraphrased'].apply(normalize_paraphrase_tokens)
+        test_df['Question-Paraphrased'] = test_df['Question-Paraphrased'].apply(normalize_paraphrase_tokens)
     train_df['Answer-Entity'] = train_df['Answer-Entity'].apply(normalize_cached_answers)
     dev_df['Answer-Entity'] = dev_df['Answer-Entity'].apply(normalize_cached_answers)
     test_df['Answer-Entity'] = test_df['Answer-Entity'].apply(normalize_cached_answers)
@@ -853,6 +877,53 @@ def load_qa_data(
         output_columns.append('Path-Key')
     if 'Hops' in train_df.columns:
         output_columns.append('Hops')
+
+    def expand_paraphrases(df: pd.DataFrame) -> pd.DataFrame:
+        if not evaluate_paraphrases or 'Question-Paraphrased' not in df.columns:
+            df = df.copy()
+            df['Eval-Weight'] = 1.0
+            return df
+        expanded_rows = []
+        for _, row in df.iterrows():
+            paraphrases = row.get('Question-Paraphrased', [])
+            if not paraphrases:
+                paraphrases = [row['Question']]
+            kept_paraphrases = [
+                paraphrase_tokens
+                for paraphrase_tokens in paraphrases
+                if not (filter_original_paraphrases and paraphrase_tokens == row['Question'])
+            ]
+            if not kept_paraphrases:
+                continue
+            eval_weight = 1.0 / len(kept_paraphrases)
+            for paraphrase_tokens in kept_paraphrases:
+                expanded = row.copy()
+                expanded['Question'] = paraphrase_tokens
+                expanded['Eval-Weight'] = eval_weight
+                expanded_rows.append(expanded)
+        if not expanded_rows:
+            return df.iloc[0:0].copy()
+        return pd.DataFrame(expanded_rows).reset_index(drop=True)
+
+    train_df = train_df.copy()
+    train_df['Eval-Weight'] = 1.0
+    original_dev_size = len(dev_df)
+    original_test_size = len(test_df)
+    dev_df = expand_paraphrases(dev_df)
+    test_df = expand_paraphrases(test_df)
+    if evaluate_paraphrases:
+        print(
+            'Paraphrase evaluation enabled: dev {} -> {} question variants, '
+            'test {} -> {} question variants{}'.format(
+                original_dev_size,
+                len(dev_df),
+                original_test_size,
+                len(test_df),
+                ' (original-identical filtered)' if filter_original_paraphrases else ''
+            )
+        )
+    if 'Eval-Weight' in train_df.columns:
+        output_columns.append('Eval-Weight')
 
     train_list = train_df[output_columns].values.tolist()
     dev_list = dev_df[output_columns].values.tolist()
