@@ -10,8 +10,9 @@
 
 import numpy as np
 import pickle
+from collections import Counter
 from numbers import Integral
-from typing import Dict, Iterable, List, Sequence, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import torch
 
@@ -50,12 +51,48 @@ def _core_example(example):
 
 
 def get_gold_path(example):
-    if len(example) < 4 or example[3] is None or isinstance(example[3], str):
+    for extra in example[3:]:
+        raw_path = extra.tolist() if hasattr(extra, 'tolist') else extra
+        if raw_path is None or isinstance(raw_path, str):
+            continue
+        if not isinstance(raw_path, (list, tuple)) or not raw_path:
+            continue
+        first_edge = raw_path[0].tolist() if hasattr(raw_path[0], 'tolist') else raw_path[0]
+        if not isinstance(first_edge, (list, tuple)) or len(first_edge) != 3:
+            continue
+        return [tuple(int(x) for x in edge) for edge in raw_path]
+    return None
+
+
+def _normalize_relation_chain(value) -> Optional[List[int]]:
+    value = value.tolist() if hasattr(value, 'tolist') else value
+    if value is None:
         return None
-    raw_path = example[3].tolist() if hasattr(example[3], 'tolist') else example[3]
-    if not isinstance(raw_path, (list, tuple)):
+    if isinstance(value, str):
+        if '->' not in value:
+            return None
+        # Raw CSV relation chains are mapped to IDs before normal evaluation.
+        # A string here is kept only as a sentinel that relation data exists.
         return None
-    return [tuple(int(x) for x in edge) for edge in raw_path]
+    if not isinstance(value, (list, tuple)):
+        return None
+    if not value:
+        return []
+    first = value[0].tolist() if hasattr(value[0], 'tolist') else value[0]
+    if isinstance(first, (list, tuple)) and len(first) == 3:
+        return [int(edge[1]) for edge in value]
+    if isinstance(first, Integral) or isinstance(first, np.integer):
+        return [int(rel) for rel in value]
+    return None
+
+
+def get_gold_relations(example):
+    for extra in example[3:]:
+        rels = _normalize_relation_chain(extra)
+        if rels is not None:
+            return rels
+    gold_path = get_gold_path(example)
+    return [int(edge[1]) for edge in gold_path] if gold_path is not None else None
 
 
 def get_gold_answers(example):
@@ -68,13 +105,20 @@ def get_gold_answers(example):
 
 
 def get_example_hops(example):
-    if len(example) >= 5:
+    for extra in reversed(example[3:]):
         try:
-            return int(example[4])
+            if isinstance(extra, str) and '->' in extra:
+                continue
+            if isinstance(extra, (list, tuple)) or hasattr(extra, 'tolist'):
+                continue
+            return int(extra)
         except Exception:
-            return None
+            continue
     gold_path = get_gold_path(example)
-    return len(gold_path) if gold_path is not None else None
+    if gold_path is not None:
+        return len(gold_path)
+    gold_relations = get_gold_relations(example)
+    return len(gold_relations) if gold_relations is not None else None
 
 
 def hits_and_ranks(examples, scores, all_answers, verbose=False):
@@ -456,6 +500,22 @@ def relation_edit_distance_norm(pred_relations: Sequence[int],
     return dist / (max(m, n) + eps)
 
 
+def relation_overlap_f1(pred_relations: Sequence[int],
+                        gt_relations: Sequence[int],
+                        special_tokens: Set[int],
+                        inverse_mapping: Dict[int, int],
+                        eps: float = 1e-8) -> Tuple[float, float, float]:
+    pred_rels = [canon_rel(r, inverse_mapping) for r in pred_relations if int(r) not in special_tokens]
+    gt_rels = [int(r) for r in gt_relations]
+    pred_counts = Counter(pred_rels)
+    gt_counts = Counter(gt_rels)
+    overlap = sum((pred_counts & gt_counts).values())
+    precision = overlap / (sum(pred_counts.values()) + eps)
+    recall = overlap / (sum(gt_counts.values()) + eps)
+    f1 = 2 * precision * recall / (precision + recall + eps)
+    return precision, recall, f1
+
+
 def path_edit_distance_norm(pred_path: Sequence[Tuple[int, int, int]],
                             gt_path: Sequence[Tuple[int, int, int]],
                             special_tokens: Set[int],
@@ -488,8 +548,13 @@ class FaithfulnessEvaluator:
         self.edge_precision = 0.0
         self.edge_recall = 0.0
         self.edge_f1 = 0.0
+        self.edge_examples = 0
+        self.rel_precision = 0.0
+        self.rel_recall = 0.0
+        self.rel_f1 = 0.0
         self.rel_edit = 0.0
         self.path_edit = 0.0
+        self.path_examples = 0
         self.answer_precision = 0.0
         self.answer_recall = 0.0
         self.answer_f1 = 0.0
@@ -501,27 +566,36 @@ class FaithfulnessEvaluator:
                pred_path: Sequence[Tuple[int, int, int]],
                predicted_endpoints: Iterable[int]) -> None:
         gt_path = get_gold_path(example)
-        if not gt_path:
+        gt_relations = get_gold_relations(example)
+        if not gt_path and not gt_relations:
             return
-        _, gold_answer, _ = _core_example(example)
         gold_answers = get_gold_answers(example)
-        hop = get_example_hops(example) or len(gt_path)
-        gt_relations = [int(edge[1]) for edge in gt_path]
+        hop = get_example_hops(example) or len(gt_relations or gt_path)
         pred_relations = [int(edge[1]) for edge in pred_path]
 
-        edge_p, edge_r, edge_f = gt_edge_overlap_f1(
-            pred_path, gt_path, self.special_tokens, self.inverse_mapping)
         rel_dist = relation_edit_distance_norm(
             pred_relations, gt_relations, self.special_tokens, self.inverse_mapping)
-        path_dist = path_edit_distance_norm(
-            pred_path, gt_path, self.special_tokens, self.inverse_mapping)
+        rel_p, rel_r, rel_f = relation_overlap_f1(
+            pred_relations, gt_relations, self.special_tokens, self.inverse_mapping)
         ans_p, ans_r, ans_f = answer_set_f1(predicted_endpoints, gold_answers)
 
-        self.edge_precision += edge_p
-        self.edge_recall += edge_r
-        self.edge_f1 += edge_f
+        edge_f = 0.0
+        path_dist = 0.0
+        if gt_path:
+            edge_p, edge_r, edge_f = gt_edge_overlap_f1(
+                pred_path, gt_path, self.special_tokens, self.inverse_mapping)
+            path_dist = path_edit_distance_norm(
+                pred_path, gt_path, self.special_tokens, self.inverse_mapping)
+            self.edge_precision += edge_p
+            self.edge_recall += edge_r
+            self.edge_f1 += edge_f
+            self.edge_examples += 1
+            self.path_edit += path_dist
+            self.path_examples += 1
+        self.rel_precision += rel_p
+        self.rel_recall += rel_r
+        self.rel_f1 += rel_f
         self.rel_edit += rel_dist
-        self.path_edit += path_dist
         self.answer_precision += ans_p
         self.answer_recall += ans_r
         self.answer_f1 += ans_f
@@ -529,28 +603,46 @@ class FaithfulnessEvaluator:
 
         entry = self.by_hop.setdefault(int(hop), {
             'examples': 0,
+            'edge_examples': 0,
             'edge_f1': 0.0,
+            'relation_precision': 0.0,
+            'relation_recall': 0.0,
+            'relation_f1': 0.0,
             'relation_edit_distance': 0.0,
+            'path_examples': 0,
             'path_edit_distance': 0.0,
             'answer_set_f1': 0.0,
         })
         entry['examples'] += 1
-        entry['edge_f1'] += edge_f
+        if gt_path:
+            entry['edge_examples'] += 1
+            entry['edge_f1'] += edge_f
+            entry['path_examples'] += 1
+            entry['path_edit_distance'] += path_dist
+        entry['relation_precision'] += rel_p
+        entry['relation_recall'] += rel_r
+        entry['relation_f1'] += rel_f
         entry['relation_edit_distance'] += rel_dist
-        entry['path_edit_distance'] += path_dist
         entry['answer_set_f1'] += ans_f
 
     def compute(self) -> Dict[str, float]:
         if self.num_examples == 0:
             return {}
         n = float(self.num_examples)
+        edge_n = float(self.edge_examples) if self.edge_examples else 1.0
+        path_n = float(self.path_examples) if self.path_examples else 1.0
         metrics = {
             'faithfulness/examples': self.num_examples,
-            'faithfulness/edge_precision': self.edge_precision / n,
-            'faithfulness/edge_recall': self.edge_recall / n,
-            'faithfulness/edge_f1': self.edge_f1 / n,
+            'faithfulness/edge_examples': self.edge_examples,
+            'faithfulness/edge_precision': self.edge_precision / edge_n,
+            'faithfulness/edge_recall': self.edge_recall / edge_n,
+            'faithfulness/edge_f1': self.edge_f1 / edge_n,
+            'faithfulness/relation_precision': self.rel_precision / n,
+            'faithfulness/relation_recall': self.rel_recall / n,
+            'faithfulness/relation_f1': self.rel_f1 / n,
             'faithfulness/relation_edit_distance': self.rel_edit / n,
-            'faithfulness/path_edit_distance': self.path_edit / n,
+            'faithfulness/path_examples': self.path_examples,
+            'faithfulness/path_edit_distance': self.path_edit / path_n,
             'faithfulness/answer_set_precision': self.answer_precision / n,
             'faithfulness/answer_set_recall': self.answer_recall / n,
             'faithfulness/answer_set_f1': self.answer_f1 / n,
@@ -558,7 +650,14 @@ class FaithfulnessEvaluator:
         for hop, values in sorted(self.by_hop.items()):
             count = float(values['examples'])
             metrics[f'faithfulness/{hop}hop_examples'] = values['examples']
-            for key in ['edge_f1', 'relation_edit_distance', 'path_edit_distance', 'answer_set_f1']:
+            metrics[f'faithfulness/{hop}hop_edge_examples'] = values['edge_examples']
+            edge_count = float(values['edge_examples']) if values['edge_examples'] else 1.0
+            metrics[f'faithfulness/{hop}hop_edge_f1'] = values['edge_f1'] / edge_count
+            metrics[f'faithfulness/{hop}hop_path_examples'] = values['path_examples']
+            path_count = float(values['path_examples']) if values['path_examples'] else 1.0
+            metrics[f'faithfulness/{hop}hop_path_edit_distance'] = values['path_edit_distance'] / path_count
+            for key in ['relation_precision', 'relation_recall', 'relation_f1',
+                        'relation_edit_distance', 'answer_set_f1']:
                 metrics[f'faithfulness/{hop}hop_{key}'] = values[key] / count
         return metrics
 

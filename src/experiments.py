@@ -492,10 +492,11 @@ def inference(lf):
         )
         if metrics.get('faithfulness/examples', 0):
             print(
-                "{} faithfulness: edge_f1={:.4f} rel_edit={:.4f} path_edit={:.4f} answer_set_f1={:.4f}".format(
+                "{} faithfulness: rel_f1={:.4f} rel_edit={:.4f} edge_f1={:.4f} path_edit={:.4f} answer_set_f1={:.4f}".format(
                     split_name,
-                    metrics.get('faithfulness/edge_f1', 0.0),
+                    metrics.get('faithfulness/relation_f1', 0.0),
                     metrics.get('faithfulness/relation_edit_distance', 0.0),
+                    metrics.get('faithfulness/edge_f1', 0.0),
                     metrics.get('faithfulness/path_edit_distance', 0.0),
                     metrics.get('faithfulness/answer_set_f1', 0.0)
                 )
@@ -567,6 +568,30 @@ def inference(lf):
         src.eval.hits_and_ranks_by_seen_queries(
             dev_data, pred_scores, lf.kg.all_objects, seen_queries, verbose=True)
     else:
+        if args.use_question_encoder:
+            _, dev_data, test_data, _ = data_utils.load_qa_data(
+                args.cached_qa_metadata_path,
+                args.raw_QAData_path,
+                args.bert_model_name,
+                entity_index_path,
+                relation_index_path,
+                force_recompute=args.recompute_qadata_cache
+            )
+            for split_name, split_data in [('Dev', dev_data), ('Test', test_data)]:
+                if hasattr(lf, 'supports_rollout_evaluation') and lf.supports_rollout_evaluation():
+                    rollout_metrics = lf.evaluate_with_rollouts(split_data, split_name=split_name.lower())
+                    if rollout_metrics:
+                        _print_rollout_metrics(split_name, rollout_metrics)
+                        eval_split = split_name.lower()
+                        eval_metrics[eval_split] = {
+                            f'rollout_{k}': v
+                            for k, v in rollout_metrics.items()
+                            if k.startswith('hits@')
+                        }
+                        eval_metrics[eval_split]['rollout_mrr'] = rollout_metrics['mrr']
+                        _log_rollout_metrics_to_wandb(f'inference/{eval_split}', rollout_metrics)
+            return eval_metrics
+
         dev_path = os.path.join(args.data_dir, 'dev.triples')
         test_path = os.path.join(args.data_dir, 'test.triples')
         dev_data = data_utils.load_triples(

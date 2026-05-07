@@ -600,6 +600,7 @@ def process_and_cache_triviaqa_data(
         assert isinstance(paths, pd.Series) # FOr us to use .map a few lines below.
     else:
         paths = None
+    path_keys = csv_df["Path-Key"] if "Path-Key" in csv_df.columns else None
     split_label = csv_df["SplitLabel"] if 'SplitLabel' in csv_df.columns else None
     hops = csv_df["Hops"] if 'Hops' in csv_df.columns else None
 
@@ -630,6 +631,14 @@ def process_and_cache_triviaqa_data(
                 for head, rel, tail in path
             ]
         )
+    if path_keys is not None:
+        mapped_path_keys = path_keys.map(
+            lambda rel_chain: [
+                relation2id[rel.strip()]
+                for rel in str(rel_chain).split("->")
+                if rel.strip()
+            ]
+        )
 
     # Generate unique timestamp for file naming
     timestamp = str(int(datetime.now().timestamp()))
@@ -654,6 +663,8 @@ def process_and_cache_triviaqa_data(
     data_columns = [tokenized_questions, mapped_source_ent, mapped_answer_ent]
     if paths is not None:
         data_columns.append(mapped_paths)
+    if path_keys is not None:
+        data_columns.append(mapped_path_keys.rename("Path-Key"))
     if hops is not None:
         data_columns.append(hops)
     if split_label is not None:
@@ -711,6 +722,7 @@ def process_and_cache_triviaqa_data(
         "source_entities_column": "Source-Entity",
         "answer_entity_column": "Answer-Entity",
         "paths_column": "Paths",
+        "path_key_column": "Path-Key",
         "hops_column": "Hops",
         "splitLabel_column": "SplitLabel",
         "zero_indexed_columns": True,
@@ -837,6 +849,8 @@ def load_qa_data(
     output_columns = ['Source-Entity', 'Answer-Entity', 'Question']
     if 'Paths' in train_df.columns:
         output_columns.append('Paths')
+    if 'Path-Key' in train_df.columns:
+        output_columns.append('Path-Key')
     if 'Hops' in train_df.columns:
         output_columns.append('Hops')
 

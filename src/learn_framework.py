@@ -268,9 +268,10 @@ class LFramework(nn.Module):
                         )
                         if rollout_metrics.get('faithfulness/examples', 0):
                             print(
-                                "Dev faithfulness: edge_f1={:.4f} rel_edit={:.4f} path_edit={:.4f} answer_set_f1={:.4f}".format(
-                                    rollout_metrics.get('faithfulness/edge_f1', 0.0),
+                                "Dev faithfulness: rel_f1={:.4f} rel_edit={:.4f} edge_f1={:.4f} path_edit={:.4f} answer_set_f1={:.4f}".format(
+                                    rollout_metrics.get('faithfulness/relation_f1', 0.0),
                                     rollout_metrics.get('faithfulness/relation_edit_distance', 0.0),
+                                    rollout_metrics.get('faithfulness/edge_f1', 0.0),
                                     rollout_metrics.get('faithfulness/path_edit_distance', 0.0),
                                     rollout_metrics.get('faithfulness/answer_set_f1', 0.0)
                                 )
