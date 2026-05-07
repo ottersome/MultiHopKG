@@ -56,5 +56,5 @@ conve_state_dict_path="/home/ottersome/projects/llmbi/salesforce/model/MetaQA-co
 num_paths_per_entity=-1
 margin=-1
 
-wandb_project="rs-nlp-conve-mquake-final_run"
+wandb_project="rs-nlp-conve-metaqa-final_run"
 seed=12

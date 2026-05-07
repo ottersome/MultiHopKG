@@ -46,6 +46,7 @@ beta=0.00
 relation_only="False"
 beam_size=128
 mu=0.25
+num_negative_samples=12
 
 # Reference placeholders for other FNs (unused here)
 distmult_state_dict_path="model/mquake_st-conve-RV-xavier-100-100-0.005-64-2-0.1-0.1-0.2-0.05/model_best.tar"

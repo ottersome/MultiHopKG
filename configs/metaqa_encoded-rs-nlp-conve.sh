@@ -56,5 +56,5 @@ conve_state_dict_path="model/neurips_final/lp_embeddings_conve/metaqa_encoded_co
 num_paths_per_entity=-1
 margin=-1
 
-wandb_project="rs-nlp-conve-mquake_encoded-final_run"
-seed=12
+wandb_project="rs-nlp-conve-metaqa_encoded-final_run"
+seed=42
