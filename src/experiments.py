@@ -492,12 +492,12 @@ def inference(lf):
         )
         if metrics.get('faithfulness/examples', 0):
             print(
-                "{} faithfulness: rel_f1={:.4f} rel_edit={:.4f} edge_f1={:.4f} path_edit={:.4f} answer_set_f1={:.4f}".format(
+                "{} faithfulness: f1_rel={:.4f} red={:.4f} f1_sg={:.4f} ped={:.4f} answer_set_f1={:.4f}".format(
                     split_name,
                     metrics.get('faithfulness/relation_f1', 0.0),
                     metrics.get('faithfulness/relation_edit_distance', 0.0),
-                    metrics.get('faithfulness/edge_f1', 0.0),
-                    metrics.get('faithfulness/path_edit_distance', 0.0),
+                    metrics.get('faithfulness/subgraph_f1', metrics.get('faithfulness/edge_f1', 0.0)),
+                    metrics.get('faithfulness/ped', 0.0),
                     metrics.get('faithfulness/answer_set_f1', 0.0)
                 )
             )

@@ -489,6 +489,14 @@ def gt_edge_overlap_f1(pred_path: Sequence[Tuple[int, int, int]],
     return compute_precision_recall_f1(pred_edges, gt_edges)
 
 
+def subgraph_overlap_f1(pred_path: Sequence[Tuple[int, int, int]],
+                        gt_path: Sequence[Tuple[int, int, int]],
+                        special_tokens: Set[int],
+                        inverse_mapping: Dict[int, int]) -> Tuple[float, float, float]:
+    """Order-invariant edge-set overlap between predicted and reference paths."""
+    return gt_edge_overlap_f1(pred_path, gt_path, special_tokens, inverse_mapping)
+
+
 def relation_edit_distance_norm(pred_relations: Sequence[int],
                                 gt_relations: Sequence[int],
                                 special_tokens: Set[int],
@@ -527,6 +535,16 @@ def path_edit_distance_norm(pred_path: Sequence[Tuple[int, int, int]],
     return dist / (max(m, n) + eps)
 
 
+def path_edit_distance_raw(pred_path: Sequence[Tuple[int, int, int]],
+                           gt_path: Sequence[Tuple[int, int, int]],
+                           special_tokens: Set[int],
+                           inverse_mapping: Dict[int, int]) -> int:
+    pred_edges = clean_path_edges(pred_path, special_tokens, inverse_mapping)
+    gt_edges = [tuple(int(x) for x in edge) for edge in gt_path]
+    dist, _, _ = edit_distance(pred_edges, gt_edges)
+    return int(dist)
+
+
 def answer_set_f1(predicted_endpoints: Iterable[int],
                   gold_answers: Iterable[int],
                   eps: float = 1e-8) -> Tuple[float, float, float]:
@@ -549,11 +567,15 @@ class FaithfulnessEvaluator:
         self.edge_recall = 0.0
         self.edge_f1 = 0.0
         self.edge_examples = 0
+        self.subgraph_precision = 0.0
+        self.subgraph_recall = 0.0
+        self.subgraph_f1 = 0.0
         self.rel_precision = 0.0
         self.rel_recall = 0.0
         self.rel_f1 = 0.0
         self.rel_edit = 0.0
         self.path_edit = 0.0
+        self.ped = 0.0
         self.path_examples = 0
         self.answer_precision = 0.0
         self.answer_recall = 0.0
@@ -582,15 +604,21 @@ class FaithfulnessEvaluator:
         edge_f = 0.0
         path_dist = 0.0
         if gt_path:
-            edge_p, edge_r, edge_f = gt_edge_overlap_f1(
+            edge_p, edge_r, edge_f = subgraph_overlap_f1(
                 pred_path, gt_path, self.special_tokens, self.inverse_mapping)
             path_dist = path_edit_distance_norm(
+                pred_path, gt_path, self.special_tokens, self.inverse_mapping)
+            ped = path_edit_distance_raw(
                 pred_path, gt_path, self.special_tokens, self.inverse_mapping)
             self.edge_precision += edge_p
             self.edge_recall += edge_r
             self.edge_f1 += edge_f
             self.edge_examples += 1
+            self.subgraph_precision += edge_p
+            self.subgraph_recall += edge_r
+            self.subgraph_f1 += edge_f
             self.path_edit += path_dist
+            self.ped += ped
             self.path_examples += 1
         self.rel_precision += rel_p
         self.rel_recall += rel_r
@@ -604,21 +632,33 @@ class FaithfulnessEvaluator:
         entry = self.by_hop.setdefault(int(hop), {
             'examples': 0,
             'edge_examples': 0,
+            'edge_precision': 0.0,
+            'edge_recall': 0.0,
             'edge_f1': 0.0,
+            'subgraph_precision': 0.0,
+            'subgraph_recall': 0.0,
+            'subgraph_f1': 0.0,
             'relation_precision': 0.0,
             'relation_recall': 0.0,
             'relation_f1': 0.0,
             'relation_edit_distance': 0.0,
             'path_examples': 0,
             'path_edit_distance': 0.0,
+            'ped': 0.0,
             'answer_set_f1': 0.0,
         })
         entry['examples'] += 1
         if gt_path:
             entry['edge_examples'] += 1
+            entry['edge_precision'] += edge_p
+            entry['edge_recall'] += edge_r
             entry['edge_f1'] += edge_f
+            entry['subgraph_precision'] += edge_p
+            entry['subgraph_recall'] += edge_r
+            entry['subgraph_f1'] += edge_f
             entry['path_examples'] += 1
             entry['path_edit_distance'] += path_dist
+            entry['ped'] += ped
         entry['relation_precision'] += rel_p
         entry['relation_recall'] += rel_r
         entry['relation_f1'] += rel_f
@@ -637,12 +677,16 @@ class FaithfulnessEvaluator:
             'faithfulness/edge_precision': self.edge_precision / edge_n,
             'faithfulness/edge_recall': self.edge_recall / edge_n,
             'faithfulness/edge_f1': self.edge_f1 / edge_n,
+            'faithfulness/subgraph_precision': self.subgraph_precision / edge_n,
+            'faithfulness/subgraph_recall': self.subgraph_recall / edge_n,
+            'faithfulness/subgraph_f1': self.subgraph_f1 / edge_n,
             'faithfulness/relation_precision': self.rel_precision / n,
             'faithfulness/relation_recall': self.rel_recall / n,
             'faithfulness/relation_f1': self.rel_f1 / n,
             'faithfulness/relation_edit_distance': self.rel_edit / n,
             'faithfulness/path_examples': self.path_examples,
             'faithfulness/path_edit_distance': self.path_edit / path_n,
+            'faithfulness/ped': self.ped / path_n,
             'faithfulness/answer_set_precision': self.answer_precision / n,
             'faithfulness/answer_set_recall': self.answer_recall / n,
             'faithfulness/answer_set_f1': self.answer_f1 / n,
@@ -652,10 +696,16 @@ class FaithfulnessEvaluator:
             metrics[f'faithfulness/{hop}hop_examples'] = values['examples']
             metrics[f'faithfulness/{hop}hop_edge_examples'] = values['edge_examples']
             edge_count = float(values['edge_examples']) if values['edge_examples'] else 1.0
+            metrics[f'faithfulness/{hop}hop_edge_precision'] = values['edge_precision'] / edge_count
+            metrics[f'faithfulness/{hop}hop_edge_recall'] = values['edge_recall'] / edge_count
             metrics[f'faithfulness/{hop}hop_edge_f1'] = values['edge_f1'] / edge_count
+            metrics[f'faithfulness/{hop}hop_subgraph_precision'] = values['subgraph_precision'] / edge_count
+            metrics[f'faithfulness/{hop}hop_subgraph_recall'] = values['subgraph_recall'] / edge_count
+            metrics[f'faithfulness/{hop}hop_subgraph_f1'] = values['subgraph_f1'] / edge_count
             metrics[f'faithfulness/{hop}hop_path_examples'] = values['path_examples']
             path_count = float(values['path_examples']) if values['path_examples'] else 1.0
             metrics[f'faithfulness/{hop}hop_path_edit_distance'] = values['path_edit_distance'] / path_count
+            metrics[f'faithfulness/{hop}hop_ped'] = values['ped'] / path_count
             for key in ['relation_precision', 'relation_recall', 'relation_f1',
                         'relation_edit_distance', 'answer_set_f1']:
                 metrics[f'faithfulness/{hop}hop_{key}'] = values[key] / count
