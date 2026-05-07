@@ -11,8 +11,8 @@ use_action_space_bucketing="True"
 use_question_encoder="True"
 allow_direct_answer_edges="True"
 bert_model_name="bert-base-uncased"
-cached_qa_metadata_path="./.cache/mquake_st/mquake_clean.json"
-raw_QAData_path="data/mquake_st/mquake_st-qa_nhop.csv" # This ought to change a lot depending on what it is that you are testing.
+cached_qa_metadata_path="./.cache/mquake_st_ma/mquake_clean.json"
+raw_QAData_path="data/mquake_st/mquake_st-ma-qa_nhop.csv" # This ought to change a lot depending on what it is that you are testing.
 recompute_qadata_cache="False"
 max_question_len=200
 
@@ -57,5 +57,5 @@ conve_state_dict_path="model/neurips_final/lp_embeddings_conve/mquake_st-conve-R
 num_paths_per_entity=-1
 margin=-1
 
-wandb_project="rs-nlp-conve-mquake-final_run"
+wandb_project="rs-nlp-conve-mquake_ma-final_run"
 seed=12
