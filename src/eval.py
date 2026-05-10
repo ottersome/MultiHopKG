@@ -111,7 +111,7 @@ def get_example_hops(example):
                 continue
             if isinstance(extra, (list, tuple)) or hasattr(extra, 'tolist'):
                 continue
-            if isinstance(extra, float) and not float(extra).is_integer():
+            if isinstance(extra, (float, np.floating)):
                 continue
             hop = int(extra)
             if hop <= 0:

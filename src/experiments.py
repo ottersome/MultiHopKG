@@ -503,6 +503,12 @@ def inference(lf):
                     metrics.get('faithfulness/answer_set_f1', 0.0)
                 )
             )
+        per_hop = []
+        for key in sorted(k for k in metrics if k.startswith('per_hop/') and k.endswith('hits@1')):
+            hop = key.split('/')[1].replace('_hits@1', '')
+            per_hop.append('{}={:.4f}'.format(hop, metrics[key]))
+        if per_hop:
+            print("{} per-hop Hits@1: {}".format(split_name, ' '.join(per_hop)))
 
     def _log_rollout_metrics_to_wandb(prefix: str, metrics: Dict[str, float]) -> None:
         if not _wandb_enabled or _wandb is None:
@@ -592,6 +598,9 @@ def inference(lf):
                             for k, v in rollout_metrics.items()
                             if k.startswith('hits@')
                         }
+                        for k, v in rollout_metrics.items():
+                            if k.startswith('per_hop/'):
+                                eval_metrics[eval_split][k] = v
                         eval_metrics[eval_split]['rollout_mrr'] = rollout_metrics['mrr']
                         _log_rollout_metrics_to_wandb(f'inference/{eval_split}', rollout_metrics)
             return eval_metrics
@@ -646,6 +655,8 @@ def inference(lf):
                 for k, v in rollout_test_metrics.items():
                     if k.startswith('hits@'):
                         eval_metrics['test'][f'rollout_{k}'] = v
+                    elif k.startswith('per_hop/'):
+                        eval_metrics['test'][k] = v
                 eval_metrics['test']['rollout_mrr'] = rollout_test_metrics['mrr']
                 _log_rollout_metrics_to_wandb('inference/test', rollout_test_metrics)
         if _wandb_enabled and _wandb is not None:
