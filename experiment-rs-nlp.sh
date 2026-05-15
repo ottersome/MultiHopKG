@@ -100,6 +100,6 @@ cmd="python3 -m src.experiments \
     --gpu $gpu \
     $ARGS"
 
-echo "Executing $cmd"
+# echo "Executing $cmd"
 
 $cmd
