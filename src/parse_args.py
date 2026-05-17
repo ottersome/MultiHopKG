@@ -53,6 +53,8 @@ parser.add_argument('--dump_hparams_only', action='store_true',
                     help='dump hyperparameters then exit without running training/inference (default: False)')
 parser.add_argument('--hparams_output_path', type=str, default='',
                     help='output path for the hyperparameter dump (default: <model_dir>/hparams.json)')
+parser.add_argument('--metrics_output_path', type=str, default='',
+                    help='output path for evaluation metrics JSON (default: disabled)')
 
 # Data
 parser.add_argument('--test', action='store_true',

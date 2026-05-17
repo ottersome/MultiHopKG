@@ -323,6 +323,25 @@ def dump_hyperparameters(args, model: Optional[torch.nn.Module] = None):
         print('Failed to write hyperparameters to {}: {}'.format(output_path, exc))
     return output_path
 
+
+def dump_metrics(args, metrics: Optional[Dict]) -> Optional[str]:
+    """Serialize evaluation metrics to JSON when requested."""
+    if metrics is None or not getattr(args, 'metrics_output_path', ''):
+        return None
+    payload = json.dumps(metrics, indent=2, sort_keys=True)
+    output_path = args.metrics_output_path
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    try:
+        with open(output_path, 'w') as f:
+            f.write(payload)
+        print('Metrics saved to {}'.format(output_path))
+        return output_path
+    except Exception as exc:
+        print('Failed to write metrics to {}: {}'.format(output_path, exc))
+        return None
+
 def construct_model(args):
     """
     Construct NN graph.
@@ -1088,11 +1107,14 @@ def run_experiment(args):
                 if args.train:
                     train(lf)
                 elif args.inference:
-                    inference(lf)
+                    metrics = inference(lf)
+                    dump_metrics(args, metrics)
                 elif args.eval_by_relation_type:
-                    inference(lf)
+                    metrics = inference(lf)
+                    dump_metrics(args, metrics)
                 elif args.eval_by_seen_queries:
-                    inference(lf)
+                    metrics = inference(lf)
+                    dump_metrics(args, metrics)
                 elif args.export_to_embedding_projector:
                     export_to_embedding_projector(lf)
                 elif args.export_reward_shaping_parameters:

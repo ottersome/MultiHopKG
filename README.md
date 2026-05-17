@@ -98,6 +98,21 @@ We provide an optional question encoder to condition the policy on natural langu
 ./experiment-rs-nlp.sh configs/mquake-rs-nlp.sh --train <gpu-ID>
 ```
 
+### Batch evaluation
+To evaluate many checkpoints with one config and get a compact summary table instead of the full experiment log, use:
+
+```bash
+python3 batch_eval.py \
+  --config configs/kinshiphinton_latest-rs-nlp-conve.sh \
+  --gpu <gpu-ID> \
+  output/final_evaluation/kinship \
+  -- \
+  --rollout_eval_num_rollouts 128 \
+  --rollout_eval_batch_size 16
+```
+
+This writes per-run logs and metrics JSON files under `batch_eval_logs/` and prints a single summary table to stdout. Add `--output-json` or `--output-csv` to persist the aggregate report.
+
 Key flags in configs:
 - `use_question_encoder=True` enables conditioning.
 - `bert_model_name`, `bert_hidden_size`, `max_question_len` configure the encoder.
