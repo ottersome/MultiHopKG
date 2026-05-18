@@ -6,8 +6,11 @@
  
  Knowledge Graph Environment.
 """
+from tqdm import tqdm
 
 import collections
+import copy
+import hashlib
 import os
 import pickle
 
@@ -26,6 +29,11 @@ class KnowledgeGraph(nn.Module):
     """
     The discrete knowledge graph is stored with an adjacency list.
     """
+    CACHE_VERSION = 1
+    _GRAPH_DATA_CACHE = {}
+    _ACTION_SPACE_CACHE = {}
+    _ANSWER_CACHE = {}
+
     def __init__(self, args):
         super(KnowledgeGraph, self).__init__()
         self.entity2id, self.id2entity = {}, {}
@@ -72,16 +80,98 @@ class KnowledgeGraph(nn.Module):
         self.define_modules()
         self.initialize_modules()
 
+    def _cache_dir(self, data_dir):
+        cache_dir = os.path.join(data_dir, '.kg_cache')
+        if not os.path.isdir(cache_dir):
+            os.makedirs(cache_dir, exist_ok=True)
+        return cache_dir
+
+    def _cache_path(self, data_dir, prefix, payload):
+        cache_key = hashlib.md5(repr(payload).encode('utf-8')).hexdigest()
+        file_name = '{}_v{}_{}.pt'.format(prefix, self.CACHE_VERSION, cache_key)
+        return os.path.join(self._cache_dir(data_dir), file_name)
+
+    def _tensor_to_cpu(self, tensor):
+        if hasattr(tensor, 'detach'):
+            return tensor.detach().cpu()
+        return tensor.cpu()
+
+    def _serialize_action_space(self, action_space):
+        (r_space, e_space), action_mask = action_space
+        return {
+            'r_space': self._tensor_to_cpu(r_space),
+            'e_space': self._tensor_to_cpu(e_space),
+            'action_mask': self._tensor_to_cpu(action_mask),
+        }
+
+    def _deserialize_action_space(self, payload):
+        return (
+            (
+                int_var_cuda(payload['r_space']),
+                int_var_cuda(payload['e_space']),
+            ),
+            var_cuda(payload['action_mask'])
+        )
+
+    def _serialize_nested_vector_dict(self, nested_dict):
+        payload = {}
+        for x in nested_dict:
+            payload[x] = {}
+            for y in nested_dict[x]:
+                payload[x][y] = self._tensor_to_cpu(nested_dict[x][y])
+        return payload
+
+    def _deserialize_nested_vector_dict(self, nested_dict):
+        payload = collections.defaultdict(collections.defaultdict)
+        for x in nested_dict:
+            payload[x] = {}
+            for y in nested_dict[x]:
+                payload[x][y] = int_var_cuda(nested_dict[x][y])
+        return payload
+
+    def _graph_data_cache_key(self, data_dir):
+        return os.path.abspath(data_dir)
+
+    def _action_space_cache_spec(self, data_dir, cache_namespace):
+        return {
+            'data_dir': os.path.abspath(data_dir),
+            'namespace': cache_namespace,
+            'model': self.args.model,
+            'bandwidth': self.bandwidth,
+            'use_action_space_bucketing': getattr(self.args, 'use_action_space_bucketing', False),
+            'bucket_interval': getattr(self.args, 'bucket_interval', None),
+        }
+
+    def _answer_cache_spec(self, data_dir, add_reversed_edges):
+        return {
+            'data_dir': os.path.abspath(data_dir),
+            'model': self.args.model,
+            'test': bool(getattr(self.args, 'test', False)),
+            'add_reversed_edges': bool(add_reversed_edges),
+        }
+
     def load_graph_data(self, data_dir):
+        graph_cache_key = self._graph_data_cache_key(data_dir)
+        cached_graph_data = self._GRAPH_DATA_CACHE.get(graph_cache_key)
+        if cached_graph_data is not None:
+            self.entity2id = cached_graph_data['entity2id']
+            self.id2entity = cached_graph_data['id2entity']
+            self.type2id = cached_graph_data['type2id']
+            self.id2type = cached_graph_data['id2type']
+            self.entity2typeid = cached_graph_data['entity2typeid']
+            self.relation2id = cached_graph_data['relation2id']
+            self.id2relation = cached_graph_data['id2relation']
+            self.adj_list = cached_graph_data['adj_list']
+            if self.args.model.startswith('point'):
+                self.vectorize_action_space(data_dir)
+            return
+
         # Load indices
         self.entity2id, self.id2entity = load_index(os.path.join(data_dir, 'entity2id.txt'))
-        print('Sanity check: {} entities loaded'.format(len(self.entity2id)))
         self.type2id, self.id2type = load_index(os.path.join(data_dir, 'type2id.txt'))
-        print('Sanity check: {} types loaded'.format(len(self.type2id)))
         with open(os.path.join(data_dir, 'entity2typeid.pkl'), 'rb') as f:
             self.entity2typeid = pickle.load(f)
         self.relation2id, self.id2relation = load_index(os.path.join(data_dir, 'relation2id.txt'))
-        print('Sanity check: {} relations loaded'.format(len(self.relation2id)))
        
         # Load graph structures
         print(self.args.model)
@@ -91,8 +181,18 @@ class KnowledgeGraph(nn.Module):
             with open(adj_list_path, 'rb') as f:
                 self.adj_list = pickle.load(f)
             self.vectorize_action_space(data_dir)
+        self._GRAPH_DATA_CACHE[graph_cache_key] = {
+            'entity2id': self.entity2id,
+            'id2entity': self.id2entity,
+            'type2id': self.type2id,
+            'id2type': self.id2type,
+            'entity2typeid': self.entity2typeid,
+            'relation2id': self.relation2id,
+            'id2relation': self.id2relation,
+            'adj_list': self.adj_list,
+        }
 
-    def vectorize_action_space(self, data_dir):
+    def vectorize_action_space(self, data_dir, cache_namespace='base'):
         """
         Pre-process and numericalize the knowledge graph structure.
         """
@@ -160,6 +260,31 @@ class KnowledgeGraph(nn.Module):
                     unique_r_space[i, j] = r
             return int_var_cuda(unique_r_space)
 
+        action_space_cache_spec = self._action_space_cache_spec(data_dir, cache_namespace)
+        action_space_cache_key = repr(action_space_cache_spec)
+        cached_action_space = self._ACTION_SPACE_CACHE.get(action_space_cache_key)
+        if cached_action_space is None:
+            action_space_cache_path = self._cache_path(data_dir, 'action_space', action_space_cache_spec)
+            if os.path.exists(action_space_cache_path):
+                cached_action_space = torch.load(action_space_cache_path, map_location='cpu')
+                self._ACTION_SPACE_CACHE[action_space_cache_key] = cached_action_space
+                print('Loaded action space cache from {}'.format(action_space_cache_path))
+        if cached_action_space is not None:
+            if cached_action_space['use_action_space_bucketing']:
+                self.entity2bucketid = cached_action_space['entity2bucketid'].long()
+                self.action_space_buckets = {}
+                print("Loading action space to buckets")
+                for key, bucket_payload in cached_action_space['action_space_buckets'].items():
+                    self.action_space_buckets[key] = self._deserialize_action_space(bucket_payload)
+                self.action_space = None
+            else:
+                self.action_space = self._deserialize_action_space(cached_action_space['action_space'])
+                self.action_space_buckets = None
+                self.entity2bucketid = None
+            unique_r_space = cached_action_space.get('unique_r_space')
+            self.unique_r_space = int_var_cuda(unique_r_space) if unique_r_space is not None else None
+            return
+
         if self.args.use_action_space_bucketing:
             """
             Store action spaces in buckets.
@@ -201,6 +326,22 @@ class KnowledgeGraph(nn.Module):
                     if len(unique_r_space) > max_num_unique_rs:
                         max_num_unique_rs = len(unique_r_space)
                 self.unique_r_space = vectorize_unique_r_space(unique_r_space_list, max_num_unique_rs)
+        action_space_cache_payload = {
+            'use_action_space_bucketing': bool(self.args.use_action_space_bucketing),
+            'unique_r_space': self._tensor_to_cpu(self.unique_r_space) if self.unique_r_space is not None else None,
+        }
+        if self.args.use_action_space_bucketing:
+            serialized_buckets = {}
+            for key, action_space in self.action_space_buckets.items():
+                serialized_buckets[key] = self._serialize_action_space(action_space)
+            action_space_cache_payload['entity2bucketid'] = self._tensor_to_cpu(self.entity2bucketid)
+            action_space_cache_payload['action_space_buckets'] = serialized_buckets
+        else:
+            action_space_cache_payload['action_space'] = self._serialize_action_space(self.action_space)
+        self._ACTION_SPACE_CACHE[action_space_cache_key] = action_space_cache_payload
+        action_space_cache_path = self._cache_path(data_dir, 'action_space', action_space_cache_spec)
+        torch.save(action_space_cache_payload, action_space_cache_path)
+        print('Saved action space cache to {}'.format(action_space_cache_path))
 
     def load_all_answers(self, data_dir, add_reversed_edges=False):
         def add_subject(e1, e2, r, d):
@@ -308,7 +449,7 @@ class KnowledgeGraph(nn.Module):
                     if count > 0 and count % 1000 == 0:
                         print('{} fuzzy facts added'.format(count))
 
-        self.vectorize_action_space(self.args.data_dir)
+        self.vectorize_action_space(self.args.data_dir, cache_namespace='fuzzy')
 
     def get_inv_relation_id(self, r_id):
         return r_id + 1
