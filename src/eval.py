@@ -255,6 +255,50 @@ def format_hits_and_ranks_counts(counts, verbose=False):
 
     return hits_at_1, hits_at_3, hits_at_5, hits_at_10, mrr
 
+
+def hits_and_ranks_by_hop(examples, scores, all_answers, verbose=False):
+    """
+    Compute ranking metrics grouped by hop count for examples that carry hop metadata.
+    """
+    assert (len(examples) == scores.shape[0])
+    hop_examples = collections.defaultdict(list)
+    hop_indices = collections.defaultdict(list)
+    for i, example in enumerate(examples):
+        hop = get_example_hops(example)
+        if hop is None:
+            continue
+        hop = int(hop)
+        hop_examples[hop].append(example)
+        hop_indices[hop].append(i)
+
+    metrics = {}
+    for hop in sorted(hop_examples):
+        hop_scores = scores[hop_indices[hop]].clone()
+        h1, h3, h5, h10, mrr = hits_and_ranks(
+            hop_examples[hop], hop_scores, all_answers, verbose=False)
+        metrics[hop] = {
+            'examples': len(hop_examples[hop]),
+            'hits@1': h1,
+            'hits@3': h3,
+            'hits@5': h5,
+            'hits@10': h10,
+            'mrr': mrr,
+        }
+
+    if verbose and metrics:
+        summary = ' '.join(
+            '{}hop h@1={:.3f} mrr={:.3f} n={}'.format(
+                hop,
+                values['hits@1'],
+                values['mrr'],
+                values['examples']
+            )
+            for hop, values in sorted(metrics.items())
+        )
+        print('Per-hop ranking: {}'.format(summary))
+
+    return metrics
+
 def hits_at_k(examples, scores, all_answers, verbose=False):
     """
     Hits at k metrics.

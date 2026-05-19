@@ -223,8 +223,21 @@ def format_metric(value) -> str:
     return str(value)
 
 
+def format_per_hop_hits(split_metrics) -> str:
+    if not isinstance(split_metrics, dict):
+        return '-'
+    per_hop = []
+    for key in sorted(k for k in split_metrics if k.startswith('per_hop/') and k.endswith('hits@1')):
+        hop = key.split('/')[1].replace('_hits@1', '')
+        value = split_metrics.get(key)
+        if value is None:
+            continue
+        per_hop.append(f'{hop}={value:.4f}')
+    return ' '.join(per_hop) if per_hop else '-'
+
+
 def print_summary(rows: Sequence[Dict[str, object]], split: str) -> None:
-    headers = ['label', 'status', f'{split}.hits@1', f'{split}.hits@10', f'{split}.mrr', f'{split}.rollout_mrr']
+    headers = ['label', 'status', f'{split}.hits@1', f'{split}.hits@10', f'{split}.mrr', f'{split}.rollout_mrr', f'{split}.per_hop_h@1']
     table: List[List[str]] = [headers]
     for row in rows:
         metrics = row.get('metrics', {}) or {}
@@ -236,6 +249,7 @@ def print_summary(rows: Sequence[Dict[str, object]], split: str) -> None:
             format_metric(split_metrics.get('hits_at_10')),
             format_metric(split_metrics.get('mrr')),
             format_metric(split_metrics.get('rollout_mrr')),
+            format_per_hop_hits(split_metrics),
         ])
     widths = [max(len(entry[i]) for entry in table) for i in range(len(headers))]
     for index, entries in enumerate(table):

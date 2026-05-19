@@ -529,6 +529,25 @@ def inference(lf):
         if per_hop:
             print("{} per-hop Hits@1: {}".format(split_name, ' '.join(per_hop)))
 
+    def _attach_per_hop_metrics(eval_bucket: Dict[str, float], per_hop_metrics: Dict[int, Dict[str, float]]) -> None:
+        for hop, hop_metrics in sorted(per_hop_metrics.items()):
+            prefix = f'per_hop/{hop}hop'
+            eval_bucket[f'{prefix}_examples'] = hop_metrics['examples']
+            eval_bucket[f'{prefix}_hits@1'] = hop_metrics['hits@1']
+            eval_bucket[f'{prefix}_hits@3'] = hop_metrics['hits@3']
+            eval_bucket[f'{prefix}_hits@5'] = hop_metrics['hits@5']
+            eval_bucket[f'{prefix}_hits@10'] = hop_metrics['hits@10']
+            eval_bucket[f'{prefix}_mrr'] = hop_metrics['mrr']
+
+    def _print_per_hop_ranking(split_name: str, per_hop_metrics: Dict[int, Dict[str, float]]) -> None:
+        if not per_hop_metrics:
+            return
+        summary = ' '.join(
+            '{}hop={:.4f}'.format(hop, hop_metrics['hits@1'])
+            for hop, hop_metrics in sorted(per_hop_metrics.items())
+        )
+        print('{} per-hop Hits@1: {}'.format(split_name, summary))
+
     def _log_rollout_metrics_to_wandb(prefix: str, metrics: Dict[str, float]) -> None:
         if not _wandb_enabled or _wandb is None:
             return
@@ -639,6 +658,9 @@ def inference(lf):
         eval_metrics['dev']['hits_at_5'] = dev_metrics[2]
         eval_metrics['dev']['hits_at_10'] = dev_metrics[3]
         eval_metrics['dev']['mrr'] = dev_metrics[4]
+        dev_per_hop_metrics = src.eval.hits_and_ranks_by_hop(dev_data, pred_scores, lf.kg.dev_objects, verbose=False)
+        _attach_per_hop_metrics(eval_metrics['dev'], dev_per_hop_metrics)
+        _print_per_hop_ranking('Dev', dev_per_hop_metrics)
         src.eval.hits_and_ranks(dev_data, pred_scores, lf.kg.all_objects, verbose=True)
         if hasattr(lf, 'supports_rollout_evaluation') and lf.supports_rollout_evaluation():
             rollout_dev_metrics = lf.evaluate_with_rollouts(dev_data, split_name='dev')
@@ -667,6 +689,9 @@ def inference(lf):
         eval_metrics['test']['hits_at_5'] = test_metrics[2]
         eval_metrics['test']['hits_at_10'] = test_metrics[3]
         eval_metrics['test']['mrr'] = test_metrics[4]
+        test_per_hop_metrics = src.eval.hits_and_ranks_by_hop(test_data, pred_scores, lf.kg.all_objects, verbose=False)
+        _attach_per_hop_metrics(eval_metrics['test'], test_per_hop_metrics)
+        _print_per_hop_ranking('Test', test_per_hop_metrics)
         if hasattr(lf, 'supports_rollout_evaluation') and lf.supports_rollout_evaluation():
             rollout_test_metrics = lf.evaluate_with_rollouts(test_data, split_name='test')
             if rollout_test_metrics:
