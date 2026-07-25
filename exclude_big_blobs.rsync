@@ -1,0 +1,6 @@
+batch_eval_logs/
+checkpoints/
+data/
+model/
+models/
+wandb/
