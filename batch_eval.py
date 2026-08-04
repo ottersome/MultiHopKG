@@ -261,7 +261,7 @@ def format_per_hop_mean_std(split_metrics_rows: Sequence[Dict[str, object]]) -> 
     return ' '.join(summaries) if summaries else '-'
 
 
-def print_summary(rows: Sequence[Dict[str, object]], split: str) -> None:
+def print_summary(rows: Sequence[Dict[str, object]], split: str) -> str:
     metric_names = ['hits@1', 'hits@3', 'hits@5', 'hits@10', 'hits@20', 'mrr']
     headers = [
         'label',
@@ -302,11 +302,15 @@ def print_summary(rows: Sequence[Dict[str, object]], split: str) -> None:
     ])
 
     widths = [max(len(entry[i]) for entry in table) for i in range(len(headers))]
+    rendered_lines: List[str] = []
     for index, entries in enumerate(table):
         line = '  '.join(entry.ljust(widths[i]) for i, entry in enumerate(entries))
-        print(line)
+        rendered_lines.append(line.rstrip())
         if index == 0:
-            print('  '.join('-' * width for width in widths))
+            rendered_lines.append('  '.join('-' * width for width in widths))
+    rendered_summary = '\n'.join(rendered_lines)
+    print(rendered_summary)
+    return rendered_summary
 
 
 def ensure_parent(path: Path) -> None:
@@ -411,7 +415,10 @@ def main() -> int:
             rows.append(row)
             cur_run_num_experiments += 1
 
-    print_summary(rows, args.split)
+    rendered_summary = print_summary(rows, args.split)
+    summary_path = log_dir / f'{args.split}_summary.txt'
+    summary_path.write_text(f'{rendered_summary}\n')
+    print(f'Summary table saved to {summary_path}')
 
     failed_rows = [row for row in rows if row.get('status') == 'failed']
     if failed_rows:
