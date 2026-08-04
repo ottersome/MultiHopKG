@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import statistics
 import subprocess
 import sys
 from datetime import datetime
@@ -236,6 +237,30 @@ def format_per_hop_hits(split_metrics) -> str:
     return ' '.join(per_hop) if per_hop else '-'
 
 
+def format_mean_std(values: Sequence[float]) -> str:
+    if not values:
+        return '-'
+    metric_mean = statistics.fmean(values)
+    metric_std = statistics.stdev(values) if len(values) > 1 else 0.0
+    return f'{metric_mean:.4f} ± {metric_std:.4f}'
+
+
+def format_per_hop_mean_std(split_metrics_rows: Sequence[Dict[str, object]]) -> str:
+    values_by_key: Dict[str, List[float]] = defaultdict(list)
+    for split_metrics in split_metrics_rows:
+        for key, value in split_metrics.items():
+            if not (key.startswith('per_hop/') and key.endswith('hits@1')):
+                continue
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                values_by_key[key].append(float(value))
+
+    summaries = []
+    for key in sorted(values_by_key):
+        hop = key.split('/')[1].replace('_hits@1', '')
+        summaries.append(f'{hop}={format_mean_std(values_by_key[key])}')
+    return ' '.join(summaries) if summaries else '-'
+
+
 def print_summary(rows: Sequence[Dict[str, object]], split: str) -> None:
     metric_names = ['hits@1', 'hits@3', 'hits@5', 'hits@10', 'hits@20', 'mrr']
     headers = [
@@ -245,17 +270,37 @@ def print_summary(rows: Sequence[Dict[str, object]], split: str) -> None:
         f'{split}.per_hop_h@1',
     ]
     table: List[List[str]] = [headers]
+    successful_split_metrics: List[Dict[str, object]] = []
     for row in rows:
         metrics = row.get('metrics', {}) or {}
         split_metrics = metrics.get(split, {}) if isinstance(metrics, dict) else {}
         if not isinstance(split_metrics, dict):
             split_metrics = {}
+        if row.get('status') == 'ok' and split_metrics:
+            successful_split_metrics.append(split_metrics)
         table.append([
             str(row['label']),
             str(row['status']),
             *(format_metric(split_metrics.get(f'rollout_{metric}')) for metric in metric_names),
             format_per_hop_hits(split_metrics),
         ])
+
+    aggregate_metrics = []
+    for metric in metric_names:
+        metric_values = [
+            float(split_metrics[f'rollout_{metric}'])
+            for split_metrics in successful_split_metrics
+            if isinstance(split_metrics.get(f'rollout_{metric}'), (int, float))
+            and not isinstance(split_metrics[f'rollout_{metric}'], bool)
+        ]
+        aggregate_metrics.append(format_mean_std(metric_values))
+    table.append([
+        'mean ± std',
+        f'n={len(successful_split_metrics)}',
+        *aggregate_metrics,
+        format_per_hop_mean_std(successful_split_metrics),
+    ])
+
     widths = [max(len(entry[i]) for entry in table) for i in range(len(headers))]
     for index, entries in enumerate(table):
         line = '  '.join(entry.ljust(widths[i]) for i, entry in enumerate(entries))
