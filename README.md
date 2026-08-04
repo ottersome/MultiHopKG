@@ -52,6 +52,14 @@ python batch_eval.py model/final_evaluation
 
 This will write the evaluations to `<repository_root>/<date>-<time>/<model>_s<seed>.metrics.log`
 
+
+Make sure to run with `--evaluate_paraphrases` after *end-of-options delimeter*. If you want to evaluate paraphrases
+i.e.:
+
+```sh
+python batch_eval.py model/final_evaluation -- --evaluate_paraphrases
+```
+
 # Disclaimer. 
 
 This is a modified version of "Multi-Hop Knowledge Graph Reasoning with Reward Shaping" with the purpose of fitting neurips 2026 evaluations.
