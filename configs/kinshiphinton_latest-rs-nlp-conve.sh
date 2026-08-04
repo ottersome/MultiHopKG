@@ -18,7 +18,8 @@ dev_batch_size=64
 learning_rate=0.0016
 grad_norm=0
 emb_dropout_rate=0.1
-beam_size=128
+# beam_size generally for inferene
+beam_size=100
 num_out_channels=8
 kernel_size=2
 use_question_encoder="True"
