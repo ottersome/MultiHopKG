@@ -4,10 +4,11 @@ data_dir="data/KinshipHintonLatest/"
 model="point.rs.conve"
 add_reversed_training_edges="True"
 group_examples_by_query="True"
-emb_2D_d1=6
-emb_2D_d2=6
-entity_dim=36
-relation_dim=36
+emb_2D_d1=3
+emb_2D_d2=4
+entity_dim=12
+relation_dim=12
+# num_rollouts generally for training
 num_rollouts=32
 bucket_interval=10
 num_epochs=100
@@ -43,9 +44,9 @@ max_question_len=100
 mu=1.0
 
 # For now all we really have is conve
-distmult_state_dict_path="model/KinshipHintonLatest-conve-RV-xavier-36-36-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-50.tar"
-complex_state_dict_path="model/KinshipHintonLatest-conve-RV-xavier-36-36-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-50.tar"
-conve_state_dict_path="model/KinshipHintonLatest-conve-RV-xavier-36-36-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-50.tar"
+distmult_state_dict_path="model/KinshipHintonLatest-conve-RV-xavier-12-12-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-50.tar"
+complex_state_dict_path="model/KinshipHintonLatest-conve-RV-xavier-12-12-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-50.tar"
+conve_state_dict_path="model/KinshipHintonLatest-conve-RV-xavier-12-12-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-50.tar"
 bandwidth=50
 
 action_dropout_rate=0.3
