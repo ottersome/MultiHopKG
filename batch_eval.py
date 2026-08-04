@@ -261,6 +261,117 @@ def format_per_hop_mean_std(split_metrics_rows: Sequence[Dict[str, object]]) -> 
     return ' '.join(summaries) if summaries else '-'
 
 
+def render_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
+    table = [list(headers), *[list(row) for row in rows]]
+    widths = [max(len(entries[i]) for entries in table) for i in range(len(headers))]
+    rendered_lines: List[str] = []
+    for index, entries in enumerate(table):
+        line = '  '.join(entry.ljust(widths[i]) for i, entry in enumerate(entries))
+        rendered_lines.append(line.rstrip())
+        if index == 0:
+            rendered_lines.append('  '.join('-' * width for width in widths))
+    return '\n'.join(rendered_lines)
+
+
+def numeric_metric_values(split_metrics_rows: Sequence[Dict[str, object]], key: str) -> List[float]:
+    return [
+        float(split_metrics[key])
+        for split_metrics in split_metrics_rows
+        if isinstance(split_metrics.get(key), (int, float))
+        and not isinstance(split_metrics[key], bool)
+    ]
+
+
+def render_faithfulness_summary(
+        rows: Sequence[Dict[str, object]],
+        split: str,
+        successful_split_metrics: Sequence[Dict[str, object]]) -> str:
+    metric_specs = [
+        ('faithfulness/relation_f1', 'F1_Rel'),
+        ('faithfulness/relation_edit_distance', 'RED'),
+        ('faithfulness/subgraph_f1', 'F1_SG'),
+        ('faithfulness/ped', 'PED'),
+        ('faithfulness/answer_set_f1', 'Answer_F1'),
+        ('faithfulness/semantic_path_coverage', 'Path_Coverage'),
+        ('faithfulness/semantic_path_examples', 'Path_Covered'),
+        ('faithfulness/semantic_path_attempts', 'Path_Attempts'),
+    ]
+    headers = ['label', 'status', *(name for _, name in metric_specs)]
+    table_rows: List[List[str]] = []
+    for row in rows:
+        metrics = row.get('metrics', {}) or {}
+        split_metrics = metrics.get(split, {}) if isinstance(metrics, dict) else {}
+        if not isinstance(split_metrics, dict):
+            split_metrics = {}
+        table_rows.append([
+            str(row['label']),
+            str(row['status']),
+            *(format_metric(split_metrics.get(key)) for key, _ in metric_specs),
+        ])
+
+    table_rows.append([
+        'mean ± std',
+        f'n={len(successful_split_metrics)}',
+        *(format_mean_std(numeric_metric_values(successful_split_metrics, key))
+          for key, _ in metric_specs),
+    ])
+    return render_table(headers, table_rows)
+
+
+def render_per_hop_faithfulness_summary(
+        rows: Sequence[Dict[str, object]],
+        split: str,
+        successful_split_metrics: Sequence[Dict[str, object]]) -> str:
+    metric_specs = [
+        ('relation_f1', 'F1_Rel'),
+        ('relation_edit_distance', 'RED'),
+        ('subgraph_f1', 'F1_SG'),
+        ('ped', 'PED'),
+        ('path_examples', 'Path_Examples'),
+    ]
+    hop_pattern = re.compile(r'^faithfulness/(\d+)hop_')
+    hops = sorted({
+        int(match.group(1))
+        for split_metrics in successful_split_metrics
+        for key in split_metrics
+        for match in [hop_pattern.match(key)]
+        if match is not None
+    })
+    if not hops:
+        return 'No per-hop faithfulness metrics available.'
+
+    headers = ['label', 'hop', *(name for _, name in metric_specs)]
+    table_rows: List[List[str]] = []
+    for row in rows:
+        if row.get('status') != 'ok':
+            continue
+        metrics = row.get('metrics', {}) or {}
+        split_metrics = metrics.get(split, {}) if isinstance(metrics, dict) else {}
+        if not isinstance(split_metrics, dict):
+            continue
+        for hop in hops:
+            prefix = f'faithfulness/{hop}hop_'
+            if not any(f'{prefix}{suffix}' in split_metrics for suffix, _ in metric_specs):
+                continue
+            table_rows.append([
+                str(row['label']),
+                str(hop),
+                *(format_metric(split_metrics.get(f'{prefix}{suffix}'))
+                  for suffix, _ in metric_specs),
+            ])
+
+    for hop in hops:
+        prefix = f'faithfulness/{hop}hop_'
+        table_rows.append([
+            'mean ± std',
+            str(hop),
+            *(format_mean_std(numeric_metric_values(
+                successful_split_metrics, f'{prefix}{suffix}'))
+              for suffix, _ in metric_specs),
+        ])
+    return render_table(headers, table_rows)
+
+
 def print_summary(rows: Sequence[Dict[str, object]], split: str) -> str:
     metric_names = ['hits@1', 'hits@3', 'hits@5', 'hits@10', 'hits@20', 'mrr']
     headers = [
@@ -301,14 +412,19 @@ def print_summary(rows: Sequence[Dict[str, object]], split: str) -> str:
         format_per_hop_mean_std(successful_split_metrics),
     ])
 
-    widths = [max(len(entry[i]) for entry in table) for i in range(len(headers))]
-    rendered_lines: List[str] = []
-    for index, entries in enumerate(table):
-        line = '  '.join(entry.ljust(widths[i]) for i, entry in enumerate(entries))
-        rendered_lines.append(line.rstrip())
-        if index == 0:
-            rendered_lines.append('  '.join('-' * width for width in widths))
-    rendered_summary = '\n'.join(rendered_lines)
+    ranking_summary = render_table(headers, table[1:])
+    faithfulness_summary = render_faithfulness_summary(
+        rows, split, successful_split_metrics)
+    per_hop_faithfulness_summary = render_per_hop_faithfulness_summary(
+        rows, split, successful_split_metrics)
+    rendered_summary = '\n\n'.join([
+        'Ranking metrics',
+        ranking_summary,
+        'Faithfulness metrics',
+        faithfulness_summary,
+        'Per-hop faithfulness metrics',
+        per_hop_faithfulness_summary,
+    ])
     print(rendered_summary)
     return rendered_summary
 

@@ -104,6 +104,14 @@ def get_gold_answers(example):
     return [int(answers)]
 
 
+def has_multi_answer_representation(example) -> bool:
+    """Distinguish multi-answer dataset rows from scalar single-answer rows."""
+    _, answers, _ = _core_example(example)
+    if hasattr(answers, 'tolist'):
+        answers = answers.tolist()
+    return isinstance(answers, (list, tuple, set))
+
+
 def get_example_hops(example):
     for extra in reversed(example[3:]):
         try:
@@ -618,9 +626,18 @@ def answer_set_f1(predicted_endpoints: Iterable[int],
 class FaithfulnessEvaluator:
     """Aggregates path-faithfulness metrics for top rollout/beam paths."""
 
-    def __init__(self, kg) -> None:
+    def __init__(self, kg, semantic_multi_path: bool = False) -> None:
+        self.kg = kg
+        self.semantic_multi_path = bool(semantic_multi_path)
         self.inverse_mapping = build_inverse_relation_mapping(kg)
         self.special_tokens = {DUMMY_RELATION_ID, START_RELATION_ID, NO_OP_RELATION_ID}
+        self.invalid_entities = {DUMMY_ENTITY_ID, NO_OP_ENTITY_ID}
+        self._semantic_valid_path_cache: Dict[
+            Tuple[int, Tuple[int, ...], Tuple[int, ...]],
+            List[List[Tuple[int, int, int]]]
+        ] = {}
+        self.semantic_path_attempts = 0.0
+        self.semantic_path_examples = 0.0
         self.edge_precision = 0.0
         self.edge_recall = 0.0
         self.edge_f1 = 0.0
@@ -641,6 +658,56 @@ class FaithfulnessEvaluator:
         self.num_examples = 0
         self.by_hop: Dict[int, Dict[str, float]] = {}
 
+    def _get_semantically_valid_paths(
+            self,
+            example,
+            relation_chain: Sequence[int],
+            gold_answers: Sequence[int]) -> List[List[Tuple[int, int, int]]]:
+        """Expand every full-KG path matching a relation chain and valid answer."""
+        if not self.semantic_multi_path or not relation_chain:
+            return []
+
+        source_entity = int(example[0])
+        relations = tuple(int(relation) for relation in relation_chain)
+        answers = tuple(sorted({int(answer) for answer in gold_answers}))
+        cache_key = (source_entity, relations, answers)
+        cached = self._semantic_valid_path_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        adjacency = getattr(self.kg, 'adj_list', None)
+        if not adjacency:
+            self._semantic_valid_path_cache[cache_key] = []
+            return []
+
+        frontier: List[Tuple[int, List[Tuple[int, int, int]]]] = [(source_entity, [])]
+        for relation in relations:
+            if relation in self.special_tokens:
+                frontier = []
+                break
+            next_frontier: List[Tuple[int, List[Tuple[int, int, int]]]] = []
+            seen_paths = set()
+            for current_entity, path in frontier:
+                relation_targets = adjacency.get(current_entity, {}).get(relation, ())
+                for target in relation_targets:
+                    target_entity = int(target)
+                    if target_entity in self.invalid_entities:
+                        continue
+                    next_path = path + [(current_entity, relation, target_entity)]
+                    path_key = tuple(next_path)
+                    if path_key in seen_paths:
+                        continue
+                    seen_paths.add(path_key)
+                    next_frontier.append((target_entity, next_path))
+            frontier = next_frontier
+            if not frontier:
+                break
+
+        valid_answer_set = set(answers)
+        valid_paths = [path for endpoint, path in frontier if endpoint in valid_answer_set]
+        self._semantic_valid_path_cache[cache_key] = valid_paths
+        return valid_paths
+
     def update(self,
                example,
                pred_path: Sequence[Tuple[int, int, int]],
@@ -655,6 +722,15 @@ class FaithfulnessEvaluator:
         hop = get_example_hops(example) or len(gt_relations or gt_path)
         pred_relations = [int(edge[1]) for edge in pred_path]
 
+        reference_paths = [gt_path] if gt_path else []
+        if (not gt_path and self.semantic_multi_path
+                and has_multi_answer_representation(example)):
+            self.semantic_path_attempts += weight
+            reference_paths = self._get_semantically_valid_paths(
+                example, gt_relations or [], gold_answers)
+            if reference_paths:
+                self.semantic_path_examples += weight
+
         rel_dist = relation_edit_distance_norm(
             pred_relations, gt_relations, self.special_tokens, self.inverse_mapping)
         rel_p, rel_r, rel_f = relation_overlap_f1(
@@ -663,13 +739,23 @@ class FaithfulnessEvaluator:
 
         edge_f = 0.0
         path_dist = 0.0
-        if gt_path:
-            edge_p, edge_r, edge_f = subgraph_overlap_f1(
-                pred_path, gt_path, self.special_tokens, self.inverse_mapping)
-            path_dist = path_edit_distance_norm(
-                pred_path, gt_path, self.special_tokens, self.inverse_mapping)
-            ped = path_edit_distance_raw(
-                pred_path, gt_path, self.special_tokens, self.inverse_mapping)
+        if reference_paths:
+            overlap_scores = [
+                subgraph_overlap_f1(
+                    pred_path, reference_path, self.special_tokens, self.inverse_mapping)
+                for reference_path in reference_paths
+            ]
+            edge_p, edge_r, edge_f = max(overlap_scores, key=lambda scores: scores[2])
+            path_dist = min(
+                path_edit_distance_norm(
+                    pred_path, reference_path, self.special_tokens, self.inverse_mapping)
+                for reference_path in reference_paths
+            )
+            ped = min(
+                path_edit_distance_raw(
+                    pred_path, reference_path, self.special_tokens, self.inverse_mapping)
+                for reference_path in reference_paths
+            )
             self.edge_precision += edge_p * weight
             self.edge_recall += edge_r * weight
             self.edge_f1 += edge_f * weight
@@ -708,7 +794,7 @@ class FaithfulnessEvaluator:
             'answer_set_f1': 0.0,
         })
         entry['examples'] += weight
-        if gt_path:
+        if reference_paths:
             entry['edge_examples'] += weight
             entry['edge_precision'] += edge_p * weight
             entry['edge_recall'] += edge_r * weight
@@ -751,6 +837,12 @@ class FaithfulnessEvaluator:
             'faithfulness/answer_set_recall': self.answer_recall / n,
             'faithfulness/answer_set_f1': self.answer_f1 / n,
         }
+        if self.semantic_path_attempts:
+            metrics['faithfulness/semantic_path_attempts'] = self.semantic_path_attempts
+            metrics['faithfulness/semantic_path_examples'] = self.semantic_path_examples
+            metrics['faithfulness/semantic_path_coverage'] = (
+                self.semantic_path_examples / self.semantic_path_attempts
+            )
         for hop, values in sorted(self.by_hop.items()):
             count = float(values['examples'])
             metrics[f'faithfulness/{hop}hop_examples'] = values['examples']

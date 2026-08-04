@@ -522,6 +522,15 @@ def inference(lf):
                     metrics.get('faithfulness/answer_set_f1', 0.0)
                 )
             )
+            if metrics.get('faithfulness/semantic_path_attempts', 0):
+                print(
+                    '{} semantic path coverage: {:.4f} ({:.4f}/{:.4f})'.format(
+                        split_name,
+                        metrics.get('faithfulness/semantic_path_coverage', 0.0),
+                        metrics.get('faithfulness/semantic_path_examples', 0.0),
+                        metrics.get('faithfulness/semantic_path_attempts', 0.0),
+                    )
+                )
         per_hop = []
         for key in sorted(k for k in metrics if k.startswith('per_hop/') and k.endswith('hits@1')):
             hop = key.split('/')[1].replace('_hits@1', '')
@@ -637,7 +646,7 @@ def inference(lf):
                             if k.startswith('hits@')
                         }
                         for k, v in rollout_metrics.items():
-                            if k.startswith('per_hop/'):
+                            if k.startswith('per_hop/') or k.startswith('faithfulness/'):
                                 eval_metrics[eval_split][k] = v
                         eval_metrics[eval_split]['rollout_mrr'] = rollout_metrics['mrr']
                         _log_rollout_metrics_to_wandb(f'inference/{eval_split}', rollout_metrics)
