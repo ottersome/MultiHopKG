@@ -237,18 +237,23 @@ def format_per_hop_hits(split_metrics) -> str:
 
 
 def print_summary(rows: Sequence[Dict[str, object]], split: str) -> None:
-    headers = ['label', 'status', f'{split}.hits@1', f'{split}.hits@10', f'{split}.mrr', f'{split}.rollout_mrr', f'{split}.per_hop_h@1']
+    metric_names = ['hits@1', 'hits@3', 'hits@5', 'hits@10', 'hits@20', 'mrr']
+    headers = [
+        'label',
+        'status',
+        *(f'{split}.{metric}' for metric in metric_names),
+        f'{split}.per_hop_h@1',
+    ]
     table: List[List[str]] = [headers]
     for row in rows:
         metrics = row.get('metrics', {}) or {}
         split_metrics = metrics.get(split, {}) if isinstance(metrics, dict) else {}
+        if not isinstance(split_metrics, dict):
+            split_metrics = {}
         table.append([
             str(row['label']),
             str(row['status']),
-            format_metric(split_metrics.get('hits_at_1')),
-            format_metric(split_metrics.get('hits_at_10')),
-            format_metric(split_metrics.get('mrr')),
-            format_metric(split_metrics.get('rollout_mrr')),
+            *(format_metric(split_metrics.get(f'rollout_{metric}')) for metric in metric_names),
             format_per_hop_hits(split_metrics),
         ])
     widths = [max(len(entry[i]) for entry in table) for i in range(len(headers))]
@@ -361,7 +366,6 @@ def main() -> int:
             rows.append(row)
             cur_run_num_experiments += 1
 
-    print()
     print_summary(rows, args.split)
 
     failed_rows = [row for row in rows if row.get('status') == 'failed']
