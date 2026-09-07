@@ -41,6 +41,10 @@ torch.cuda.set_device(args.gpu)
 
 torch.manual_seed(args.seed)
 torch.cuda.manual_seed_all(args.seed)
+random.seed(args.seed)
+np.random.seed(args.seed)
+torch.manual_seed(args.seed)
+torch.cuda.manual_seed_all(args.seed)
 
 
 def setup_wandb(args, job_type='train'):
