@@ -219,7 +219,6 @@ def initialize_model_directory(args, random_seed=None):
     else:
         raise NotImplementedError
 
-    print("Hey we are testing the date thihng")
     datetimestr = datetime.now().strftime("%y-%m-%d_%H-%M-%S")
 
     model_sub_dir = '{}-{}{}{}{}-{}'.format(
@@ -230,7 +229,7 @@ def initialize_model_directory(args, random_seed=None):
         initialization_tag,
         hyperparam_sig
     )
-    model_sub_dir = model_sub_dir + '_' + datetimestr
+    model_sub_dir = model_sub_dir + '_d+' + datetimestr
     if args.model == 'set':
         model_sub_dir += '-{}'.format(args.beam_size)
         model_sub_dir += '-{}'.format(args.num_paths_per_entity)
