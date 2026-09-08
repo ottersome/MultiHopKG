@@ -55,6 +55,7 @@ action_dropout_rate=0.1
 adam_beta1=0.9
 adam_beta2=0.999
 add_reverse_relations="True"
+checkpoint_keep_best=3 # Just for clarity 
 
 num_negative_samples=12
 margin=0.5

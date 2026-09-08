@@ -9,7 +9,7 @@
 
 import os
 import random
-import re
+import json
 import shutil
 from tqdm import tqdm
 
@@ -106,7 +106,8 @@ class LFramework(nn.Module):
                 filter(lambda p: p.requires_grad, self.parameters()), lr=self.learning_rate)
 
         # Track dev metrics changes
-        best_dev_metrics = 0
+        best_dev_metrics = float('-inf')
+        best_dev_epoch = None
         dev_metrics_history = []
 
         # Setup wandb model watching if enabled
@@ -204,7 +205,9 @@ class LFramework(nn.Module):
             else:
                 avg_entropy = None
             print(stdout_msg)
-            self.save_checkpoint(checkpoint_id=epoch_id, epoch_id=epoch_id)
+            # Keep a single rolling checkpoint for the most recently completed
+            # epoch. Ranked checkpoints are written after validation below.
+            self.save_checkpoint(checkpoint_id=epoch_id, epoch_id=epoch_id, is_last=True)
             # wandb: log training metrics
             if _wandb_enabled:
                 log_dict = {
@@ -320,17 +323,41 @@ class LFramework(nn.Module):
                         self.action_dropout_rate *= self.action_dropout_anneal_factor 
                         print('Decreasing action dropout rate: {} -> {}'.format(
                             old_action_dropout_rate, self.action_dropout_rate))
-                # Save checkpoint
-                if metrics > best_dev_metrics:
-                    self.save_checkpoint(checkpoint_id=epoch_id, epoch_id=epoch_id, is_best=True)
+                # Save every evaluated checkpoint as a candidate, then retain
+                # only the configured number of highest-scoring candidates.
+                is_best = metrics > best_dev_metrics
+                if is_best:
                     best_dev_metrics = metrics
+                    best_dev_epoch = epoch_id
                     with open(os.path.join(self.model_dir, 'best_dev_iteration.dat'), 'w') as o_f:
                         o_f.write('{}'.format(epoch_id))
-                else:
-                    # Early stopping
-                    if epoch_id >= self.num_wait_epochs and metrics < np.mean(dev_metrics_history[-self.num_wait_epochs:]):
-                        break
+                self.save_checkpoint(
+                    checkpoint_id=epoch_id,
+                    epoch_id=epoch_id,
+                    is_best=is_best,
+                    metric=metrics,
+                )
                 dev_metrics_history.append(metrics)
+
+                # Stop after the configured number of training epochs without
+                # a strict improvement in the monitored dev metric.
+                patience = int(self.num_wait_epochs or 0)
+                early_stopping_enabled = not getattr(self.args, 'disable_early_stopping', False)
+                if (early_stopping_enabled and not is_best and patience > 0 and best_dev_epoch is not None
+                        and epoch_id - best_dev_epoch >= patience):
+                    print(
+                        'Early stopping at epoch {}: dev metric did not improve for {} epochs '
+                        '(best={:.6f} at epoch {}).'.format(
+                            epoch_id, epoch_id - best_dev_epoch, best_dev_metrics, best_dev_epoch
+                        )
+                    )
+                    self.update_checkpoint_metadata(
+                        stopped_early=True,
+                        stopped_epoch=epoch_id,
+                        best_metric=best_dev_metrics,
+                        best_epoch=best_dev_epoch,
+                    )
+                    break
                 if self.run_analysis:
                     num_path_types_file = os.path.join(self.model_dir, 'num_path_types.dat')
                     dev_metrics_file = os.path.join(self.model_dir, 'dev_metrics.dat')
@@ -526,12 +553,14 @@ class LFramework(nn.Module):
         for _ in range(batch_size - len(mini_batch)):
             mini_batch.append(dummy_example)
 
-    def save_checkpoint(self, checkpoint_id, epoch_id=None, is_best=False):
+    def save_checkpoint(self, checkpoint_id, epoch_id=None, is_best=False, metric=None, is_last=False):
         """
         Save model checkpoint.
         :param checkpoint_id: Model checkpoint index assigned by training loop.
         :param epoch_id: Model epoch index assigned by training loop.
         :param is_best: if set, the model being saved is the best model on dev set.
+        :param metric: dev metric used to rank retained checkpoints.
+        :param is_last: overwrite the rolling model_last.tar checkpoint.
         """
         if getattr(self.args, 'disable_checkpoint_saving', False):
             if not getattr(self, '_checkpoint_saving_disabled_logged', False):
@@ -542,35 +571,78 @@ class LFramework(nn.Module):
         checkpoint_dict['state_dict'] = self.state_dict()
         checkpoint_dict['epoch_id'] = epoch_id
 
+        if is_last:
+            last_path = os.path.join(self.model_dir, 'model_last.tar')
+            torch.save(checkpoint_dict, last_path)
+            print('=> last model updated \'{}\''.format(last_path))
+            self.update_checkpoint_metadata(last_checkpoint=os.path.basename(last_path), last_epoch=epoch_id)
+            return
+
         out_tar = os.path.join(self.model_dir, 'checkpoint-{}.tar'.format(checkpoint_id))
+        torch.save(checkpoint_dict, out_tar)
+        print('=> saving ranked checkpoint to \'{}\''.format(out_tar))
+
+        if not hasattr(self, '_ranked_checkpoints'):
+            self._ranked_checkpoints = []
+        self._ranked_checkpoints = [
+            entry for entry in self._ranked_checkpoints
+            if entry['checkpoint'] != os.path.basename(out_tar)
+        ]
+        self._ranked_checkpoints.append({
+            'checkpoint': os.path.basename(out_tar),
+            'epoch': int(epoch_id),
+            'metric': float(metric),
+        })
+        self._ranked_checkpoints.sort(key=lambda entry: (-entry['metric'], entry['epoch']))
+
+        keep_best = int(getattr(self.args, 'checkpoint_keep_best', 3) or 0)
+        discarded = self._ranked_checkpoints[keep_best:] if keep_best > 0 else []
+        self._ranked_checkpoints = self._ranked_checkpoints[:keep_best] if keep_best > 0 else self._ranked_checkpoints
+        for entry in discarded:
+            checkpoint_path = os.path.join(self.model_dir, entry['checkpoint'])
+            try:
+                os.remove(checkpoint_path)
+                print('=> pruned checkpoint outside top {} \'{}\''.format(keep_best, checkpoint_path))
+            except OSError as exc:
+                print('=> failed to prune old checkpoint \'{}\': {}'.format(checkpoint_path, exc))
+
         if is_best:
             best_path = os.path.join(self.model_dir, 'model_best.tar')
             shutil.copyfile(out_tar, best_path)
             print('=> best model updated \'{}\''.format(best_path))
-        else:
-            torch.save(checkpoint_dict, out_tar)
-            print('=> saving checkpoint to \'{}\''.format(out_tar))
-            self.prune_old_checkpoints()
 
-    def prune_old_checkpoints(self):
-        keep_last = int(getattr(self.args, 'checkpoint_keep_last', 0) or 0)
-        if keep_last <= 0:
-            return
-        checkpoint_pattern = re.compile(r'^checkpoint-(\d+)\.tar$')
-        checkpoints = []
-        for file_name in os.listdir(self.model_dir):
-            match = checkpoint_pattern.match(file_name)
-            if match:
-                checkpoints.append((int(match.group(1)), os.path.join(self.model_dir, file_name)))
-        if len(checkpoints) <= keep_last:
-            return
-        checkpoints.sort(key=lambda item: item[0])
-        for _, checkpoint_path in checkpoints[:-keep_last]:
+        best_entry = self._ranked_checkpoints[0] if self._ranked_checkpoints else None
+        self.update_checkpoint_metadata(
+            retained_best_checkpoints=self._ranked_checkpoints,
+            best_checkpoint=best_entry['checkpoint'] if best_entry else None,
+            best_checkpoint_alias='model_best.tar' if best_entry else None,
+            best_epoch=best_entry['epoch'] if best_entry else None,
+            best_metric=best_entry['metric'] if best_entry else None,
+        )
+
+    def update_checkpoint_metadata(self, **updates):
+        """Merge checkpoint status into checkpoint_metadata.json atomically."""
+        metadata_path = os.path.join(self.model_dir, 'checkpoint_metadata.json')
+        metadata = {
+            'metric_name': 'dev_mrr',
+            'mode': 'max',
+            'checkpoint_keep_best': int(getattr(self.args, 'checkpoint_keep_best', 3) or 0),
+            'early_stopping_enabled': not getattr(self.args, 'disable_early_stopping', False),
+            'early_stopping_patience_epochs': int(self.num_wait_epochs or 0),
+            'stopped_early': False,
+        }
+        if os.path.isfile(metadata_path):
             try:
-                os.remove(checkpoint_path)
-                print('=> pruned old checkpoint \'{}\''.format(checkpoint_path))
-            except OSError as exc:
-                print('=> failed to prune old checkpoint \'{}\': {}'.format(checkpoint_path, exc))
+                with open(metadata_path) as metadata_file:
+                    metadata.update(json.load(metadata_file))
+            except (OSError, ValueError) as exc:
+                print('=> could not read checkpoint metadata; recreating it: {}'.format(exc))
+        metadata.update(updates)
+        temporary_path = metadata_path + '.tmp'
+        with open(temporary_path, 'w') as metadata_file:
+            json.dump(metadata, metadata_file, indent=2, sort_keys=True)
+            metadata_file.write('\n')
+        os.replace(temporary_path, metadata_path)
 
     def load_checkpoint(self, input_file):
         """

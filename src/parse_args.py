@@ -45,8 +45,11 @@ parser.add_argument('--checkpoint_path', type=str, default=None,
                     help='path to a pretrained checkpoint')
 parser.add_argument('--disable_checkpoint_saving', action='store_true',
                     help='skip writing model checkpoints during training (default: False)')
+parser.add_argument('--checkpoint_keep_best', type=int, default=3,
+                    help='number of highest-scoring dev checkpoints to retain in addition to model_last.tar; '
+                         '0 keeps all evaluated checkpoints (default: 3)')
 parser.add_argument('--checkpoint_keep_last', type=int, default=0,
-                    help='keep only the latest N epoch checkpoint-*.tar files; 0 keeps all (default: 0)')
+                    help='deprecated compatibility option; use --checkpoint_keep_best instead')
 parser.add_argument('--dump_hparams', action='store_true',
                     help='print and optionally save resolved hyperparameters (default: False)')
 parser.add_argument('--dump_hparams_only', action='store_true',
@@ -134,7 +137,11 @@ parser.add_argument('--uniform_entity_initialization', type=bool, default=False,
 parser.add_argument('--num_epochs', type=int, default=200,
                     help='maximum number of pass over the entire training set (default: 20)')
 parser.add_argument('--num_wait_epochs', type=int, default=5,
-                    help='number of epochs to wait before stopping training if dev set performance drops')
+                    help='early-stopping patience in epochs without a new best dev score; 0 disables early stopping '
+                         '(default: 5)')
+parser.add_argument('--disable_early_stopping', action='store_true',
+                    help='train for all configured epochs instead of stopping on stale dev performance '
+                         '(default: False)')
 parser.add_argument('--num_peek_epochs', type=int, default=2,
                     help='number of epochs to wait for next dev set result check (default: 2)')
 parser.add_argument('--start_epoch', type=int, default=0,
