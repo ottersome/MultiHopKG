@@ -2,3 +2,9 @@
 # Use standard (non-strict) type checking
 typeCheckingMode = "standard"
 
+[tool.pyrefly]
+project-includes = ["**/*.py"]
+search-path = ["."]
+
+[tool.ruff.lint]
+ignore = ["I001", "UP035", "UP045", "UP006", "UP032"]
