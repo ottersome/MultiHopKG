@@ -72,6 +72,15 @@ parser.add_argument('--max_train_examples', type=int, default=0,
                     help='maximum number of loaded training examples to use (default: 0, no cap)')
 parser.add_argument('--max_dev_examples', type=int, default=0,
                     help='maximum number of loaded dev examples to use (default: 0, no cap)')
+parser.add_argument('--train_hop', type=int, default=0,
+                    help='train and select checkpoints using only QA examples with this hop count; '
+                         '0 uses every hop (default: 0)')
+parser.add_argument('--evaluate_per_hop', action='store_true',
+                    help='after training, load the best checkpoint and evaluate dev/test metrics by hop '
+                         '(default: False)')
+parser.add_argument('--eval_hops', type=str, default='',
+                    help='comma-separated hop counts to include during QA inference; empty evaluates all hops '
+                         '(default: all)')
 
 # Network Architecture
 parser.add_argument('--model', type=str, default='point',

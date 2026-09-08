@@ -36,10 +36,14 @@ fi
 : ${recompute_qadata_cache:=False}
 : ${disable_checkpoint_saving:=False}
 : ${checkpoint_keep_last:=0}
+: ${checkpoint_keep_best:=3}
 : ${train_data_fraction:=1.0}
 : ${dev_data_fraction:=1.0}
 : ${max_train_examples:=0}
 : ${max_dev_examples:=0}
+: ${train_hop:=0}
+: ${evaluate_per_hop:=False}
+: ${eval_hops:=}
 : ${reward_shaping_threshold:=0}
 : ${mu:=1.0}
 : ${distmult_state_dict_path:=}
@@ -62,6 +66,14 @@ fi
 disable_checkpoint_saving_flag=''
 if [[ $disable_checkpoint_saving = *"True"* ]]; then
     disable_checkpoint_saving_flag='--disable_checkpoint_saving'
+fi
+evaluate_per_hop_flag=''
+if [[ $evaluate_per_hop = *"True"* ]]; then
+    evaluate_per_hop_flag='--evaluate_per_hop'
+fi
+eval_hops_arg=''
+if [[ -n "$eval_hops" ]]; then
+    eval_hops_arg="--eval_hops $eval_hops"
 fi
 distmult_state_dict_path_arg=''
 if [[ -n "$distmult_state_dict_path" ]]; then
@@ -118,6 +130,7 @@ cmd="python3 -m src.experiments \
     $allow_direct_answer_edges_flag \
     $recompute_qadata_cache_flag \
     $disable_checkpoint_saving_flag \
+    --checkpoint_keep_best $checkpoint_keep_best \
     --checkpoint_keep_last $checkpoint_keep_last \
     --bert_model_name $bert_model_name \
     --max_question_len $max_question_len \
@@ -127,6 +140,9 @@ cmd="python3 -m src.experiments \
     --dev_data_fraction $dev_data_fraction \
     --max_train_examples $max_train_examples \
     --max_dev_examples $max_dev_examples \
+    --train_hop $train_hop \
+    $evaluate_per_hop_flag \
+    $eval_hops_arg \
     --reward_shaping_threshold $reward_shaping_threshold \
     --mu $mu \
     $distmult_state_dict_path_arg \

@@ -10,15 +10,16 @@
 
 import numpy as np
 import pickle
-from collections import Counter
+from collections import Counter, defaultdict
 from numbers import Integral
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 import torch
 
 from src.parse_args import args
 from src.data_utils import NO_OP_ENTITY_ID, DUMMY_ENTITY_ID
 from src.data_utils import DUMMY_RELATION_ID, START_RELATION_ID, NO_OP_RELATION_ID
+from src.itl_typing import QAExample, Triple
 
 
 def _get_answer_mask(all_answers, e1, query):
@@ -50,49 +51,19 @@ def _core_example(example):
     return example[:3]
 
 
-def get_gold_path(example):
-    for extra in example[3:]:
-        raw_path = extra.tolist() if hasattr(extra, 'tolist') else extra
-        if raw_path is None or isinstance(raw_path, str):
-            continue
-        if not isinstance(raw_path, (list, tuple)) or not raw_path:
-            continue
-        first_edge = raw_path[0].tolist() if hasattr(raw_path[0], 'tolist') else raw_path[0]
-        if not isinstance(first_edge, (list, tuple)) or len(first_edge) != 3:
-            continue
-        return [tuple(int(x) for x in edge) for edge in raw_path]
-    return None
-
-
-def _normalize_relation_chain(value) -> Optional[List[int]]:
-    value = value.tolist() if hasattr(value, 'tolist') else value
-    if value is None:
+def get_gold_path(example: QAExample) -> Optional[List[Triple]]:
+    """Return the explicitly typed QA ``Paths`` field."""
+    if example.Paths is None:
         return None
-    if isinstance(value, str):
-        if '->' not in value:
-            return None
-        # Raw CSV relation chains are mapped to IDs before normal evaluation.
-        # A string here is kept only as a sentinel that relation data exists.
-        return None
-    if not isinstance(value, (list, tuple)):
-        return None
-    if not value:
-        return []
-    first = value[0].tolist() if hasattr(value[0], 'tolist') else value[0]
-    if isinstance(first, (list, tuple)) and len(first) == 3:
-        return [int(edge[1]) for edge in value]
-    if isinstance(first, Integral) or isinstance(first, np.integer):
-        return [int(rel) for rel in value]
-    return None
+    return [tuple(int(value) for value in edge) for edge in example.Paths]
 
 
-def get_gold_relations(example):
-    for extra in example[3:]:
-        rels = _normalize_relation_chain(extra)
-        if rels is not None:
-            return rels
+def get_gold_relations(example: QAExample) -> Optional[List[int]]:
+    """Return explicit QA relation metadata, falling back only to its named path."""
+    if example.Path_Key is not None:
+        return [int(relation) for relation in example.Path_Key]
     gold_path = get_gold_path(example)
-    return [int(edge[1]) for edge in gold_path] if gold_path is not None else None
+    return [edge[1] for edge in gold_path] if gold_path is not None else None
 
 
 def get_gold_answers(example):
@@ -112,35 +83,9 @@ def has_multi_answer_representation(example) -> bool:
     return isinstance(answers, (list, tuple, set))
 
 
-def get_example_hops(example):
-    for extra in reversed(example[3:]):
-        try:
-            if isinstance(extra, str) and '->' in extra:
-                continue
-            if isinstance(extra, (list, tuple)) or hasattr(extra, 'tolist'):
-                continue
-            if isinstance(extra, (float, np.floating)):
-                continue
-            hop = int(extra)
-            if hop <= 0:
-                continue
-            return hop
-        except Exception:
-            continue
-    gold_path = get_gold_path(example)
-    if gold_path is not None:
-        return len(gold_path)
-    gold_relations = get_gold_relations(example)
-    return len(gold_relations) if gold_relations is not None else None
-
-
-def get_example_weight(example) -> float:
-    for extra in reversed(example[3:]):
-        if isinstance(extra, float):
-            return float(extra)
-        if isinstance(extra, np.floating):
-            return float(extra)
-    return 1.0
+def get_example_weight(example: Union[QAExample, Triple]) -> float:
+    """Return the explicit QA evaluation weight or the unweighted KG default."""
+    return example.Eval_Weight if isinstance(example, QAExample) else 1.0
 
 
 def hits_and_ranks(examples, scores, all_answers, verbose=False):
@@ -173,7 +118,7 @@ def hits_and_ranks(examples, scores, all_answers, verbose=False):
     mrr = 0
     for i, example in enumerate(examples):
         gold_answers = set(get_gold_answers(example))
-        pos = np.where(np.isin(top_k_targets[i], list(gold_answers)))[0]
+        pos = np.where( np.isin(top_k_targets[i], list(gold_answers)))[0]
         if len(pos) > 0:
             pos = pos[0]
             if pos < 10:
@@ -264,18 +209,22 @@ def format_hits_and_ranks_counts(counts, verbose=False):
     return hits_at_1, hits_at_3, hits_at_5, hits_at_10, mrr
 
 
-def hits_and_ranks_by_hop(examples, scores, all_answers, verbose=False):
+def hits_and_ranks_by_hop(
+    examples: Sequence[QAExample],
+    scores: torch.Tensor,
+    all_answers,
+    verbose: bool = False,
+) -> Dict[int, Dict[str, float]]:
     """
     Compute ranking metrics grouped by hop count for examples that carry hop metadata.
     """
     assert (len(examples) == scores.shape[0])
-    hop_examples = collections.defaultdict(list)
-    hop_indices = collections.defaultdict(list)
+    hop_examples: Dict[int, List[QAExample]] = defaultdict(list)
+    hop_indices: Dict[int, List[int]] = defaultdict(list)
     for i, example in enumerate(examples):
-        hop = get_example_hops(example)
-        if hop is None:
-            continue
-        hop = int(hop)
+        if not isinstance(example, QAExample):
+            raise TypeError('Per-hop evaluation requires QAExample rows.')
+        hop = example.Hops
         hop_examples[hop].append(example)
         hop_indices[hop].append(i)
 
@@ -709,7 +658,7 @@ class FaithfulnessEvaluator:
         return valid_paths
 
     def update(self,
-               example,
+               example: QAExample,
                pred_path: Sequence[Tuple[int, int, int]],
                predicted_endpoints: Iterable[int],
                weight: float = 1.0) -> None:
@@ -717,9 +666,11 @@ class FaithfulnessEvaluator:
         gt_relations = get_gold_relations(example)
         if not gt_path and not gt_relations:
             return
+        relation_reference = gt_relations or []
+        path_reference = gt_path or []
         weight = float(weight)
         gold_answers = get_gold_answers(example)
-        hop = get_example_hops(example) or len(gt_relations or gt_path)
+        hop = example.Hops
         pred_relations = [int(edge[1]) for edge in pred_path]
 
         reference_paths = [gt_path] if gt_path else []
@@ -727,14 +678,14 @@ class FaithfulnessEvaluator:
                 and has_multi_answer_representation(example)):
             self.semantic_path_attempts += weight
             reference_paths = self._get_semantically_valid_paths(
-                example, gt_relations or [], gold_answers)
+                example, relation_reference, gold_answers)
             if reference_paths:
                 self.semantic_path_examples += weight
 
         rel_dist = relation_edit_distance_norm(
-            pred_relations, gt_relations, self.special_tokens, self.inverse_mapping)
+            pred_relations, relation_reference, self.special_tokens, self.inverse_mapping)
         rel_p, rel_r, rel_f = relation_overlap_f1(
-            pred_relations, gt_relations, self.special_tokens, self.inverse_mapping)
+            pred_relations, relation_reference, self.special_tokens, self.inverse_mapping)
         ans_p, ans_r, ans_f = answer_set_f1(predicted_endpoints, gold_answers)
 
         edge_f = 0.0

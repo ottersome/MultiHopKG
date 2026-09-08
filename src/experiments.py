@@ -10,6 +10,7 @@
 """
 
 from datetime import datetime
+from argparse import Namespace
 import copy
 import itertools
 import json
@@ -19,19 +20,22 @@ import random
 import debugpy
 import platform
 
-from typing import Dict, Optional
+from typing import Dict, Iterable, List, Optional, Set, TypeVar, Union
 
 import torch
 
 from src.parse_args import parser
 from src.parse_args import args
 import src.data_utils as data_utils
+from src.data_utils import HopFilter, parse_hop_filter
 import src.eval
 from src.hyperparameter_range import hp_range
 from src.knowledge_graph import KnowledgeGraph
 from src.emb.fact_network import ComplEx, ConvE, DistMult, TransE
 from src.emb.fact_network import get_conve_kg_state_dict, get_complex_kg_state_dict, get_distmult_kg_state_dict
 from src.emb.emb import EmbeddingBasedMethod
+from src.itl_typing import QAExample
+from src.learn_framework import LFramework
 from src.rl.graph_search.pn import GraphSearchPolicy
 from src.rl.graph_search.pg import PolicyGradient
 from src.rl.graph_search.rs_pg import RewardShapingPolicyGradient
@@ -43,9 +47,8 @@ torch.manual_seed(args.seed)
 torch.cuda.manual_seed_all(args.seed)
 random.seed(args.seed)
 np.random.seed(args.seed)
-torch.manual_seed(args.seed)
-torch.cuda.manual_seed_all(args.seed)
 
+ExampleT = TypeVar('ExampleT')
 
 def setup_wandb(args, job_type='train'):
     """Initialize Weights & Biases run if enabled via args.wandb.
@@ -112,7 +115,7 @@ def process_data():
     test_path = os.path.join(data_dir, 'test.triples')
     data_utils.prepare_kb_envrioment(raw_kb_path, train_path, dev_path, test_path, args.test, args.add_reverse_relations)
 
-def initialize_model_directory(args, random_seed=None):
+def initialize_model_directory(args: Namespace, random_seed: Optional[int] = None) -> None:
     # add model parameter info to model directory
     model_root_dir = args.model_root_dir
     dataset = os.path.basename(os.path.normpath(args.data_dir))
@@ -230,6 +233,8 @@ def initialize_model_directory(args, random_seed=None):
         hyperparam_sig
     )
     model_sub_dir = model_sub_dir + '_d+' + datetimestr
+    if getattr(args, 'train_hop', 0):
+        model_sub_dir += '-train{}hop'.format(args.train_hop)
     if args.model == 'set':
         model_sub_dir += '-{}'.format(args.beam_size)
         model_sub_dir += '-{}'.format(args.num_paths_per_entity)
@@ -350,7 +355,7 @@ def dump_metrics(args, metrics: Optional[Dict]) -> Optional[str]:
         print('Failed to write metrics to {}: {}'.format(output_path, exc))
         return None
 
-def construct_model(args):
+def construct_model(args: Namespace) -> LFramework:
     """
     Construct NN graph.
     """
@@ -400,7 +405,13 @@ def construct_model(args):
         raise NotImplementedError
     return lf
 
-def subsample_examples(examples, fraction=1.0, max_examples=0, seed=0, split_name='data'):
+def subsample_examples(
+    examples: list[ExampleT],
+    fraction: float = 1.0,
+    max_examples: int = 0,
+    seed: int = 0,
+    split_name: str = 'data',
+) -> List[ExampleT]:
     fraction = float(fraction)
     max_examples = int(max_examples or 0)
     if fraction >= 1.0 and max_examples <= 0:
@@ -421,7 +432,26 @@ def subsample_examples(examples, fraction=1.0, max_examples=0, seed=0, split_nam
         len(sampled_examples), original_size, split_name, fraction, max_examples))
     return sampled_examples
 
-def train(lf):
+def filter_examples_by_hop(
+    examples: list[QAExample],
+    whitelisted_hops: set[int],
+    split_name: str,
+    required: bool = False,
+) -> list[QAExample]:
+    """Keep examples whose Hops metadata matches the whitelisted hop counts."""
+    if not whitelisted_hops:
+        return examples
+    filtered = [
+        example for example in examples
+        if example.Hops in whitelisted_hops
+    ]
+    _hop_label = ','.join(str(hop) for hop in sorted(whitelisted_hops))
+    print(f'Using {len(filtered)}/{len(examples)} {split_name} examples for hop(s) {_hop_label}.')
+    if required and not filtered:
+        raise ValueError( f'No {split_name} examples matched hop(s) {_hop_label}. Ensure the QA data contains a Hops column.')
+    return filtered
+
+def train(lf: LFramework) -> None:
     train_path = data_utils.get_train_path(args)
     dev_path = os.path.join(args.data_dir, 'dev.triples')
     entity_index_path = os.path.join(args.data_dir, 'entity2id.txt')
@@ -454,6 +484,16 @@ def train(lf):
         else:
             seen_entities = set()
         dev_data = data_utils.load_triples(dev_path, entity_index_path, relation_index_path, seen_entities=seen_entities)
+    if args.train_hop:
+        if not args.use_question_encoder:
+            raise ValueError('--train_hop requires --use_question_encoder and QA data with Hops metadata.')
+        train_data = filter_examples_by_hop(train_data, [args.train_hop], 'train', required=True)
+        dev_data = filter_examples_by_hop(dev_data, [args.train_hop], 'dev', required=True)
+        if args.num_rollout_steps != args.train_hop:
+            print(
+                f'Warning: --train_hop={args.train_hop} but --num_rollout_steps={args.num_rollout_steps}. '
+                'Set both to the same value for an exact n-hop experiment.'
+            )
     train_data = subsample_examples(
         train_data, args.train_data_fraction, args.max_train_examples, args.seed, 'train')
     dev_data = subsample_examples(
@@ -466,7 +506,7 @@ def train(lf):
     # Train with QA questions and evaluate on standard triples dev set
     lf.run_train(train_data, dev_data)
 
-def inference(lf):
+def inference(lf: LFramework) -> dict[str, dict[str, object]]:
     lf.batch_size = args.dev_batch_size
     lf.eval()
     _wandb_enabled = getattr(args, 'wandb_enabled', False)
@@ -502,14 +542,14 @@ def inference(lf):
     else:
         seen_entities = set()
 
-    eval_metrics = {
+    eval_metrics: dict[str, dict[str, object]] = {
         'dev': {},
         'test': {}
     }
 
     def _print_rollout_metrics(split_name: str, metrics: Dict[str, float]) -> None:
         hits_keys = sorted(
-            [k for k in metrics.keys() if k.startswith('hits@')],
+            [k for k in metrics.keys() if k.startswith('hits@')],  # noqa: SIM118
             key=lambda item: int(item.split('@')[1]) if item.count('@') == 1 else item
         )
         summary = ' '.join(f"{k}={metrics[k]:.4f}" for k in hits_keys)
@@ -546,7 +586,10 @@ def inference(lf):
         if per_hop:
             print("{} per-hop Hits@1: {}".format(split_name, ' '.join(per_hop)))
 
-    def _attach_per_hop_metrics(eval_bucket: Dict[str, float], per_hop_metrics: Dict[int, Dict[str, float]]) -> None:
+    def _attach_per_hop_metrics(
+        eval_bucket: dict[str, object],
+        per_hop_metrics: dict[int, dict[str, float]],
+    ) -> None:
         for hop, hop_metrics in sorted(per_hop_metrics.items()):
             prefix = f'per_hop/{hop}hop'
             eval_bucket[f'{prefix}_examples'] = hop_metrics['examples']
@@ -642,6 +685,12 @@ def inference(lf):
                 evaluate_paraphrases=args.evaluate_paraphrases,
                 filter_original_paraphrases=args.filter_original_paraphrases
             )
+            requested_eval_hops = parse_hop_filter(args.eval_hops)
+            if requested_eval_hops:
+                dev_data = filter_examples_by_hop(
+                    dev_data, requested_eval_hops, 'dev evaluation', required=True)
+                test_data = filter_examples_by_hop(
+                    test_data, requested_eval_hops, 'test evaluation', required=True)
             for split_name, split_data in [('Dev', dev_data), ('Test', test_data)]:
                 if hasattr(lf, 'supports_rollout_evaluation') and lf.supports_rollout_evaluation():
                     rollout_metrics = lf.evaluate_with_rollouts(split_data, split_name=split_name.lower())
@@ -675,9 +724,6 @@ def inference(lf):
         eval_metrics['dev']['hits_at_5'] = dev_metrics[2]
         eval_metrics['dev']['hits_at_10'] = dev_metrics[3]
         eval_metrics['dev']['mrr'] = dev_metrics[4]
-        dev_per_hop_metrics = src.eval.hits_and_ranks_by_hop(dev_data, pred_scores, lf.kg.dev_objects, verbose=False)
-        _attach_per_hop_metrics(eval_metrics['dev'], dev_per_hop_metrics)
-        _print_per_hop_ranking('Dev', dev_per_hop_metrics)
         src.eval.hits_and_ranks(dev_data, pred_scores, lf.kg.all_objects, verbose=True)
         if hasattr(lf, 'supports_rollout_evaluation') and lf.supports_rollout_evaluation():
             rollout_dev_metrics = lf.evaluate_with_rollouts(dev_data, split_name='dev')
@@ -706,9 +752,6 @@ def inference(lf):
         eval_metrics['test']['hits_at_5'] = test_metrics[2]
         eval_metrics['test']['hits_at_10'] = test_metrics[3]
         eval_metrics['test']['mrr'] = test_metrics[4]
-        test_per_hop_metrics = src.eval.hits_and_ranks_by_hop(test_data, pred_scores, lf.kg.all_objects, verbose=False)
-        _attach_per_hop_metrics(eval_metrics['test'], test_per_hop_metrics)
-        _print_per_hop_ranking('Test', test_per_hop_metrics)
         if hasattr(lf, 'supports_rollout_evaluation') and lf.supports_rollout_evaluation():
             rollout_test_metrics = lf.evaluate_with_rollouts(test_data, split_name='test')
             if rollout_test_metrics:
@@ -1148,6 +1191,11 @@ def run_experiment(args):
 
                 if args.train:
                     train(lf)
+                    if args.evaluate_per_hop:
+                        if not args.use_question_encoder:
+                            raise ValueError('--evaluate_per_hop requires --use_question_encoder.')
+                        metrics = inference(lf)
+                        dump_metrics(args, metrics)
                 elif args.inference:
                     metrics = inference(lf)
                     dump_metrics(args, metrics)

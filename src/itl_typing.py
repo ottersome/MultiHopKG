@@ -18,7 +18,7 @@ Data Structures:
 import pandas as pd
 from collections import namedtuple
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, NamedTuple, Optional, Sequence, Tuple, Union
 
 # Knowledge Graph Triple Types
 Triple = Tuple[int, int, int]
@@ -40,6 +40,18 @@ Type alias for a collection of knowledge graph triples.
 Represents multiple Triple instances, typically used for datasets, paths,
 or collections of facts in knowledge graph operations.
 """
+
+
+class QAExample(NamedTuple):
+    """Typed, tuple-compatible representation of one processed QA row."""
+
+    source_entity: int
+    answer_entity: Union[int, List[int]]
+    question: List[int]
+    Hops: int
+    Paths: Optional[Sequence[Sequence[int]]] = None
+    Path_Key: Optional[Sequence[int]] = None
+    Eval_Weight: float = 1.0
 
 # Dataset Split Types
 SplitTuple = namedtuple("SplitTuple", ["train", "dev", "test"])

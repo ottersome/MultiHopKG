@@ -42,6 +42,14 @@ filter_original_paraphrases_flag=''
 if [[ $filter_original_paraphrases = *"True"* ]]; then
     filter_original_paraphrases_flag='--filter_original_paraphrases'
 fi
+evaluate_per_hop_flag=''
+if [[ $evaluate_per_hop = *"True"* ]]; then
+    evaluate_per_hop_flag='--evaluate_per_hop'
+fi
+eval_hops_arg=''
+if [[ -n "$eval_hops" ]]; then
+    eval_hops_arg="--eval_hops $eval_hops"
+fi
 
 cmd="python3 -m src.experiments \
     --data_dir $data_dir \
@@ -90,6 +98,9 @@ cmd="python3 -m src.experiments \
     $recompute_qadata_cache_flag \
     --bert_model_name $bert_model_name \
     --max_question_len $max_question_len \
+    --train_hop $train_hop \
+    $evaluate_per_hop_flag \
+    $eval_hops_arg \
     --checkpoint_keep_best $checkpoint_keep_best \
     --checkpoint_keep_last $checkpoint_keep_last \
     --mu $mu \

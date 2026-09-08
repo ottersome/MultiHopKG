@@ -7,6 +7,7 @@
  Data processing utilities.
 """
 
+from typing import Iterable
 import json
 import logging
 import ast
@@ -20,8 +21,10 @@ import pickle
 import pandas as pd
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
-from src.itl_typing import DFSplit
+from src.itl_typing import DFSplit, QAExample
 from src.setup import get_git_root
+
+HopFilter = str | Iterable[int]
 
 START_RELATION = 'START_RELATION'
 NO_OP_RELATION = 'NO_OP_RELATION'
@@ -614,7 +617,9 @@ def process_and_cache_triviaqa_data(
         lambda x: question_tokenizer.encode(x, add_special_tokens=False)
     )
     if paraphrased_questions is not None:
-        tokenized_paraphrases = extract_literals(paraphrased_questions).map(
+        parsed_paraphrases = extract_literals(paraphrased_questions)
+        assert isinstance(parsed_paraphrases, pd.Series)
+        tokenized_paraphrases = parsed_paraphrases.map(
             lambda paraphrases: [
                 question_tokenizer.encode(str(question), add_special_tokens=False)
                 for question in paraphrases
@@ -761,7 +766,7 @@ def load_qa_data(
     override_split: bool = True,
     evaluate_paraphrases: bool = False,
     filter_original_paraphrases: bool = False,
-) -> Tuple[List, List, List, Dict[str, Any]]:
+) -> Tuple[List[QAExample], List[QAExample], List[QAExample], Dict[str, Any]]:
     """
     Load QA dataset with intelligent caching and fallback processing.
     
@@ -783,9 +788,9 @@ def load_qa_data(
         
     Returns:
         Tuple containing:
-            - train_df: Training DataFrame
-            - dev_df: Development DataFrame  
-            - test_df: Test DataFrame
+            - train_df: List of QAExample
+            - dev_df: List of QAExample
+            - test_df: List of QAExample
             - train_metadata: Metadata dictionary with processing information
             
     Raises:
@@ -870,13 +875,15 @@ def load_qa_data(
     dev_df['Answer-Entity'] = dev_df['Answer-Entity'].apply(normalize_cached_answers)
     test_df['Answer-Entity'] = test_df['Answer-Entity'].apply(normalize_cached_answers)
 
-    output_columns = ['Source-Entity', 'Answer-Entity', 'Question']
-    if 'Paths' in train_df.columns:
-        output_columns.append('Paths')
-    if 'Path-Key' in train_df.columns:
-        output_columns.append('Path-Key')
-    if 'Hops' in train_df.columns:
-        output_columns.append('Hops')
+    for split_name, split_df in [('train', train_df), ('dev', dev_df), ('test', test_df)]:
+        if 'Hops' not in split_df.columns:
+            raise ValueError(
+                "QA {} data is missing the required 'Hops' column.".format(split_name)
+            )
+        if split_df['Hops'].isna().any():
+            raise ValueError(
+                "QA {} data contains null values in the required 'Hops' column.".format(split_name)
+            )
 
     def expand_paraphrases(df: pd.DataFrame) -> pd.DataFrame:
         if not evaluate_paraphrases or 'Question-Paraphrased' not in df.columns:
@@ -922,11 +929,43 @@ def load_qa_data(
                 ' (original-identical filtered)' if filter_original_paraphrases else ''
             )
         )
-    if 'Eval-Weight' in train_df.columns:
-        output_columns.append('Eval-Weight')
+    def to_qa_examples(df: pd.DataFrame) -> List[QAExample]:
+        """Convert named DataFrame columns into the model's typed row format."""
+        has_paths = 'Paths' in df.columns
+        has_path_key = 'Path-Key' in df.columns
+        examples: List[QAExample] = []
+        for _, row in df.iterrows():
+            examples.append(QAExample(
+                source_entity=int(row['Source-Entity']),
+                answer_entity=row['Answer-Entity'],
+                question=row['Question'],
+                Hops=int(row['Hops']),
+                Paths=row['Paths'] if has_paths else None,
+                Path_Key=row['Path-Key'] if has_path_key else None,
+                Eval_Weight=float(row['Eval-Weight']),
+            ))
+        return examples
 
-    train_list = train_df[output_columns].values.tolist()
-    dev_list = dev_df[output_columns].values.tolist()
-    test_list = test_df[output_columns].values.tolist()
+    train_list = to_qa_examples(train_df)
+    dev_list = to_qa_examples(dev_df)
+    test_list = to_qa_examples(test_df)
 
     return train_list, dev_list, test_list, train_metadata
+
+def parse_hop_filter(value: HopFilter | None) -> set[int]:
+    """Parse a comma-separated hop filter into a set of positive integers."""
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        if not value.strip():
+            return set()
+        values: Iterable[str | int] = value.split(',')
+    else:
+        values = value
+    try:
+        hops = {int(item) for item in values if str(item).strip()}
+    except ValueError as exc:
+        raise ValueError(f'Hop filters must contain comma-separated integers: {value}') from exc
+    if any(hop <= 0 for hop in hops):
+        raise ValueError(f'Hop filters must contain positive integers: {value}')
+    return hops

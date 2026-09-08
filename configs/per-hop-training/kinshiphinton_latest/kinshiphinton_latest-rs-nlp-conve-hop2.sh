@@ -57,10 +57,11 @@ adam_beta2=0.999
 add_reverse_relations="True"
 checkpoint_keep_best=3 # Just for clarity 
 
-# Per hop testing: Generally leave empty if you dont want to do tis. 
-# train_hop=2 # Means that it takes all hops for training
-# evaluate_per_hop="True" # By default we do not evaluate by per hop
-# eval_hops= # IF we did you would fill that up 
+# Per hop testing
+train_hop=2 
+evaluate_per_hop="True" 
+eval_hops=2 
+
 
 num_negative_samples=12
 margin=0.5

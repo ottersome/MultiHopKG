@@ -7,12 +7,13 @@
  Policy gradient (REINFORCE algorithm) training and inference.
 """
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional, cast
 
 import numpy as np
 import torch
 
-from src.eval import FaithfulnessEvaluator, RolloutEvaluator, get_example_hops, get_example_weight
+from src.eval import FaithfulnessEvaluator, RolloutEvaluator, get_example_weight
+from src.itl_typing import QAExample
 from src.learn_framework import LFramework
 import src.rl.graph_search.beam_search as search
 import src.utils.ops as ops
@@ -270,6 +271,13 @@ class PolicyGradient(LFramework):
         if not data:
             return None
 
+        qa_rows = [isinstance(example, QAExample) for example in data]
+        if any(qa_rows) and not all(qa_rows):
+            raise TypeError('Rollout evaluation cannot mix QAExample rows with KG triples.')
+        is_qa_data = all(qa_rows)
+        if self.use_question_encoder and not is_qa_data:
+            raise TypeError('Question-conditioned rollout evaluation requires QAExample rows.')
+
         pool_mode = getattr(self.args, 'rollout_eval_pool', 'max')
         eval_rollouts = num_rollouts if num_rollouts is not None else getattr(self.args, 'rollout_eval_num_rollouts', 0)
         if not eval_rollouts or eval_rollouts <= 0:
@@ -344,25 +352,24 @@ class PolicyGradient(LFramework):
                         dtype=np.float64
                     )
                     evaluator.update(pred_scores_np, rewards_np, pred_entities_np, weights=example_weights)
-                    for row, example in enumerate(mini_batch):
-                        hop = get_example_hops(example)
-                        if hop is None:
-                            continue
-                        hop = int(hop)
-                        hop_evaluator = hop_evaluators.setdefault(
-                            hop,
-                            RolloutEvaluator(positive_reward=1.0, pool=pool_mode)
-                        )
-                        hop_evaluator.update(
-                            pred_scores_np[row:row + 1],
-                            rewards_np[row:row + 1],
-                            pred_entities_np[row:row + 1],
-                            weights=example_weights[row:row + 1]
-                        )
-                    if 'search_traces' in beam_output:
+                    if is_qa_data:
+                        qa_mini_batch = cast(list[QAExample], mini_batch)
+                        for row, example in enumerate(qa_mini_batch):
+                            hop_evaluator = hop_evaluators.setdefault(
+                                example.Hops,
+                                RolloutEvaluator(positive_reward=1.0, pool=pool_mode)
+                            )
+                            hop_evaluator.update(
+                                pred_scores_np[row:row + 1],
+                                rewards_np[row:row + 1],
+                                pred_entities_np[row:row + 1],
+                                weights=example_weights[row:row + 1]
+                            )
+                    if is_qa_data and 'search_traces' in beam_output:
                         search_traces = beam_output['search_traces']
                         output_beam_size = pred_entities.size(1)
-                        for row, example in enumerate(mini_batch):
+                        qa_mini_batch = cast(list[QAExample], mini_batch)
+                        for row, example in enumerate(qa_mini_batch):
                             top_ind = row * output_beam_size
                             pred_path = []
                             for step in range(self.num_rollout_steps):
