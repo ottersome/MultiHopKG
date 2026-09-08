@@ -58,9 +58,9 @@ add_reverse_relations="True"
 checkpoint_keep_best=3 # Just for clarity 
 
 # Per hop testing
-train_hop=2
+train_hop=3
 evaluate_per_hop="True" 
-eval_hops=2
+eval_hops=3
 
 
 num_negative_samples=12
