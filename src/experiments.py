@@ -33,6 +33,7 @@ from src.hyperparameter_range import hp_range
 from src.knowledge_graph import KnowledgeGraph
 from src.emb.fact_network import ComplEx, ConvE, DistMult, TransE
 from src.emb.fact_network import get_conve_kg_state_dict, get_complex_kg_state_dict, get_distmult_kg_state_dict
+from src.utils.experiment_io import write_run_manifest
 from src.emb.emb import EmbeddingBasedMethod
 from src.itl_typing import QAExample
 from src.learn_framework import LFramework
@@ -355,6 +356,34 @@ def dump_metrics(args, metrics: Optional[Dict]) -> Optional[str]:
         print('Failed to write metrics to {}: {}'.format(output_path, exc))
         return None
 
+
+def dump_run_metadata(args: Namespace, operation: str) -> Optional[str]:
+    """Record the checkpoint produced or consumed by a completed run."""
+    output_path = getattr(args, 'run_metadata_output_path', '')
+    if not output_path:
+        return None
+
+    if operation == 'train':
+        checkpoint_path = os.path.join(args.model_dir, 'model_best.tar')
+    else:
+        checkpoint_path = get_checkpoint_path(args)
+    try:
+        manifest_path = write_run_manifest(
+            output_path,
+            fingerprint=getattr(args, 'run_fingerprint', ''),
+            operation=operation,
+            model_dir=args.model_dir,
+            checkpoint_path=checkpoint_path,
+            seed=args.seed,
+            train_hop=getattr(args, 'train_hop', 0),
+        )
+        print('Run metadata saved to {}'.format(manifest_path))
+        return str(manifest_path)
+    except Exception as exc:
+        print('Failed to write run metadata to {}: {}'.format(output_path, exc))
+        return None
+
+
 def construct_model(args: Namespace) -> LFramework:
     """
     Construct NN graph.
@@ -487,8 +516,8 @@ def train(lf: LFramework) -> None:
     if args.train_hop:
         if not args.use_question_encoder:
             raise ValueError('--train_hop requires --use_question_encoder and QA data with Hops metadata.')
-        train_data = filter_examples_by_hop(train_data, [args.train_hop], 'train', required=True)
-        dev_data = filter_examples_by_hop(dev_data, [args.train_hop], 'dev', required=True)
+        train_data = filter_examples_by_hop(train_data, {args.train_hop}, 'train', required=True)
+        dev_data = filter_examples_by_hop(dev_data, {args.train_hop}, 'dev', required=True)
         if args.num_rollout_steps != args.train_hop:
             print(
                 f'Warning: --train_hop={args.train_hop} but --num_rollout_steps={args.num_rollout_steps}. '
@@ -1177,7 +1206,11 @@ def run_experiment(args):
             elif args.run_ablation_studies:
                 run_ablation_studies(args)
             else:
-                initialize_model_directory(args)
+                if args.checkpoint_path and not args.train:
+                    args.model_dir = os.path.dirname(os.path.abspath(args.checkpoint_path))
+                    print('Reusing model directory: {}'.format(args.model_dir))
+                else:
+                    initialize_model_directory(args)
                 lf = None
                 if args.dump_hparams or args.dump_hparams_only:
                     lf = construct_model(args)
@@ -1196,9 +1229,11 @@ def run_experiment(args):
                             raise ValueError('--evaluate_per_hop requires --use_question_encoder.')
                         metrics = inference(lf)
                         dump_metrics(args, metrics)
+                    dump_run_metadata(args, 'train')
                 elif args.inference:
                     metrics = inference(lf)
                     dump_metrics(args, metrics)
+                    dump_run_metadata(args, 'inference')
                 elif args.eval_by_relation_type:
                     metrics = inference(lf)
                     dump_metrics(args, metrics)

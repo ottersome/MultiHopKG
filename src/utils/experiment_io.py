@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping, Set as AbstractSet
 from pathlib import Path
 
 
 PathLike = str | os.PathLike[str]
+RUN_MANIFEST_SCHEMA_VERSION = 1
 
 
 EXPERIMENT_STORE_TRUE_ARGS = frozenset({
@@ -136,3 +138,39 @@ def ensure_parent(path: PathLike) -> Path:
     artifact_path = Path(path)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     return artifact_path
+
+
+def write_run_manifest(
+    output_path: PathLike,
+    *,
+    fingerprint: str,
+    operation: str,
+    model_dir: PathLike,
+    checkpoint_path: PathLike,
+    seed: int,
+    train_hop: int,
+) -> Path:
+    """Atomically record a completed experiment and its reusable checkpoint."""
+    manifest_path = ensure_parent(output_path)
+    resolved_model_dir = Path(model_dir).resolve()
+    resolved_checkpoint = Path(checkpoint_path).resolve()
+    payload: dict[str, object] = {
+        'schema_version': RUN_MANIFEST_SCHEMA_VERSION,
+        'fingerprint': fingerprint,
+        'completed': resolved_checkpoint.is_file(),
+        'operation': operation,
+        'model_dir': str(resolved_model_dir),
+        'checkpoint_path': str(resolved_checkpoint),
+        'seed': seed,
+        'train_hop': train_hop,
+    }
+    temporary_path = manifest_path.with_name(
+        f'.{manifest_path.name}.{os.getpid()}.tmp'
+    )
+    try:
+        temporary_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        os.replace(temporary_path, manifest_path)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return manifest_path

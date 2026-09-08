@@ -58,6 +58,10 @@ parser.add_argument('--hparams_output_path', type=str, default='',
                     help='output path for the hyperparameter dump (default: <model_dir>/hparams.json)')
 parser.add_argument('--metrics_output_path', type=str, default='',
                     help='output path for evaluation metrics JSON (default: disabled)')
+parser.add_argument('--run_metadata_output_path', type=str, default='',
+                    help='write completed-run metadata for safe checkpoint reuse (default: disabled)')
+parser.add_argument('--run_fingerprint', type=str, default='',
+                    help='caller-provided fingerprint stored in completed-run metadata')
 
 # Data
 parser.add_argument('--test', action='store_true',

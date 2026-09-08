@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -16,14 +17,40 @@ import sys
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import DefaultDict, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from src.utils.experiment_io import ensure_parent, load_shell_config, summarize_error
+from src.utils.experiment_io import (
+    RUN_MANIFEST_SCHEMA_VERSION,
+    ensure_parent,
+    load_shell_config,
+    summarize_error,
+)
 
 
 ColumnKey = Tuple[str, str, int]
 AggregateKey = Tuple[str, str, str, str, int]
+CACHE_SCHEMA_VERSION = RUN_MANIFEST_SCHEMA_VERSION
+REPORT_CONFIG_KEYS = frozenset({
+    'report_dataset',
+    'report_answer_type',
+    'report_model',
+    'report_model_group',
+})
+CONTROLLED_EXTRA_OPTIONS = frozenset({
+    '--train',
+    '--inference',
+    '--checkpoint_path',
+    '--seed',
+    '--train_hop',
+    '--num_rollout_steps',
+    '--evaluate_per_hop',
+    '--eval_hops',
+    '--metrics_output_path',
+    '--run_metadata_output_path',
+    '--run_fingerprint',
+})
 
 
 @dataclass(frozen=True)
@@ -49,6 +76,10 @@ class EvaluationResult:
     metrics_path: str
     stdout_log: str
     stderr_log: str
+    fingerprint: str
+    manifest_path: str
+    reused_checkpoint: bool = False
+    checkpoint_path: Optional[str] = None
     hits_at_1: Optional[float] = None
     returncode: Optional[int] = None
     error: Optional[str] = None
@@ -80,7 +111,7 @@ def parse_seed_list(value: str) -> List[int]:
     return values
 
 
-def parse_args(argv: Sequence[str] |  None = None) -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     extra_args: list[str] = []
     if '--' in raw_argv:
@@ -122,7 +153,12 @@ def parse_args(argv: Sequence[str] |  None = None) -> argparse.Namespace:
     parser.add_argument(
         '--log_dir',
         default='metrics_logs/',
-        help='Artifact directory (default: per_hop_eval_logs/<timestamp>).',
+        help='Evaluation artifact directory (default: metrics_logs/).',
+    )
+    parser.add_argument(
+        '--run_cache_dir',
+        default='.cache/per_hop_runs',
+        help='Persistent completed-run manifest directory (default: .cache/per_hop_runs).',
     )
     parser.add_argument('--output_json', default='', help='Optional result JSON path.')
     parser.add_argument('--output_csv', default='', help='Optional aggregate CSV path.')
@@ -130,10 +166,26 @@ def parse_args(argv: Sequence[str] |  None = None) -> argparse.Namespace:
     parser.add_argument('--precision', type=int, default=3)
     parser.add_argument('--dry_run', action='store_true')
     parser.add_argument('--fail_fast', action='store_true')
+    parser.add_argument(
+        '--force_retrain',
+        action='store_true',
+        help='Train even when a completed run with the same effective parameters exists.',
+    )
     args = parser.parse_args(raw_argv)
     args.extra_args = extra_args
     if args.precision < 0:
         parser.error('--precision must be non-negative')
+    controlled_extras = [
+        argument
+        for argument in extra_args
+        if argument.partition('=')[0] in CONTROLLED_EXTRA_OPTIONS
+    ]
+    if controlled_extras:
+        parser.error(
+            'the runner controls these arguments and they cannot appear after --: {}'.format(
+                ', '.join(controlled_extras)
+            )
+        )
     return args
 
 
@@ -221,6 +273,68 @@ def extract_hits_at_1(metrics: Mapping[str, object], split: str, hop: int) -> fl
     return float(value)
 
 
+@lru_cache(maxsize=None)
+def source_tree_digest(source_root: Path) -> str:
+    """Hash training source so code changes do not reuse stale checkpoints."""
+    digest = hashlib.sha256()
+    if source_root.is_dir():
+        for source_path in sorted(source_root.rglob('*.py')):
+            digest.update(str(source_path.relative_to(source_root)).encode('utf-8'))
+            digest.update(source_path.read_bytes())
+    return digest.hexdigest()
+
+
+def training_fingerprint(
+    config: Mapping[str, str],
+    seed: int,
+    hop: int,
+    launcher: Path,
+    extra_args: Sequence[str],
+) -> str:
+    """Identify training inputs whose checkpoints are safe to reuse."""
+    training_config = {
+        key: value
+        for key, value in config.items()
+        if key not in REPORT_CONFIG_KEYS
+    }
+    # These command-line values override their config counterparts.
+    training_config.update({
+        'seed': str(seed),
+        'train_hop': str(hop),
+        'num_rollout_steps': str(hop),
+    })
+    payload = {
+        'schema_version': CACHE_SCHEMA_VERSION,
+        'config': training_config,
+        'extra_args': list(extra_args),
+        'launcher_sha256': hashlib.sha256(launcher.read_bytes()).hexdigest(),
+        'source_sha256': source_tree_digest(launcher.resolve().parent / 'src'),
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+
+
+def reusable_checkpoint(manifest_path: Path, fingerprint: str) -> Optional[Path]:
+    """Return a verified cached checkpoint, or ``None`` for an unusable manifest."""
+    if not manifest_path.is_file():
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get('schema_version') != CACHE_SCHEMA_VERSION:
+        return None
+    if payload.get('fingerprint') != fingerprint or payload.get('completed') is not True:
+        return None
+    raw_checkpoint = payload.get('checkpoint_path')
+    if not isinstance(raw_checkpoint, str) or not raw_checkpoint:
+        return None
+    checkpoint = Path(raw_checkpoint)
+    return checkpoint if checkpoint.is_file() else None
+
+
 def build_command(
     launcher: Path,
     config_path: Path,
@@ -228,13 +342,17 @@ def build_command(
     seed: int,
     hop: int,
     metrics_path: Path,
+    manifest_path: Path,
+    fingerprint: str,
     extra_args: Sequence[str],
+    checkpoint_path: Optional[Path] = None,
 ) -> List[str]:
-    return [
+    operation = '--inference' if checkpoint_path is not None else '--train'
+    command = [
         'bash',
         str(launcher),
         str(config_path),
-        '--train',
+        operation,
         str(gpu),
         '--seed',
         str(seed),
@@ -247,8 +365,15 @@ def build_command(
         str(hop),
         '--metrics_output_path',
         str(metrics_path),
-        *extra_args,
+        '--run_metadata_output_path',
+        str(manifest_path),
+        '--run_fingerprint',
+        fingerprint,
     ]
+    if checkpoint_path is not None:
+        command.extend(['--checkpoint_path', str(checkpoint_path)])
+    command.extend(extra_args)
+    return command
 
 
 def run_config(
@@ -259,13 +384,28 @@ def run_config(
     repo_root: Path,
     launcher: Path,
     log_dir: Path,
+    cache_dir: Path,
+    config: Mapping[str, str],
 ) -> EvaluationResult:
     label = sanitize_label(f'{config_path.stem}-{identity.hop}hop-seed{seed}')
     metrics_path = log_dir / f'{label}.metrics.json'
     stdout_path = log_dir / f'{label}.stdout.log'
     stderr_path = log_dir / f'{label}.stderr.log'
+    fingerprint = training_fingerprint(config, seed, identity.hop, launcher, args.extra_args)
+    manifest_path = cache_dir / f'{fingerprint}.json'
+    checkpoint_path = None if args.force_retrain else reusable_checkpoint(manifest_path, fingerprint)
     command = build_command(
-        launcher, config_path, args.gpu, seed, identity.hop, metrics_path, args.extra_args)
+        launcher,
+        config_path,
+        args.gpu,
+        seed,
+        identity.hop,
+        metrics_path,
+        manifest_path,
+        fingerprint,
+        args.extra_args,
+        checkpoint_path,
+    )
     result = EvaluationResult(
         config=str(config_path),
         seed=seed,
@@ -275,7 +415,17 @@ def run_config(
         metrics_path=str(metrics_path),
         stdout_log=str(stdout_path),
         stderr_log=str(stderr_path),
+        fingerprint=fingerprint,
+        manifest_path=str(manifest_path),
+        reused_checkpoint=checkpoint_path is not None,
+        checkpoint_path=str(checkpoint_path) if checkpoint_path is not None else None,
     )
+    if checkpoint_path is not None:
+        print('  reusing {}'.format(checkpoint_path))
+    elif args.force_retrain:
+        print('  \033[33mforcing a fresh training run\033[0m')
+    else:
+        print('  \033[33mno matching completed run; training\033[0m')
     print('  {}'.format(shlex.join(command)))
     if args.dry_run:
         return result
@@ -311,6 +461,9 @@ def run_config(
         result.status = 'failed'
         result.error = str(exc)
         return result
+    recorded_checkpoint = reusable_checkpoint(manifest_path, fingerprint)
+    if recorded_checkpoint is not None:
+        result.checkpoint_path = str(recorded_checkpoint)
     result.status = 'ok'
     return result
 
@@ -449,19 +602,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not log_dir.is_absolute():
         log_dir = repo_root / log_dir
     log_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = Path(args.run_cache_dir)
+    if not cache_dir.is_absolute():
+        cache_dir = repo_root / cache_dir
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
-    jobs: list[tuple[Path, ReportIdentity, int]] = []
+    jobs: list[tuple[Path, Mapping[str, str], ReportIdentity, int]] = []
     for config_path in discover_configs(config_target):
         config = load_shell_config(config_path)
         identity = config_identity(config_path, config)
         for seed in config_seeds(config_path, config, args.seeds):
-            jobs.append((config_path, identity, seed))
+            jobs.append((config_path, config, identity, seed))
 
     print('Running {} per-hop training/evaluation job(s).'.format(len(jobs)))
     results: List[EvaluationResult] = []
-    for index, (config_path, identity, seed) in enumerate(jobs, start=1):
+    for index, (config_path, config, identity, seed) in enumerate(jobs, start=1):
         print(f'[{index}/{len(jobs)}] {config_path} ({identity.hop}-hop, seed={seed})')
-        result = run_config(config_path, identity, seed, args, repo_root, launcher, log_dir)
+        result = run_config(
+            config_path, identity, seed, args, repo_root, launcher, log_dir, cache_dir, config)
         results.append(result)
         if result.status == 'failed':
             print('  failed: {}'.format(result.error))
