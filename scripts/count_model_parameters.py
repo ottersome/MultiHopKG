@@ -18,25 +18,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-
-def load_shell_config(config_path: str) -> Dict[str, str]:
-    values = {}
-    with open(config_path) as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.split("#", 1)[0].strip()
-            if not key or any(ch.isspace() for ch in key):
-                continue
-            if (value.startswith('"') and value.endswith('"')) or (
-                value.startswith("'") and value.endswith("'")
-            ):
-                value = value[1:-1]
-            values[key] = value
-    return values
+from src.utils.experiment_io import load_shell_config
 
 
 def parse_bool(value: str) -> bool:

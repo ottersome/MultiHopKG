@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import DefaultDict, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from batch_eval import ensure_parent, load_shell_config, summarize_error
+from src.utils.experiment_io import ensure_parent, load_shell_config, summarize_error
 
 
 ColumnKey = Tuple[str, str, int]
@@ -80,9 +80,9 @@ def parse_seed_list(value: str) -> List[int]:
     return values
 
 
-def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+def parse_args(argv: Sequence[str] |  None = None) -> argparse.Namespace:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    extra_args: List[str] = []
+    extra_args: list[str] = []
     if '--' in raw_argv:
         separator = raw_argv.index('--')
         extra_args = raw_argv[separator + 1:]
@@ -432,7 +432,7 @@ def serializable_result(result: EvaluationResult) -> Dict[str, object]:
     return payload
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     repo_root = Path(__file__).resolve().parent
     config_target = Path(args.config_target)
@@ -444,7 +444,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not launcher.is_file():
         raise FileNotFoundError('Launcher does not exist: {}'.format(launcher))
 
-    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    timestamp = datetime.now(tz=None).strftime('%Y%m%d-%H%M%S')  # noqa: DTZ005
     log_dir = Path(args.log_dir) if args.log_dir else repo_root / 'per_hop_eval_logs' / timestamp
     if not log_dir.is_absolute():
         log_dir = repo_root / log_dir
@@ -460,8 +460,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print('Running {} per-hop training/evaluation job(s).'.format(len(jobs)))
     results: List[EvaluationResult] = []
     for index, (config_path, identity, seed) in enumerate(jobs, start=1):
-        print('[{}/{}] {} ({}-hop, seed={})'.format(
-            index, len(jobs), config_path, identity.hop, seed))
+        print(f'[{index}/{len(jobs)}] {config_path} ({identity.hop}-hop, seed={seed})')
         result = run_config(config_path, identity, seed, args, repo_root, launcher, log_dir)
         results.append(result)
         if result.status == 'failed':

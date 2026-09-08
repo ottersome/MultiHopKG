@@ -4,7 +4,6 @@
 from collections import defaultdict
 
 from dataclasses import dataclass
-from pprint import pprint
 import argparse
 import csv
 import json
@@ -16,48 +15,14 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple, Union
+from typing import Dict, List, Sequence, Tuple, cast
 
-
-STORE_TRUE_ARGS = {
-    'process_data',
-    'train',
-    'inference',
-    'search_random_seed',
-    'eval',
-    'eval_by_relation_type',
-    'eval_by_seen_queries',
-    'run_ablation_studies',
-    'run_analysis',
-    'dump_hparams',
-    'dump_hparams_only',
-    'test',
-    'group_examples_by_query',
-    'add_reversed_training_edges',
-    'use_action_space_bucketing',
-    'type_only',
-    'relation_only',
-    'relation_only_in_path',
-    'use_question_encoder',
-    'allow_direct_answer_edges',
-    'recompute_qadata_cache',
-    'evaluate_paraphrases',
-    'filter_original_paraphrases',
-    'disable_rollout_eval',
-    'keep_rollout_eval_dropout',
-    'visualize_paths',
-    'save_beam_search_paths',
-    'export_to_embedding_projector',
-    'export_reward_shaping_parameters',
-    'compute_fact_scores',
-    'export_fuzzy_facts',
-    'export_error_cases',
-    'compute_map',
-    'grid_search',
-    'debug',
-    'wandb',
-    'disable_checkpoint_saving',
-}
+from src.utils.experiment_io import (
+    config_to_cli_args,
+    ensure_parent,
+    load_shell_config,
+    summarize_error,
+)
 
 @dataclass
 class CheckpointConfigs:
@@ -102,64 +67,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parsed
 
 
-def strip_inline_comment(line: str) -> str:
-    in_single = False
-    in_double = False
-    escaped = False
-    chars: List[str] = []
-    for char in line:
-        if escaped:
-            chars.append(char)
-            escaped = False
-            continue
-        if char == '\\':
-            chars.append(char)
-            escaped = True
-            continue
-        if char == "'" and not in_double:
-            in_single = not in_single
-        elif char == '"' and not in_single:
-            in_double = not in_double
-        elif char == '#' and not in_single and not in_double:
-            break
-        chars.append(char)
-    return ''.join(chars).strip()
-
-
-def load_shell_config(config_path: Path) -> Dict[str, str]:
-    config: Dict[str, str] = {}
-    for raw_line in config_path.read_text().splitlines():
-        line = strip_inline_comment(raw_line)
-        if not line or line.startswith('#') or line.startswith('#!'):
-            continue
-        split = line.split('=', 1)
-        if len(split) != 2:
-            raise IOError(f"config file does not include a key-value pair in line:\n{raw_line}")
-        key = split[0].strip()
-        value = split[1].strip()
-        if not key:
-            continue
-        if ((value.startswith('"') and value.endswith('"'))
-                or (value.startswith("'") and value.endswith("'"))):
-            value = value[1:-1]
-        config[key] = value
-    return config
-
-
-def config_to_cli_args(config: Dict[str, str]) -> List[str]:
-    cli_args: List[str] = []
-    for key, value in config.items():
-        flag = f'--{key}'
-        if key in STORE_TRUE_ARGS:
-            if value == 'True':
-                cli_args.append(flag)
-            elif value != 'False':
-                raise ValueError(f'Unsupported boolean value for {key}: {value}')
-        else:
-            cli_args.extend([flag, value])
-    return cli_args
-
-
 def natural_checkpoint_key(path: Path) -> Tuple[str, int, str]:
     file_name = path.name
     for pattern in (r'^s(\d+)_model\.tar$', r'^checkpoint-(\d+)\.tar$'):
@@ -168,16 +75,14 @@ def natural_checkpoint_key(path: Path) -> Tuple[str, int, str]:
             return (str(path.parent), int(match.group(1)), file_name)
     return (str(path.parent), sys.maxsize, file_name)
 
-
-
-def discover_checkpoints(target_path: str, checkpoint_pattern: str) -> Dict[str,CheckpointConfigs]:
+def discover_checkpoints(target_path: str, checkpoint_pattern: str) -> Dict[Path, CheckpointConfigs]:
     # TODO: Get the configs from here
     target = Path(target_path)
     if not target.is_dir():
         raise IOError("Given path is not a directory")
 
     all_available_checkpoints = list(target.rglob(checkpoint_pattern))
-    final_results_dict = defaultdict()
+    final_results_dict: Dict[Path, CheckpointConfigs] = {}
     for aac in all_available_checkpoints:
         parent_path = aac.parent.resolve()
         if parent_path not in final_results_dict:
@@ -206,14 +111,6 @@ def flatten_metrics(prefix: str, value, out: Dict[str, object]) -> None:
             flatten_metrics(next_prefix, nested, out)
         return
     out[prefix] = value
-
-
-def summarize_error(stderr: str, stdout: str) -> str:
-    for text in (stderr, stdout):
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        if lines:
-            return ' | '.join(lines[-4:])[:400]
-    return 'No output captured'
 
 
 def format_metric(value) -> str:
@@ -275,7 +172,7 @@ def render_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
 
 def numeric_metric_values(split_metrics_rows: Sequence[Dict[str, object]], key: str) -> List[float]:
     return [
-        float(split_metrics[key])
+        float(cast(int | float, split_metrics[key]))
         for split_metrics in split_metrics_rows
         if isinstance(split_metrics.get(key), (int, float))
         and not isinstance(split_metrics[key], bool)
@@ -399,7 +296,7 @@ def print_summary(rows: Sequence[Dict[str, object]], split: str) -> str:
     aggregate_metrics = []
     for metric in metric_names:
         metric_values = [
-            float(split_metrics[f'rollout_{metric}'])
+            float(cast(int | float, split_metrics[f'rollout_{metric}']))
             for split_metrics in successful_split_metrics
             if isinstance(split_metrics.get(f'rollout_{metric}'), (int, float))
             and not isinstance(split_metrics[f'rollout_{metric}'], bool)
@@ -427,11 +324,6 @@ def print_summary(rows: Sequence[Dict[str, object]], split: str) -> str:
     ])
     print(rendered_summary)
     return rendered_summary
-
-
-def ensure_parent(path: Path) -> None:
-    if path.parent:
-        path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def main() -> int:
