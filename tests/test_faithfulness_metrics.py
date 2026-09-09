@@ -4,7 +4,6 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from src.eval import (
     FaithfulnessEvaluator,
@@ -38,9 +37,9 @@ class FaithfulnessMetricTests(unittest.TestCase):
             Path(temporary_directory, 'raw.kb').write_text(
                 'source middle r1\nmiddle answer r2\n'
             )
-            with patch('src.eval.args.data_dir', temporary_directory):
-                evaluator = FaithfulnessEvaluator(kg, semantic_multi_path=True)
-                paths = evaluator._get_semantically_valid_paths(example, [5, 6], [4])
+            evaluator = FaithfulnessEvaluator(
+                kg, semantic_multi_path=True, data_dir=temporary_directory)
+            paths = evaluator._get_semantically_valid_paths(example, [5, 6], [4])
 
         self.assertEqual(paths, [[(2, 5, 3), (3, 6, 4)]])
 

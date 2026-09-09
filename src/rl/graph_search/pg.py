@@ -292,7 +292,8 @@ class PolicyGradient(LFramework):
         hop_evaluators: Dict[int, RolloutEvaluator] = {}
         faithfulness_evaluator = FaithfulnessEvaluator(
             self.kg,
-            semantic_multi_path=str(split_name).lower() == 'test'
+            semantic_multi_path=str(split_name).lower() == 'test',
+            data_dir=self.args.data_dir,
         )
 
         disable_dropout = not getattr(self.args, 'keep_rollout_eval_dropout', False)

@@ -321,4 +321,6 @@ parser.add_argument('--wandb_mode', type=str, default='online',
 parser.add_argument('--wandb_log_interval', type=int, default=100,
                     help='log inter-batch metrics every N steps (0 disables)')
 
-args = parser.parse_args()
+def parse_args(argv=None):
+    """Parse CLI arguments explicitly instead of consuming argv at import time."""
+    return parser.parse_args(argv)

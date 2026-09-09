@@ -24,8 +24,7 @@ from typing import Dict, Iterable, List, Optional, Set, TypeVar, Union
 
 import torch
 
-from src.parse_args import parser
-from src.parse_args import args
+from src.parse_args import parse_args
 import src.data_utils as data_utils
 from src.data_utils import HopFilter, parse_hop_filter
 import src.eval
@@ -42,14 +41,18 @@ from src.rl.graph_search.pg import PolicyGradient
 from src.rl.graph_search.rs_pg import RewardShapingPolicyGradient
 from src.utils.ops import flatten
 
-torch.cuda.set_device(args.gpu)
-
-torch.manual_seed(args.seed)
-torch.cuda.manual_seed_all(args.seed)
-random.seed(args.seed)
-np.random.seed(args.seed)
+args: Optional[Namespace] = None
 
 ExampleT = TypeVar('ExampleT')
+
+
+def configure_runtime(runtime_args: Namespace) -> None:
+    """Apply process-wide runtime settings after CLI arguments are explicitly parsed."""
+    torch.cuda.set_device(runtime_args.gpu)
+    torch.manual_seed(runtime_args.seed)
+    torch.cuda.manual_seed_all(runtime_args.seed)
+    random.seed(runtime_args.seed)
+    np.random.seed(runtime_args.seed)
 
 def setup_wandb(args, job_type='train'):
     """Initialize Weights & Biases run if enabled via args.wandb.
@@ -687,10 +690,12 @@ def inference(lf: LFramework) -> dict[str, dict[str, object]]:
         relation_by_types = (to_m_rels, to_1_rels)
         print('Dev set evaluation by relation type (partial graph)')
         src.eval.hits_and_ranks_by_relation_type(
-            dev_data, pred_scores, lf.kg.dev_objects, relation_by_types, verbose=True)
+            dev_data, pred_scores, lf.kg.dev_objects, relation_by_types,
+            verbose=True, beam_size=args.beam_size)
         print('Dev set evaluation by relation type (full graph)')
         src.eval.hits_and_ranks_by_relation_type(
-            dev_data, pred_scores, lf.kg.all_objects, relation_by_types, verbose=True)
+            dev_data, pred_scores, lf.kg.all_objects, relation_by_types,
+            verbose=True, beam_size=args.beam_size)
     elif args.eval_by_seen_queries:
         dev_path = os.path.join(args.data_dir, 'dev.triples')
         dev_data = data_utils.load_triples(dev_path, entity_index_path, relation_index_path, seen_entities=seen_entities)
@@ -698,10 +703,12 @@ def inference(lf: LFramework) -> dict[str, dict[str, object]]:
         seen_queries = data_utils.get_seen_queries(args.data_dir, entity_index_path, relation_index_path)
         print('Dev set evaluation by seen queries (partial graph)')
         src.eval.hits_and_ranks_by_seen_queries(
-            dev_data, pred_scores, lf.kg.dev_objects, seen_queries, verbose=True)
+            dev_data, pred_scores, lf.kg.dev_objects, seen_queries,
+            verbose=True, beam_size=args.beam_size)
         print('Dev set evaluation by seen queries (full graph)')
         src.eval.hits_and_ranks_by_seen_queries(
-            dev_data, pred_scores, lf.kg.all_objects, seen_queries, verbose=True)
+            dev_data, pred_scores, lf.kg.all_objects, seen_queries,
+            verbose=True, beam_size=args.beam_size)
     else:
         if args.use_question_encoder:
             _, dev_data, test_data, _ = data_utils.load_qa_data(
@@ -746,14 +753,16 @@ def inference(lf: LFramework) -> dict[str, dict[str, object]]:
             test_path, entity_index_path, relation_index_path, seen_entities=seen_entities, verbose=False)
         print('Dev set performance:')
         pred_scores = lf.forward(dev_data, verbose=args.save_beam_search_paths)
-        dev_metrics = src.eval.hits_and_ranks(dev_data, pred_scores, lf.kg.dev_objects, verbose=True)
+        dev_metrics = src.eval.hits_and_ranks(
+            dev_data, pred_scores, lf.kg.dev_objects, verbose=True, beam_size=args.beam_size)
         eval_metrics['dev'] = {}
         eval_metrics['dev']['hits_at_1'] = dev_metrics[0]
         eval_metrics['dev']['hits_at_3'] = dev_metrics[1]
         eval_metrics['dev']['hits_at_5'] = dev_metrics[2]
         eval_metrics['dev']['hits_at_10'] = dev_metrics[3]
         eval_metrics['dev']['mrr'] = dev_metrics[4]
-        src.eval.hits_and_ranks(dev_data, pred_scores, lf.kg.all_objects, verbose=True)
+        src.eval.hits_and_ranks(
+            dev_data, pred_scores, lf.kg.all_objects, verbose=True, beam_size=args.beam_size)
         if hasattr(lf, 'supports_rollout_evaluation') and lf.supports_rollout_evaluation():
             rollout_dev_metrics = lf.evaluate_with_rollouts(dev_data, split_name='dev')
             if rollout_dev_metrics:
@@ -775,7 +784,8 @@ def inference(lf: LFramework) -> dict[str, dict[str, object]]:
             _wandb.log(dev_log)
         print('Test set performance:')
         pred_scores = lf.forward(test_data, verbose=False)
-        test_metrics = src.eval.hits_and_ranks(test_data, pred_scores, lf.kg.all_objects, verbose=True)
+        test_metrics = src.eval.hits_and_ranks(
+            test_data, pred_scores, lf.kg.all_objects, verbose=True, beam_size=args.beam_size)
         eval_metrics['test']['hits_at_1'] = test_metrics[0]
         eval_metrics['test']['hits_at_3'] = test_metrics[1]
         eval_metrics['test']['hits_at_5'] = test_metrics[2]
@@ -854,34 +864,40 @@ def run_ablation_studies(args):
                 args.ff_dropout_rate = 0.1
         elif system == '-rs':
             config_path = os.path.join('configs', '{}.sh'.format(dataset.lower()))
-            args = parser.parse_args()
+            args = parse_args()
             args = data_utils.load_configs(args, config_path)
         
         lf = set_up_lf_for_inference(args)
         pred_scores = lf.forward(dev_data, verbose=False)
-        _, _, _, _, mrr = src.eval.hits_and_ranks(dev_data, pred_scores, lf.kg.dev_objects, verbose=True)
+        _, _, _, _, mrr = src.eval.hits_and_ranks(
+            dev_data, pred_scores, lf.kg.dev_objects, verbose=True, beam_size=args.beam_size)
         if to_1_ratio == 0:
             to_m_mrr = mrr
             to_1_mrr = -1
         else:
             to_m_mrr, to_1_mrr = src.eval.hits_and_ranks_by_relation_type(
-                dev_data, pred_scores, lf.kg.dev_objects, relation_by_types, verbose=True)
+                dev_data, pred_scores, lf.kg.dev_objects, relation_by_types,
+                verbose=True, beam_size=args.beam_size)
         seen_mrr, unseen_mrr = src.eval.hits_and_ranks_by_seen_queries(
-            dev_data, pred_scores, lf.kg.dev_objects, seen_queries, verbose=True)
+            dev_data, pred_scores, lf.kg.dev_objects, seen_queries,
+            verbose=True, beam_size=args.beam_size)
         mrrs[system] = {'': mrr * 100}
         to_m_mrrs[system] = {'': to_m_mrr * 100}
         to_1_mrrs[system] = {'': to_1_mrr  * 100}
         seen_mrrs[system] = {'': seen_mrr * 100}
         unseen_mrrs[system] = {'': unseen_mrr * 100}
-        _, _, _, _, mrr_full_kg = src.eval.hits_and_ranks(dev_data, pred_scores, lf.kg.all_objects, verbose=True)
+        _, _, _, _, mrr_full_kg = src.eval.hits_and_ranks(
+            dev_data, pred_scores, lf.kg.all_objects, verbose=True, beam_size=args.beam_size)
         if to_1_ratio == 0:
             to_m_mrr_full_kg = mrr_full_kg
             to_1_mrr_full_kg = -1
         else:
             to_m_mrr_full_kg, to_1_mrr_full_kg = src.eval.hits_and_ranks_by_relation_type(
-                dev_data, pred_scores, lf.kg.all_objects, relation_by_types, verbose=True)
+                dev_data, pred_scores, lf.kg.all_objects, relation_by_types,
+                verbose=True, beam_size=args.beam_size)
         seen_mrr_full_kg, unseen_mrr_full_kg = src.eval.hits_and_ranks_by_seen_queries(
-            dev_data, pred_scores, lf.kg.all_objects, seen_queries, verbose=True)
+            dev_data, pred_scores, lf.kg.all_objects, seen_queries,
+            verbose=True, beam_size=args.beam_size)
         mrrs[system]['full_kg'] = mrr_full_kg * 100
         to_m_mrrs[system]['full_kg'] = to_m_mrr_full_kg * 100
         to_1_mrrs[system]['full_kg'] = to_1_mrr_full_kg * 100
@@ -954,8 +970,11 @@ def export_error_cases(lf):
     lf.load_checkpoint(get_checkpoint_path(args))
     print('Dev set performance:')
     pred_scores = lf.forward(dev_data, verbose=False)
-    src.eval.hits_and_ranks(dev_data, pred_scores, lf.kg.dev_objects, verbose=True)
-    src.eval.export_error_cases(dev_data, pred_scores, lf.kg.dev_objects, os.path.join(lf.model_dir, 'error_cases.pkl'))
+    src.eval.hits_and_ranks(
+        dev_data, pred_scores, lf.kg.dev_objects, verbose=True, beam_size=args.beam_size)
+    src.eval.export_error_cases(
+        dev_data, pred_scores, lf.kg.dev_objects,
+        os.path.join(lf.model_dir, 'error_cases.pkl'), beam_size=args.beam_size)
 
 def compute_fact_scores(lf):
     data_dir = args.data_dir
@@ -1014,7 +1033,10 @@ def load_configs(config_path):
                 raise ValueError('Unrecognized argument: {}'.format(arg_name))
     return args
 
-def run_experiment(args):
+def run_experiment(run_args):
+    global args
+    args = run_args
+    configure_runtime(args)
 
     if args.test:
         if 'NELL' in args.data_dir:
@@ -1252,7 +1274,7 @@ def run_experiment(args):
                     export_error_cases(lf)
 
 if __name__ == '__main__':
-
+    args = parse_args()
     if args.debug:
         debugpy.listen(args.debug_port)
         print(f"debugpy listening on {args.debug_port}", flush=True)

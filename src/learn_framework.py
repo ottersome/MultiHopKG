@@ -404,7 +404,8 @@ class LFramework(nn.Module):
             pred_score = self.predict(mini_batch, verbose=False)[:mini_batch_size]
             eval_batch = mini_batch[:mini_batch_size]
             for i, all_answers in enumerate(all_answers_list):
-                batch_counts = src.eval.hits_and_ranks_counts(eval_batch, pred_score.clone(), all_answers)
+                batch_counts = src.eval.hits_and_ranks_counts(
+                    eval_batch, pred_score.clone(), all_answers, beam_size=self.args.beam_size)
                 for j in range(len(counts_list[i])):
                     counts_list[i][j] += batch_counts[j]
         return [src.eval.format_hits_and_ranks_counts(counts, verbose=False) for counts in counts_list]

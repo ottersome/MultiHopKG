@@ -17,7 +17,6 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 import torch
 
-from src.parse_args import args
 from src.data_utils import NO_OP_ENTITY_ID, DUMMY_ENTITY_ID
 from src.data_utils import DUMMY_RELATION_ID, START_RELATION_ID, NO_OP_RELATION_ID
 from src.itl_typing import QAExample, Triple
@@ -89,7 +88,14 @@ def get_example_weight(example: Union[QAExample, Triple]) -> float:
     return example.Eval_Weight if isinstance(example, QAExample) else 1.0
 
 
-def hits_and_ranks(examples, scores, all_answers, verbose=False):
+def _top_k_size(scores: torch.Tensor, beam_size: Optional[int]) -> int:
+    """Return the ranking depth without relying on process-global CLI arguments."""
+    if beam_size is None:
+        return scores.size(1)
+    return min(scores.size(1), max(1, int(beam_size)))
+
+
+def hits_and_ranks(examples, scores, all_answers, verbose=False, beam_size: Optional[int] = None):
     """
     Compute ranking based metrics.
     """
@@ -109,7 +115,7 @@ def hits_and_ranks(examples, scores, all_answers, verbose=False):
         scores[i, gold_answers] = target_scores
     
     # sort and rank
-    top_k_scores, top_k_targets = torch.topk(scores, min(scores.size(1), args.beam_size))
+    top_k_scores, top_k_targets = torch.topk(scores, _top_k_size(scores, beam_size))
     top_k_targets = top_k_targets.cpu().numpy()
 
     hits_at_1 = 0
@@ -148,7 +154,7 @@ def hits_and_ranks(examples, scores, all_answers, verbose=False):
     return hits_at_1, hits_at_3, hits_at_5, hits_at_10, mrr
 
 
-def hits_and_ranks_counts(examples, scores, all_answers):
+def hits_and_ranks_counts(examples, scores, all_answers, beam_size: Optional[int] = None):
     """
     Compute unnormalized ranking counts for a score batch.
 
@@ -166,7 +172,7 @@ def hits_and_ranks_counts(examples, scores, all_answers):
         scores[i, e2_multi] = 0
         scores[i, gold_answers] = target_scores
 
-    _, top_k_targets = torch.topk(scores, min(scores.size(1), args.beam_size))
+    _, top_k_targets = torch.topk(scores, _top_k_size(scores, beam_size))
     top_k_targets = top_k_targets.cpu().numpy()
 
     hits_at_1 = 0
@@ -215,6 +221,7 @@ def hits_and_ranks_by_hop(
     scores: torch.Tensor,
     all_answers,
     verbose: bool = False,
+    beam_size: Optional[int] = None,
 ) -> Dict[int, Dict[str, float]]:
     """
     Compute ranking metrics grouped by hop count for examples that carry hop metadata.
@@ -233,7 +240,7 @@ def hits_and_ranks_by_hop(
     for hop in sorted(hop_examples):
         hop_scores = scores[hop_indices[hop]].clone()
         h1, h3, h5, h10, mrr = hits_and_ranks(
-            hop_examples[hop], hop_scores, all_answers, verbose=False)
+            hop_examples[hop], hop_scores, all_answers, verbose=False, beam_size=beam_size)
         metrics[hop] = {
             'examples': len(hop_examples[hop]),
             'hits@1': h1,
@@ -257,7 +264,7 @@ def hits_and_ranks_by_hop(
 
     return metrics
 
-def hits_at_k(examples, scores, all_answers, verbose=False):
+def hits_at_k(examples, scores, all_answers, verbose=False, beam_size: Optional[int] = None):
     """
     Hits at k metrics.
     :param examples: List of triples and labels (+/-).
@@ -283,7 +290,7 @@ def hits_at_k(examples, scores, all_answers, verbose=False):
         scores[i][gold_answers] = target_scores
         
     # sort and rank
-    top_k_scores, top_k_targets = torch.topk(scores, min(scores.size(1), args.beam_size))
+    top_k_scores, top_k_targets = torch.topk(scores, _top_k_size(scores, beam_size))
     top_k_targets = top_k_targets.cpu().numpy()
 
     hits_at_1 = 0
@@ -317,7 +324,8 @@ def hits_at_k(examples, scores, all_answers, verbose=False):
 
     return hits_at_1, hits_at_3, hits_at_5, hits_at_10
 
-def hits_and_ranks_by_seen_queries(examples, scores, all_answers, seen_queries, verbose=False):
+def hits_and_ranks_by_seen_queries(examples, scores, all_answers, seen_queries,
+                                   verbose=False, beam_size: Optional[int] = None):
     seen_exps, unseen_exps = [], []
     seen_ids, unseen_ids = [], []
     for i, example in enumerate(examples):
@@ -329,14 +337,17 @@ def hits_and_ranks_by_seen_queries(examples, scores, all_answers, seen_queries, 
             unseen_exps.append(example)
             unseen_ids.append(i)
 
-    _, _, _, _, seen_mrr = hits_and_ranks(seen_exps, scores[seen_ids], all_answers, verbose=False)
-    _, _, _, _, unseen_mrr = hits_and_ranks(unseen_exps, scores[unseen_ids], all_answers, verbose=False)
+    _, _, _, _, seen_mrr = hits_and_ranks(
+        seen_exps, scores[seen_ids], all_answers, verbose=False, beam_size=beam_size)
+    _, _, _, _, unseen_mrr = hits_and_ranks(
+        unseen_exps, scores[unseen_ids], all_answers, verbose=False, beam_size=beam_size)
     if verbose:
         print('MRR on seen queries: {:.3f}'.format(seen_mrr))
         print('MRR on unseen queries: {:.3f}'.format(unseen_mrr))
     return seen_mrr, unseen_mrr
 
-def hits_and_ranks_by_relation_type(examples, scores, all_answers, relation_by_types, verbose=False):
+def hits_and_ranks_by_relation_type(examples, scores, all_answers, relation_by_types,
+                                    verbose=False, beam_size: Optional[int] = None):
     to_M_rels, to_1_rels = relation_by_types
     to_M_exps, to_1_exps = [], []
     to_M_ids, to_1_ids = [], []
@@ -349,8 +360,10 @@ def hits_and_ranks_by_relation_type(examples, scores, all_answers, relation_by_t
             to_1_exps.append(example)
             to_1_ids.append(i)
 
-    _, _, _, _, to_m_mrr = hits_and_ranks(to_M_exps, scores[to_M_ids], all_answers, verbose=False)
-    _, _, _, _, to_1_mrr = hits_and_ranks(to_1_exps, scores[to_1_ids], all_answers, verbose=False)
+    _, _, _, _, to_m_mrr = hits_and_ranks(
+        to_M_exps, scores[to_M_ids], all_answers, verbose=False, beam_size=beam_size)
+    _, _, _, _, to_1_mrr = hits_and_ranks(
+        to_1_exps, scores[to_1_ids], all_answers, verbose=False, beam_size=beam_size)
     if verbose:
         print('MRR on to-M relations: {:.3f}'.format(to_m_mrr))
         print('MRR on to-1 relations: {:.3f}'.format(to_1_mrr))
@@ -396,7 +409,8 @@ def link_MAP(examples, scores, labels, all_answers, verbose=False):
         print('MAP = {:.3f}'.format(map))
     return map
 
-def export_error_cases(examples, scores, all_answers, output_path):
+def export_error_cases(examples, scores, all_answers, output_path,
+                       beam_size: Optional[int] = None):
     """
     Export indices of examples to which the top-1 prediction is incorrect.
     """
@@ -415,7 +429,7 @@ def export_error_cases(examples, scores, all_answers, output_path):
         scores[i, gold_answers] = target_scores
 
     # sort and rank
-    top_k_scores, top_k_targets = torch.topk(scores, min(scores.size(1), args.beam_size))
+    top_k_scores, top_k_targets = torch.topk(scores, _top_k_size(scores, beam_size))
     top_k_targets = top_k_targets.cpu().numpy()
 
     top_1_errors, top_10_errors = [], []
@@ -585,9 +599,11 @@ def answer_set_f1(predicted_endpoints: Iterable[int],
 class FaithfulnessEvaluator:
     """Aggregates path-faithfulness metrics for top rollout/beam paths."""
 
-    def __init__(self, kg, semantic_multi_path: bool = False) -> None:
+    def __init__(self, kg, semantic_multi_path: bool = False,
+                 data_dir: Optional[str] = None) -> None:
         self.kg = kg
         self.semantic_multi_path = bool(semantic_multi_path)
+        self.data_dir = data_dir
         self.inverse_mapping = build_inverse_relation_mapping(kg)
         self.special_tokens = {DUMMY_RELATION_ID, START_RELATION_ID, NO_OP_RELATION_ID}
         self.invalid_entities = {DUMMY_ENTITY_ID, NO_OP_ENTITY_ID}
@@ -625,7 +641,9 @@ class FaithfulnessEvaluator:
         if self._semantic_relation_adjacency is not None:
             return self._semantic_relation_adjacency
 
-        raw_kb_path = os.path.join(args.data_dir, 'raw.kb')
+        if self.data_dir is None:
+            raise ValueError('data_dir is required for semantic path reconstruction')
+        raw_kb_path = os.path.join(self.data_dir, 'raw.kb')
         adjacency_sets: Dict[int, Dict[int, Set[int]]] = {}
         with open(raw_kb_path, 'r') as handle:
             for line in handle:
