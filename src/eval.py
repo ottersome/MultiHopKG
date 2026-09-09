@@ -8,9 +8,10 @@
  Code adapted from https://github.com/TimDettmers/ConvE/blob/master/evaluation.py
 """
 
+import os
 import numpy as np
 import pickle
-from collections import Counter, defaultdict
+from collections import defaultdict
 from numbers import Integral
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
@@ -523,20 +524,29 @@ def relation_edit_distance_norm(pred_relations: Sequence[int],
     return dist / (max(m, n) + eps)
 
 
+def relation_edit_distance_raw(pred_relations: Sequence[int],
+                               gt_relations: Sequence[int],
+                               special_tokens: Set[int],
+                               inverse_mapping: Dict[int, int]) -> int:
+    """Raw Levenshtein distance between canonical predicted and gold relations."""
+    pred_rels = [canon_rel(r, inverse_mapping) for r in pred_relations if int(r) not in special_tokens]
+    gt_rels = [int(r) for r in gt_relations]
+    dist, _, _ = edit_distance(pred_rels, gt_rels)
+    return int(dist)
+
+
 def relation_overlap_f1(pred_relations: Sequence[int],
                         gt_relations: Sequence[int],
                         special_tokens: Set[int],
                         inverse_mapping: Dict[int, int],
                         eps: float = 1e-8) -> Tuple[float, float, float]:
-    pred_rels = [canon_rel(r, inverse_mapping) for r in pred_relations if int(r) not in special_tokens]
-    gt_rels = [int(r) for r in gt_relations]
-    pred_counts = Counter(pred_rels)
-    gt_counts = Counter(gt_rels)
-    overlap = sum((pred_counts & gt_counts).values())
-    precision = overlap / (sum(pred_counts.values()) + eps)
-    recall = overlap / (sum(gt_counts.values()) + eps)
-    f1 = 2 * precision * recall / (precision + recall + eps)
-    return precision, recall, f1
+    pred_rels = {
+        canon_rel(r, inverse_mapping)
+        for r in pred_relations
+        if int(r) not in special_tokens
+    }
+    gt_rels = {int(r) for r in gt_relations}
+    return compute_precision_recall_f1(pred_rels, gt_rels, eps=eps)
 
 
 def path_edit_distance_norm(pred_path: Sequence[Tuple[int, int, int]],
@@ -585,6 +595,9 @@ class FaithfulnessEvaluator:
             Tuple[int, Tuple[int, ...], Tuple[int, ...]],
             List[List[Tuple[int, int, int]]]
         ] = {}
+        self._semantic_relation_adjacency: Optional[
+            Dict[int, Dict[int, Tuple[int, ...]]]
+        ] = None
         self.semantic_path_attempts = 0.0
         self.semantic_path_examples = 0.0
         self.edge_precision = 0.0
@@ -607,6 +620,42 @@ class FaithfulnessEvaluator:
         self.num_examples = 0
         self.by_hop: Dict[int, Dict[str, float]] = {}
 
+    def _get_semantic_relation_adjacency(self) -> Dict[int, Dict[int, Tuple[int, ...]]]:
+        """Build the complete raw-KG adjacency for semantic path reconstruction only."""
+        if self._semantic_relation_adjacency is not None:
+            return self._semantic_relation_adjacency
+
+        raw_kb_path = os.path.join(args.data_dir, 'raw.kb')
+        adjacency_sets: Dict[int, Dict[int, Set[int]]] = {}
+        with open(raw_kb_path, 'r') as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                head_name, tail_name, relation_name = line.split()
+                if (head_name not in self.kg.entity2id
+                        or tail_name not in self.kg.entity2id
+                        or relation_name not in self.kg.relation2id):
+                    continue
+
+                head = int(self.kg.entity2id[head_name])
+                tail = int(self.kg.entity2id[tail_name])
+                relation = int(self.kg.relation2id[relation_name])
+                if head in self.invalid_entities or tail in self.invalid_entities:
+                    continue
+                if relation in self.special_tokens:
+                    continue
+                adjacency_sets.setdefault(head, {}).setdefault(relation, set()).add(tail)
+
+        self._semantic_relation_adjacency = {
+            head: {
+                relation: tuple(sorted(targets))
+                for relation, targets in relation_targets.items()
+            }
+            for head, relation_targets in adjacency_sets.items()
+        }
+        return self._semantic_relation_adjacency
+
     def _get_semantically_valid_paths(
             self,
             example,
@@ -624,7 +673,7 @@ class FaithfulnessEvaluator:
         if cached is not None:
             return cached
 
-        adjacency = getattr(self.kg, 'adj_list', None)
+        adjacency = self._get_semantic_relation_adjacency()
         if not adjacency:
             self._semantic_valid_path_cache[cache_key] = []
             return []
@@ -682,7 +731,7 @@ class FaithfulnessEvaluator:
             if reference_paths:
                 self.semantic_path_examples += weight
 
-        rel_dist = relation_edit_distance_norm(
+        rel_dist = relation_edit_distance_raw(
             pred_relations, relation_reference, self.special_tokens, self.inverse_mapping)
         rel_p, rel_r, rel_f = relation_overlap_f1(
             pred_relations, relation_reference, self.special_tokens, self.inverse_mapping)

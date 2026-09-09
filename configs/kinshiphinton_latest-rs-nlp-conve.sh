@@ -58,7 +58,7 @@ add_reverse_relations="True"
 checkpoint_keep_best=3 # Just for clarity 
 
 # Per hop testing: Generally leave empty if you dont want to do tis. 
-# train_hop=2 # Means that it takes all hops for training
+train_hop=0 # Means that it takes all hops for training
 # evaluate_per_hop="True" # By default we do not evaluate by per hop
 # eval_hops= # IF we did you would fill that up 
 

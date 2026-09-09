@@ -6,5 +6,8 @@ typeCheckingMode = "standard"
 project-includes = ["**/*.py"]
 search-path = ["."]
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
 [tool.ruff.lint]
 ignore = ["I001", "UP035", "UP045", "UP006", "UP032"]
