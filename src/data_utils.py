@@ -7,6 +7,8 @@
  Data processing utilities.
 """
 
+from collections import defaultdict
+from pathlib import Path
 from typing import Iterable
 import json
 import logging
@@ -14,6 +16,8 @@ import ast
 import collections
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
+from functools import cache
+
 from sklearn.model_selection import train_test_split
 import numpy as np
 import os
@@ -340,6 +344,63 @@ def prepare_kb_envrioment(raw_kb_path, train_path, dev_path, test_path, test_mod
         pickle.dump(dict(adj_list), o_f)
     with open(os.path.join(data_dir, 'entity2typeid.pkl'), 'wb') as o_f:
         pickle.dump(entity2typeid, o_f)
+
+def load_full_graph_adjacency_matrix(
+        data_path: Path,
+) -> Dict[int, Dict[int, Tuple[int, ...]]]:
+    """Return the cached full-graph adjacency for a dataset directory."""
+    return _load_full_graph_adjacency_matrix(data_path.resolve())
+
+
+@cache
+def _load_full_graph_adjacency_matrix(
+        data_path: Path,
+) -> Dict[int, Dict[int, Tuple[int, ...]]]:
+    """Load and cache the ID-based adjacency from all explicit split files.
+
+    Entity and relation IDs are assumed stable for a dataset directory during a
+    process, so subsequent evaluators receive the same cached matrix directly.
+    """
+    entity2id, _ = load_index(data_path / 'entity2id.txt')
+    relation2id, _ = load_index(data_path / 'relation2id.txt')
+
+    triple_paths = [data_path / '{}.triples'.format(split) for split in ('train', 'dev', 'test')]
+    missing_paths = [path for path in triple_paths if not path.is_file()]
+    if missing_paths:
+        raise FileNotFoundError(
+            'Full-graph faithfulness evaluation requires: {}'.format(
+                ', '.join(str(path) for path in missing_paths)))
+
+    adjacency_sets: Dict[int, Dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
+    for triple_path in triple_paths:
+        with triple_path.open() as triple_file:
+            for line_number, line in enumerate(triple_file, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split()
+                if len(parts) != 3:
+                    raise ValueError(
+                        '{}:{} is not a three-column triple'.format(triple_path, line_number))
+                head_name, tail_name, relation_name = parts
+                try:
+                    head = entity2id[head_name]
+                    tail = entity2id[tail_name]
+                    relation = relation2id[relation_name]
+                except KeyError as exc:
+                    raise ValueError(
+                        '{}:{} references {} outside the loaded indices'.format(
+                            triple_path, line_number, exc.args[0])) from exc
+                adjacency_sets[head][relation].add(tail)
+
+    adjacency = {
+        head: {relation: tuple(sorted(tails)) for relation, tails in relations.items()}
+        for head, relations in adjacency_sets.items()
+    }
+    return adjacency
+
+
+
 
 def get_seen_queries(data_dir, entity_index_path, relation_index_path):
     entity2id, _ = load_index(entity_index_path)

@@ -13,11 +13,13 @@ import numpy as np
 import pickle
 from collections import defaultdict
 from numbers import Integral
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
+from functools import cache
 
 import torch
 
-from src.data_utils import NO_OP_ENTITY_ID, DUMMY_ENTITY_ID
+from src.data_utils import NO_OP_ENTITY_ID, DUMMY_ENTITY_ID, load_full_graph_adjacency_matrix
 from src.data_utils import DUMMY_RELATION_ID, START_RELATION_ID, NO_OP_RELATION_ID
 from src.itl_typing import QAExample, Triple
 
@@ -48,6 +50,8 @@ def _get_answer_mask(all_answers, e1, query):
 
 
 def _core_example(example):
+    if isinstance(example, QAExample):
+        return example.source_entity, example.answer_entity, example.question
     return example[:3]
 
 
@@ -636,41 +640,32 @@ class FaithfulnessEvaluator:
         self.num_examples = 0
         self.by_hop: Dict[int, Dict[str, float]] = {}
 
+        self.full_adjacency_matrix_for_evaluation: Optional[
+            Dict[int, Dict[int, Tuple[int, ...]]]
+        ] = None
+        if self.semantic_multi_path and self.data_dir is not None:
+            self.full_adjacency_matrix_for_evaluation = load_full_graph_adjacency_matrix(
+                Path(self.data_dir))
+
     def _get_semantic_relation_adjacency(self) -> Dict[int, Dict[int, Tuple[int, ...]]]:
-        """Build the complete raw-KG adjacency for semantic path reconstruction only."""
+        """Use the complete split-file adjacency for semantic path reconstruction."""
         if self._semantic_relation_adjacency is not None:
             return self._semantic_relation_adjacency
 
         if self.data_dir is None:
             raise ValueError('data_dir is required for semantic path reconstruction')
-        raw_kb_path = os.path.join(self.data_dir, 'raw.kb')
-        adjacency_sets: Dict[int, Dict[int, Set[int]]] = {}
-        with open(raw_kb_path, 'r') as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                head_name, tail_name, relation_name = line.split()
-                if (head_name not in self.kg.entity2id
-                        or tail_name not in self.kg.entity2id
-                        or relation_name not in self.kg.relation2id):
-                    continue
-
-                head = int(self.kg.entity2id[head_name])
-                tail = int(self.kg.entity2id[tail_name])
-                relation = int(self.kg.relation2id[relation_name])
-                if head in self.invalid_entities or tail in self.invalid_entities:
-                    continue
-                if relation in self.special_tokens:
-                    continue
-                adjacency_sets.setdefault(head, {}).setdefault(relation, set()).add(tail)
+        if self.full_adjacency_matrix_for_evaluation is None:
+            self.full_adjacency_matrix_for_evaluation = load_full_graph_adjacency_matrix(
+                Path(self.data_dir))
 
         self._semantic_relation_adjacency = {
             head: {
-                relation: tuple(sorted(targets))
+                relation: tuple(target for target in targets if target not in self.invalid_entities)
                 for relation, targets in relation_targets.items()
+                if relation not in self.special_tokens
             }
-            for head, relation_targets in adjacency_sets.items()
+            for head, relation_targets in self.full_adjacency_matrix_for_evaluation.items()
+            if head not in self.invalid_entities
         }
         return self._semantic_relation_adjacency
 
@@ -683,7 +678,7 @@ class FaithfulnessEvaluator:
         if not self.semantic_multi_path or not relation_chain:
             return []
 
-        source_entity = int(example[0])
+        source_entity = int(example.source_entity if isinstance(example, QAExample) else example[0])
         relations = tuple(int(relation) for relation in relation_chain)
         answers = tuple(sorted({int(answer) for answer in gold_answers}))
         cache_key = (source_entity, relations, answers)
