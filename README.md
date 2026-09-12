@@ -1,4 +1,27 @@
-# ⚠️⚠️⚠️ NEURIPS Instructions ⚠️⚠️⚠️
+# ⚠️⚠️⚠️ Instructions ⚠️⚠️⚠️
+
+## Python environment (uv)
+
+This repository pins Python **3.12** in [`.python-version`](.python-version).
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first, then
+create the project environment and install the locked dependencies from the
+repository root:
+
+```sh
+uv python install 3.12
+uv sync
+```
+
+`uv sync` creates `.venv/` automatically. Run commands inside that environment
+with `uv run`; no manual activation is required:
+
+```sh
+uv run python -m unittest tests/test_faithfulness_metrics.py
+uv run python batch_eval.py model/final_evaluation
+```
+
+The configured PyTorch packages use the CUDA 13.0 wheel index. Ensure the host
+has a compatible NVIDIA driver before running GPU evaluation.
 
 Before you run evaluation make sure to get the files from the kaggle. 
 After you download it the `model/` directory should have the following structure:
@@ -38,16 +61,10 @@ model/final_evaluation
 └── README.md
 ```
 
-To install the requirements you may run:
-
-```sh
-pip install requirements.txt
-```
-
 Evaluation can be run through 
 
 ```sh
-python batch_eval.py model/final_evaluation
+uv run python batch_eval.py model/final_evaluation
 ```
 
 This will write the evaluations to `<repository_root>/<date>-<time>/<model>_s<seed>.metrics.log`
@@ -57,7 +74,7 @@ Make sure to run with `--evaluate_paraphrases` after *end-of-options delimeter*.
 i.e.:
 
 ```sh
-python batch_eval.py model/final_evaluation -- --evaluate_paraphrases
+uv run python batch_eval.py model/final_evaluation -- --evaluate_paraphrases
 ```
 
 # Disclaimer. 

@@ -1,6 +1,25 @@
+[project]
+name = "multihopkg"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "debugpy>=1.8.21",
+    "pandas>=3.0.5",
+    "pyarrow>=25.0.1",
+    "scikit-learn>=1.9.1",
+    "torch>=2.14.0",
+    "torchvision>=0.29.0",
+    "transformers>=5.17.0",
+]
+
+
 [tool.basedpyright]
 # Use standard (non-strict) type checking
 typeCheckingMode = "standard"
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 
 [tool.pyrefly]
 project-includes = ["**/*.py"]
@@ -11,3 +30,7 @@ pythonpath = ["."]
 
 [tool.ruff.lint]
 ignore = ["I001", "UP035", "UP045", "UP006", "UP032"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
