@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
-data_dir="data/eduin_kinshiphinton"
+data_dir="data/KinshipHinton"
 model="point"
 group_examples_by_query="False"
 use_action_space_bucketing="True"
 
+add_reverse_relations="False"
 bandwidth=400
 entity_dim=100
 relation_dim=100
