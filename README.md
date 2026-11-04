@@ -114,6 +114,13 @@ question-conditioned evaluation, `--evaluate_paraphrases` expands evaluation
 rows over paraphrases; add `--filter_original_paraphrases` to exclude copies of
 the original question. `--eval_hops 2,3` restricts QA evaluation to those hops.
 
+To retain one detailed evaluation record per question, pass
+`--evaluation_examples_output_path results/eval-{split}.jsonl`.  Each JSONL
+record includes decoded question text, readable gold/predicted paths and answers, path/relation
+metrics, cumulative negative log-probability, beam-path entropy, hop counts,
+and Hit@1.  `{split}` is replaced with `dev` or `test`; omit it to put both
+splits in one file (the test records are appended).
+
 ### Released checkpoint collection
 
 Download the released `model/final_evaluation/` artifacts before running the

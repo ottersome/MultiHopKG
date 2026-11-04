@@ -258,6 +258,9 @@ parser.add_argument('--rollout_eval_batch_size', type=int, default=0,
                     help='override batch size for rollout evaluation (default: dev_batch_size)')
 parser.add_argument('--keep_rollout_eval_dropout', action='store_true',
                     help='keep action dropout active during rollout evaluation (default: disabled)')
+parser.add_argument('--evaluation_examples_output_path', type=str, default='',
+                    help=('optional JSONL output for one record per question-conditioned rollout evaluation '
+                          'example; use {split} in the path to write separate dev/test files'))
 
 # Policy Gradient
 parser.add_argument('--baseline', type=str, default='n/a',

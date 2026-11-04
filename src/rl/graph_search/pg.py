@@ -7,12 +7,18 @@
  Policy gradient (REINFORCE algorithm) training and inference.
 """
 
-from typing import Dict, List, Optional, cast
+import json
+import os
+from typing import Dict, List, Optional, TextIO, cast
 
 import numpy as np
 import torch
 
-from src.eval import FaithfulnessEvaluator, RolloutEvaluator, get_example_weight
+from src.eval import (
+    FaithfulnessEvaluator, RolloutEvaluator, answer_set_f1, get_example_weight,
+    get_gold_answers, get_gold_path, get_gold_relations, path_edit_distance_norm,
+    relation_edit_distance_norm, relation_overlap_f1, subgraph_overlap_f1,
+)
 from src.itl_typing import QAExample
 from src.learn_framework import LFramework
 import src.rl.graph_search.beam_search as search
@@ -296,6 +302,43 @@ class PolicyGradient(LFramework):
             data_dir=self.args.data_dir,
         )
 
+        # This intentionally writes JSON Lines: evaluation can be large, and a
+        # stream of independently parseable records avoids keeping every result
+        # in memory.  A {split} placeholder prevents dev and test records from
+        # sharing a file; otherwise the test pass appends to the dev pass.
+        example_output: Optional[TextIO] = None
+        example_output_path = getattr(self.args, 'evaluation_examples_output_path', '')
+        if example_output_path and is_qa_data:
+            output_path = example_output_path.format(split=str(split_name).lower())
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            mode = 'w' if ('{split}' in example_output_path or str(split_name).lower() == 'dev') else 'a'
+            example_output = open(output_path, mode, encoding='utf-8')
+            print('Writing per-example rollout evaluation to {}'.format(output_path))
+
+        def entity_name(entity_id: int) -> str:
+            return str(self.kg.id2entity.get(int(entity_id), int(entity_id)))
+
+        def relation_name(relation_id: int) -> str:
+            return str(self.kg.id2relation.get(int(relation_id), int(relation_id)))
+
+        def format_path(path):
+            return [
+                {'head': entity_name(head), 'relation': relation_name(relation), 'tail': entity_name(tail)}
+                for head, relation, tail in path
+            ]
+
+        def question_text(token_ids):
+            """Decode the cached question tokens for a human-readable export."""
+            tokenizer = getattr(self, '_q_tokenizer', None)
+            if tokenizer is None:
+                return None
+            return tokenizer.decode(
+                [int(token) for token in token_ids], skip_special_tokens=True,
+                clean_up_tokenization_spaces=True,
+            )
+
         disable_dropout = not getattr(self.args, 'keep_rollout_eval_dropout', False)
         prev_dropout = getattr(self, 'action_dropout_rate', 0.0)
         if disable_dropout:
@@ -384,7 +427,72 @@ class PolicyGradient(LFramework):
                                 pred_entities_np[row].tolist(),
                                 weight=float(example_weights[row])
                             )
+                            if example_output is not None:
+                                gold_path = get_gold_path(example)
+                                gold_relations = get_gold_relations(example) or []
+                                pred_relations = [edge[1] for edge in pred_path]
+                                gold_answers_for_example = get_gold_answers(example)
+                                edge_f1 = None
+                                path_edit = None
+                                if gold_path:
+                                    edge_f1 = subgraph_overlap_f1(
+                                        pred_path, gold_path,
+                                        faithfulness_evaluator.special_tokens,
+                                        faithfulness_evaluator.inverse_mapping)[2]
+                                    path_edit = path_edit_distance_norm(
+                                        pred_path, gold_path,
+                                        faithfulness_evaluator.special_tokens,
+                                        faithfulness_evaluator.inverse_mapping)
+                                relation_f1 = relation_overlap_f1(
+                                    pred_relations, gold_relations,
+                                    faithfulness_evaluator.special_tokens,
+                                    faithfulness_evaluator.inverse_mapping)[2]
+                                relation_edit = relation_edit_distance_norm(
+                                    pred_relations, gold_relations,
+                                    faithfulness_evaluator.special_tokens,
+                                    faithfulness_evaluator.inverse_mapping)
+                                answer_f1 = answer_set_f1(
+                                    pred_entities_np[row].tolist(), gold_answers_for_example)[2]
+                                row_scores = pred_scores_np[row]
+                                finite_scores = row_scores[np.isfinite(row_scores)]
+                                if finite_scores.size:
+                                    probs = np.exp(finite_scores - np.max(finite_scores))
+                                    probs /= probs.sum()
+                                    path_entropy = float(-np.sum(probs * np.log(probs + 1e-12)))
+                                else:
+                                    path_entropy = 0.0
+                                top_entity = int(pred_entities_np[row, 0])
+                                solved = top_entity in set(gold_answers_for_example)
+                                clean_hops = sum(
+                                    relation not in faithfulness_evaluator.special_tokens
+                                    for _, relation, _ in pred_path)
+                                record = {
+                                    'split': str(split_name).lower(),
+                                    'example_index': start + row,
+                                    'question_text': question_text(example.question),
+                                    'question_token_ids': [int(token) for token in example.question],
+                                    'start_entity': entity_name(example.source_entity),
+                                    'gold_answers': [entity_name(answer) for answer in gold_answers_for_example],
+                                    'predicted_answer': entity_name(top_entity),
+                                    'gold_path': format_path(gold_path or []),
+                                    'gold_path_raw': [list(edge) for edge in (gold_path or [])],
+                                    'predicted_path': format_path(pred_path),
+                                    'predicted_path_raw': [list(edge) for edge in pred_path],
+                                    'path_f1': edge_f1,
+                                    'path_edit_distance': path_edit,
+                                    'relation_f1': relation_f1,
+                                    'relation_edit_distance': relation_edit,
+                                    'negative_log_probability': float(-row_scores[0]),
+                                    'path_entropy': path_entropy,
+                                    'gold_hop_count': int(example.Hops),
+                                    'agent_hop_count': int(clean_hops),
+                                    'answer_set_f1': answer_f1,
+                                    'solved_hit_at_1': bool(solved),
+                                }
+                                example_output.write(json.dumps(record, sort_keys=True) + '\n')
         finally:
+            if example_output is not None:
+                example_output.close()
             if disable_dropout:
                 self.action_dropout_rate = prev_dropout
             if training_state:
