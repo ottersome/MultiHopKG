@@ -2,7 +2,6 @@
 
 data_dir="data/mquake_st"
 model="conve"
-add_reversed_training_edges="True"
 group_examples_by_query="True"
 entity_dim=100
 relation_dim=100

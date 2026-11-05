@@ -2,7 +2,6 @@
 
 data_dir="data/KinshipHinton/"
 model="point.rs.conve"
-add_reversed_training_edges="True"
 group_examples_by_query="True"
 emb_2D_d1=3
 emb_2D_d2=4
@@ -56,7 +55,7 @@ action_dropout_anneal_interval=1000
 action_dropout_rate=0.1
 adam_beta1=0.9
 adam_beta2=0.999
-add_reverse_relations="True"
+add_reverse_relations="False"
 checkpoint_keep_best=3 # Just for clarity 
 
 # Per hop testing: Generally leave empty if you dont want to do tis. 
