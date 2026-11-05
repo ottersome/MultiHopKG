@@ -75,7 +75,10 @@ class FaithfulnessMetricTests(unittest.TestCase):
         evaluator = FaithfulnessEvaluator(kg)
         example = QAExample(2, 5, [], 3, Paths=[(2, 10, 3), (3, 11, 4), (4, 12, 5)])
         evaluator.update(example, [(2, 10, 3), (3, 20, 4), (4, 12, 5)], [5])
-        self.assertEqual(evaluator.compute()['faithfulness/relation_edit_distance'], 1.0)
+        metrics = evaluator.compute()
+        self.assertEqual(metrics['faithfulness/relation_edit_distance'], 1.0)
+        self.assertEqual(metrics['faithfulness/predicted_hop_count_mean'], 3.0)
+        self.assertEqual(metrics['faithfulness/3hop_predicted_hop_count_mean'], 3.0)
 
 
 if __name__ == '__main__':

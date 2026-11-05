@@ -637,6 +637,8 @@ class FaithfulnessEvaluator:
         self.answer_precision = 0.0
         self.answer_recall = 0.0
         self.answer_f1 = 0.0
+        self.predicted_hop_total = 0.0
+        self.predicted_hop_histogram: Dict[int, float] = defaultdict(float)
         self.num_examples = 0
         self.by_hop: Dict[int, Dict[str, float]] = {}
 
@@ -734,6 +736,8 @@ class FaithfulnessEvaluator:
         gold_answers = get_gold_answers(example)
         hop = example.Hops
         pred_relations = [int(edge[1]) for edge in pred_path]
+        predicted_hop_count = len(clean_path_edges(# NOTE: Do we want to consider intermediate NOOP as also not a step ? 
+            pred_path, self.special_tokens, self.inverse_mapping))
 
         reference_paths = [gt_path] if gt_path else []
         if (not gt_path and self.semantic_multi_path
@@ -786,6 +790,8 @@ class FaithfulnessEvaluator:
         self.answer_precision += ans_p * weight
         self.answer_recall += ans_r * weight
         self.answer_f1 += ans_f * weight
+        self.predicted_hop_total += predicted_hop_count * weight
+        self.predicted_hop_histogram[predicted_hop_count] += weight
         self.num_examples += weight
 
         entry = self.by_hop.setdefault(int(hop), {
@@ -805,6 +811,7 @@ class FaithfulnessEvaluator:
             'path_edit_distance': 0.0,
             'ped': 0.0,
             'answer_set_f1': 0.0,
+            'predicted_hop_count': 0.0,
         })
         entry['examples'] += weight
         if reference_paths:
@@ -823,6 +830,7 @@ class FaithfulnessEvaluator:
         entry['relation_f1'] += rel_f * weight
         entry['relation_edit_distance'] += rel_dist * weight
         entry['answer_set_f1'] += ans_f * weight
+        entry['predicted_hop_count'] += predicted_hop_count * weight
 
     def compute(self) -> Dict[str, float]:
         if self.num_examples == 0:
@@ -849,7 +857,10 @@ class FaithfulnessEvaluator:
             'faithfulness/answer_set_precision': self.answer_precision / n,
             'faithfulness/answer_set_recall': self.answer_recall / n,
             'faithfulness/answer_set_f1': self.answer_f1 / n,
+            'faithfulness/predicted_hop_count_mean': self.predicted_hop_total / n,
         }
+        for predicted_hops, count in sorted(self.predicted_hop_histogram.items()):
+            metrics[f'faithfulness/predicted_{predicted_hops}hop_examples'] = count
         if self.semantic_path_attempts:
             metrics['faithfulness/semantic_path_attempts'] = self.semantic_path_attempts
             metrics['faithfulness/semantic_path_examples'] = self.semantic_path_examples
@@ -874,6 +885,8 @@ class FaithfulnessEvaluator:
             for key in ['relation_precision', 'relation_recall', 'relation_f1',
                         'relation_edit_distance', 'answer_set_f1']:
                 metrics[f'faithfulness/{hop}hop_{key}'] = values[key] / count
+            metrics[f'faithfulness/{hop}hop_predicted_hop_count_mean'] = (
+                values['predicted_hop_count'] / count)
         return metrics
 
 

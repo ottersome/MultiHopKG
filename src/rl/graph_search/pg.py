@@ -485,6 +485,7 @@ class PolicyGradient(LFramework):
                                     'negative_log_probability': float(-row_scores[0]),
                                     'path_entropy': path_entropy,
                                     'gold_hop_count': int(example.Hops),
+                                    'predicted_hop_count': int(clean_hops),
                                     'agent_hop_count': int(clean_hops),
                                     'answer_set_f1': answer_f1,
                                     'solved_hit_at_1': bool(solved),
