@@ -44,7 +44,7 @@ action_dropout_anneal_interval=1000
 reward_shaping_threshold=0.1
 beta=0.00
 relation_only="False"
-beam_size=128
+beam_size=100
 mu=0.25
 checkpoint_keep_last=3
 

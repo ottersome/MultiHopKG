@@ -33,7 +33,7 @@ action_dropout_rate=0.9
 action_dropout_anneal_interval=1000
 beta=0.05
 relation_only="False"
-beam_size=128
+beam_size=100
 
 wandb="True"
 wandb_project="conve_salesforce_training"

@@ -40,7 +40,7 @@ action_dropout_anneal_interval=1000
 reward_shaping_threshold=0
 beta=0.02
 relation_only="False"
-beam_size=128
+beam_size=100
 
 # Reference placeholders for other FNs (unused here)
 distmult_state_dict_path="model/FB15K-237-distmult-xavier-200-200-0.003-0.3-0.1/model_best.tar"
