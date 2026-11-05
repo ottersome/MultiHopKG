@@ -5,7 +5,7 @@ Reasoning with Reward Shaping](https://arxiv.org/abs/1808.10568) (Lin, Socher,
 and Xiong, EMNLP 2018), focused on question-answering (QA) experiments and the
 evaluation protocol used for the current work.
 
-Only the QA workflows, including KinshipHintonLatest and MQuAKE, are supported.
+Only the QA workflows, including KinshipHinton and MQuAKE, are supported.
 The legacy non-QA/link-prediction datasets and configurations remain in the
 repository for historical reference, but are untested and not supported.
 
@@ -24,7 +24,7 @@ environment, so either activate `.venv` first or invoke them through `uv run --`
 
 ```sh
 uv run python -m pytest
-uv run -- ./experiment-rs-nlp.sh configs/kinshiphinton_latest-rs-nlp-conve.sh --train 0
+uv run -- ./experiment-rs-nlp.sh configs/kinshiphinton-rs-nlp-conve.sh --train 0
 ```
 
 The bundled Dockerfile targets the original 2018 software stack and is not a
@@ -45,10 +45,10 @@ Boolean `--train` flag. Options after the GPU ID override config values, so
 ## Data preparation
 
 Use the QA data specified by the configuration you are running. In particular,
-the current KinshipHintonLatest configuration expects:
+the current KinshipHinton configuration expects:
 
 ```text
-data/KinshipHintonLatest/kinship_qa_nhop.csv
+data/KinshipHinton/kinship_qa_nhop.csv
 ```
 
 MQuAKE configurations similarly identify their required QA CSV with
@@ -72,7 +72,7 @@ or supply that checkpoint, then set `conve_state_dict_path` in the QA
 configuration to its location:
 
 ```sh
-uv run -- ./experiment-emb.sh configs/kinshiphinton_latest-conve.sh --train 0
+uv run -- ./experiment-emb.sh configs/kinshiphinton-conve.sh --train 0
 ```
 
 ### Question-conditioned reward shaping
@@ -81,7 +81,7 @@ For the current KinshipHintonLatest setup:
 
 ```sh
 uv run -- ./experiment-rs-nlp.sh \
-  configs/kinshiphinton_latest-rs-nlp-conve.sh --train 0 --seed=44
+  configs/kinshiphinton-rs-nlp-conve.sh --train 0 --seed=44
 ```
 
 For MQuAKE single-answer QA:
@@ -105,7 +105,7 @@ and test results.
 
 ```sh
 uv run -- ./experiment-rs-nlp.sh \
-  configs/kinshiphinton_latest-rs-nlp-conve.sh --inference 0 \
+  configs/kinshiphinton-rs-nlp-conve.sh --inference 0 \
   --checkpoint_path model/path/to/model_best.tar --seed=44
 ```
 
@@ -118,7 +118,8 @@ To retain one detailed evaluation record per question, pass
 `--evaluation_examples_output_path results/eval-{split}.jsonl`.  Each JSONL
 record includes decoded question text, readable gold/predicted paths and answers, path/relation
 metrics, cumulative negative log-probability, beam-path entropy, hop counts,
-and Hit@1.  `{split}` is replaced with `dev` or `test`; omit it to put both
+and Hit@1. Aggregate metrics also report the predicted-hop mean, its distribution,
+and the predicted-hop mean for each gold-hop bucket. `{split}` is replaced with `dev` or `test`; omit it to put both
 splits in one file (the test records are appended).
 
 ### Released checkpoint collection
@@ -132,8 +133,10 @@ uv run python batch_eval.py model/final_evaluation
 ```
 
 By default, logs and per-checkpoint JSON metrics go below
-`batch_eval_logs/<timestamp>/`. Select a GPU or persist aggregate results when
-needed:
+`batch_eval_logs/<timestamp>/`; detailed dev/test JSONL evaluation records go
+under its `examples/` subdirectory. This also includes the predicted-hop
+statistics in the JSON metrics and summary tables. Select a GPU or persist
+aggregate results when needed:
 
 ```sh
 uv run python batch_eval.py --gpu 1 \
@@ -146,6 +149,19 @@ Arguments after `--` are passed to every checkpoint evaluation:
 ```sh
 uv run python batch_eval.py model/final_evaluation -- --evaluate_paraphrases
 ```
+
+Evaluate several checkpoint collections together by listing their directories:
+
+```sh
+uv run python batch_eval.py \
+  model/final_evaluation/kinshiphinton \
+  model/final_evaluation/mquake_ma_rl_binary \
+  model/final_evaluation/metaqa_rl_binary \
+  model/final_evaluation/mquake_sa_rl_binary
+```
+
+Use `--evaluation_examples_dir results/examples` to choose where the detailed
+JSONL files are written, or `--no_evaluation_examples` to skip them.
 
 Use `--dry_run` to inspect generated commands before a large evaluation.
 

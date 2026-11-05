@@ -1,5 +1,5 @@
 # How to call 
-# python -m scripts.preprocess_kinship_latest
+# python -m scripts.preprocess_kinshiphinton
 
 from networkx import pagerank
 from argparse import ArgumentParser
@@ -18,9 +18,9 @@ import numpy as np
 
 def main():
     ap = ArgumentParser()
-    ap.add_argument("--triplets_path", default="./raw_data/KinshipHintonLatest/kg/orig/triplets.txt", help="Location of data")
-    ap.add_argument("--output_raw_kb_path", default="./data/KinshipHintonLatest/raw.kb", help="Location of data")
-    ap.add_argument("--qa_ds_path", default="./raw_data/KinshipHintonLatest/qa/kinship_hinton_qa_nhop.csv", help="Location of data")
+    ap.add_argument("--triplets_path", default="./raw_data/KinshipHinton/kg/orig/triplets.txt", help="Location of data")
+    ap.add_argument("--output_raw_kb_path", default="./data/KinshipHinton/raw.kb", help="Location of data")
+    ap.add_argument("--qa_ds_path", default="./raw_data/KinshipHinton/qa/kinship_hinton_qa_nhop.csv", help="Location of data")
 
     args = ap.parse_args()
 
@@ -81,7 +81,7 @@ def main():
     )
     print(f"Resulting page rank csv has {len(pagerank_df.columns)} columns and {len(pagerank_df)} rows")
     pagerank_df.to_csv(
-        output_path.joinpath("pgrk_input_kinshiphinton_latest.csv"),
+        output_path.joinpath("pgrk_input_kinshiphinton.csv"),
         sep=",",
         index=False,
         header=False,

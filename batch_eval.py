@@ -56,12 +56,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help='Optional path for the aggregated evaluation CSV')
     parser.add_argument('--log_dir', default='',
                         help='Directory for per-checkpoint logs and metrics artifacts')
+    parser.add_argument('--evaluation_examples_dir', default='',
+                        help=('Directory for per-checkpoint detailed evaluation JSONL files '
+                              '(default: <log_dir>/examples)'))
+    parser.add_argument('--no_evaluation_examples', action='store_true',
+                        help='Do not write detailed per-example evaluation JSONL files')
     parser.add_argument('--fail_fast', action='store_true',
                         help='Stop after the first failed evaluation')
     parser.add_argument('--dry_run', action='store_true',
                         help='Print the commands that would run without executing them')
-    parser.add_argument('target',
-                        help='Checkpoint files or directories containing checkpoints')
+    parser.add_argument('targets', nargs='+',
+                        help='Checkpoint directories containing checkpoints; multiple directories are allowed')
     parsed = parser.parse_args(raw_argv)
     parsed.extra_args = extra_args
     return parsed
@@ -192,6 +197,7 @@ def render_faithfulness_summary(
         ('faithfulness/semantic_path_coverage', 'Path_Coverage'),
         ('faithfulness/semantic_path_examples', 'Path_Covered'),
         ('faithfulness/semantic_path_attempts', 'Path_Attempts'),
+        ('faithfulness/predicted_hop_count_mean', 'Pred_Hops'),
     ]
     headers = ['label', 'status', *(name for _, name in metric_specs)]
     table_rows: List[List[str]] = []
@@ -225,6 +231,7 @@ def render_per_hop_faithfulness_summary(
         ('subgraph_f1', 'F1_SG'),
         ('ped', 'PED'),
         ('path_examples', 'Path_Examples'),
+        ('predicted_hop_count_mean', 'Pred_Hops'),
     ]
     hop_pattern = re.compile(r'^faithfulness/(\d+)hop_')
     hops = sorted({
@@ -332,13 +339,31 @@ def main() -> int:
 
     # config = load_shell_config(config_path)
     # base_cli = config_to_cli_args(config)
-    pattern = args.pattern or DEFAULT_PATTERNS
-    checkpoint_configs_and_paths = discover_checkpoints(args.target, pattern)
+    patterns = args.pattern or [DEFAULT_PATTERNS]
+    checkpoint_configs_and_paths: Dict[Path, CheckpointConfigs] = {}
+    for target in args.targets:
+        for pattern in patterns:
+            discovered = discover_checkpoints(target, pattern)
+            for parent, checkpoint_config in discovered.items():
+                if parent not in checkpoint_configs_and_paths:
+                    checkpoint_configs_and_paths[parent] = checkpoint_config
+                else:
+                    known_paths = checkpoint_configs_and_paths[parent].checkpoint_paths
+                    known_paths.extend(
+                        path for path in checkpoint_config.checkpoint_paths
+                        if path not in known_paths
+                    )
     # extra_args = list(args.extra_args)
 
     timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     log_dir = Path(args.log_dir) if args.log_dir else repo_root / 'batch_eval_logs' / timestamp
     log_dir.mkdir(parents=True, exist_ok=True)
+    examples_dir = (
+        Path(args.evaluation_examples_dir)
+        if args.evaluation_examples_dir else log_dir / 'examples'
+    )
+    if not args.no_evaluation_examples:
+        examples_dir.mkdir(parents=True, exist_ok=True)
 
     rows: List[Dict[str, object]] = []
     env = os.environ.copy()
@@ -366,6 +391,7 @@ def main() -> int:
             metrics_path = log_dir / f'{label}.metrics.json'
             stdout_path = log_dir / f'{label}.stdout.log'
             stderr_path = log_dir / f'{label}.stderr.log'
+            example_output_path = examples_dir / f'{label}-{{split}}.jsonl'
             cmd = [
                 sys.executable,
                 '-m',
@@ -378,8 +404,13 @@ def main() -> int:
                 '--metrics_output_path',
                 str(metrics_path),
                 *base_cli,
-                *extra_args,
             ]
+            if not args.no_evaluation_examples:
+                cmd.extend([
+                    '--evaluation_examples_output_path',
+                    str(example_output_path),
+                ])
+            cmd.extend(extra_args)
             print(f'[{cur_run_num_experiments+1}/{num_experiments}] {checkpoint}')
             if args.dry_run:
                 print('  ' + shlex.join(cmd))
@@ -389,6 +420,7 @@ def main() -> int:
                     'status': 'dry-run',
                     'command': cmd,
                 })
+                cur_run_num_experiments += 1
                 continue
 
             completed = subprocess.run(
@@ -410,6 +442,8 @@ def main() -> int:
                 'stderr_log': str(stderr_path),
                 'metrics_path': str(metrics_path),
             }
+            if not args.no_evaluation_examples:
+                row['evaluation_examples_path'] = str(example_output_path)
             if completed.returncode == 0 and metrics_path.is_file():
                 row['status'] = 'ok'
                 row['metrics'] = json.loads(metrics_path.read_text())
@@ -447,7 +481,7 @@ def main() -> int:
         flat_rows: List[Dict[str, object]] = []
         header_names = {
             'label', 'checkpoint', 'status', 'returncode',
-            'stdout_log', 'stderr_log', 'metrics_path', 'error'
+            'stdout_log', 'stderr_log', 'metrics_path', 'evaluation_examples_path', 'error'
         }
         for row in rows:
             flat_row = {key: row.get(key, '') for key in header_names}

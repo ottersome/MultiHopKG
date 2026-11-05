@@ -207,7 +207,7 @@ def normalize_dataset_label(data_dir: str) -> str:
     """Provide readable defaults while allowing explicit report_dataset overrides."""
     name = Path(data_dir.rstrip('/')).name
     normalized = re.sub(r'[^a-z0-9]+', '', name.lower())
-    if normalized in {'kinship', 'kinshiphinton', 'kinshiphintonlatest'}:
+    if normalized in {'kinship', 'kinshiphinton'}:
         return 'Kinship'
     if normalized.startswith('mquakest'):
         return 'MQuAKE-ST'

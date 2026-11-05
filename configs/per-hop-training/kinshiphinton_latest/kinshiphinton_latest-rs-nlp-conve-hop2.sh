@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-data_dir="data/KinshipHintonLatest/"
+data_dir="data/KinshipHinton/"
 model="point.rs.conve"
 group_examples_by_query="True"
 emb_2D_d1=3
@@ -36,16 +36,16 @@ reward_shaping_threshold=0
 beta=0.02
 num_paths_per_entity=-1
 
-cached_qa_metadata_path="./.cache/kinshiphinton_latest/kinshiphinton_clean.json"
-raw_QAData_path="data/KinshipHintonLatest/kinship_qa_nhop.csv" # This ought to change a lot depending on what it is that you are testing.
+cached_qa_metadata_path="./.cache/kinshiphinton/kinshiphinton_clean.json"
+raw_QAData_path="data/KinshipHinton/kinship_qa_nhop.csv" # This ought to change a lot depending on what it is that you are testing.
 bert_model_name="bert-base-uncased"
 max_question_len=100
 mu=1.0
 
 # For now all we really have is conve
-distmult_state_dict_path="${PWD}/model/KinshipHintonLatest-conve-RV-xavier-12-12-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-90.tar" # 不在用，但還要定義
-complex_state_dict_path="${PWD}/model/KinshipHintonLatest-conve-RV-xavier-12-12-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-90.tar" # 不在用，但還要定義
-conve_state_dict_path="${PWD}/model/KinshipHintonLatest-conve-RV-xavier-12-12-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-90.tar"
+distmult_state_dict_path="${PWD}/model/KinshipHinton-conve-RV-xavier-12-12-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-90.tar" # 不在用，但還要定義
+complex_state_dict_path="${PWD}/model/KinshipHinton-conve-RV-xavier-12-12-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-90.tar" # 不在用，但還要定義
+conve_state_dict_path="${PWD}/model/KinshipHinton-conve-RV-xavier-12-12-0.01-8-2-0.1-0.1-0.2-0.05/checkpoint-90.tar"
 bandwidth=50
 
 action_dropout_rate=0.3

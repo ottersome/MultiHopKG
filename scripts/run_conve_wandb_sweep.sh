@@ -24,12 +24,12 @@ For a quick local smoke test without creating a sweep, run:
     --hidden_dropout_rate 0.3 --feat_dropout_rate 0.2 \\
     --num_out_channels 32 --kernel_size 3 --beam_size 128 --gpu 0
 
-KinshipHintonLatest micro-dataset sweep:
-  wandb sweep --entity halcyon-solutions --project salesforce-entity_training sweeps/conve_kinshiphinton_latest_prelim.yaml
+KinshipHinton micro-dataset sweep:
+  wandb sweep --entity halcyon-solutions --project salesforce-entity_training sweeps/conve_kinshiphinton.yaml
 
 Final MQuAKE-ST NLP reward-shaping sweep:
   wandb sweep --entity halcyon-solutions --project salesforce-rsnlp-conve-mquake-microsweep sweeps/rs_nlp_mquake_st_final.yaml
 
-Final KinshipHintonLatest NLP reward-shaping sweep:
-  wandb sweep --entity halcyon-solutions --project rs-nlp-conve-kinship sweeps/rs_nlp_kinshiphinton_latest_final.yaml
+Final KinshipHinton NLP reward-shaping sweep:
+  wandb sweep --entity halcyon-solutions --project rs-nlp-conve-kinship sweeps/rs_nlp_kinshiphinton.yaml
 EOF

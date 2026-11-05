@@ -2,6 +2,7 @@
 
 data_dir="data/KinshipHinton/"
 model="point.rs.conve"
+add_reversed_training_edges="True"
 group_examples_by_query="True"
 emb_2D_d1=3
 emb_2D_d2=4

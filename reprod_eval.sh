@@ -21,7 +21,7 @@ for model in $SPECIFIC_MODEL_DIRS; do
     number=$(printf "%s\n" $base | sed -n 's/^s\([0-9][0-9]*\)_model.tar$/\1/p')
     printf "Evaluating checkpoint with seed ${YC}${number}${RC}\n"
     set +x
-    ./experiment-rs-nlp.sh configs/kinshiphinton_latest-rs-nlp-conve.sh --inference 0 \
+    ./experiment-rs-nlp.sh configs/kinshiphinton-rs-nlp-conve.sh --inference 0 \
         --checkpoint_path "${MODEL_ROOT}/${model}/${seed}_model.tar" \
         --rollout_eval_num_rollouts 128 \
         --rollout_eval_batch_size 16

@@ -20,11 +20,11 @@ command:
   - --wandb_project
   - salesforce-entity_training
   - --wandb_group
-  - kinshiphinton_latest-conve-prelim
+  - kinshiphinton-conve-prelim
   - --wandb_tags
-  - conve,kinshiphinton_latest,micro-sweep
+  - conve,kinshiphinton,micro-sweep
   - --data_dir
-  - data/KinshipHintonLatest
+  - data/KinshipHinton
   - --model
   - conve
   - --add_reversed_training_edges
