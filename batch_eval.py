@@ -396,6 +396,7 @@ def main() -> int:
                 sys.executable,
                 '-m',
                 'src.experiments',
+                *base_cli,
                 '--inference',
                 '--gpu',
                 str(args.gpu),
@@ -403,7 +404,6 @@ def main() -> int:
                 str(checkpoint),
                 '--metrics_output_path',
                 str(metrics_path),
-                *base_cli,
             ]
             if not args.no_evaluation_examples:
                 cmd.extend([

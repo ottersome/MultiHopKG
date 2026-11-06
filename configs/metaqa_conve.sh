@@ -27,6 +27,7 @@ feat_dropout_rate=0.2
 hidden_dropout_rate=0.1
 label_smoothing_epsilon=0.05
 checkpoint_keep_last=3
+history_dim=200
 
 num_negative_samples=20
 margin=0.5

@@ -75,6 +75,22 @@ configuration to its location:
 uv run -- ./experiment-emb.sh configs/kinshiphinton-conve.sh --train 0
 ```
 
+The supported ConvE configurations train on `lp_train.triples`, the deduplicated
+union of `raw.kb`, `train.triples`, `dev.triples`, and `test.triples`.  ConvE is
+used as a transductive KG substrate for the QA policy, so this is intentional:
+it is not a held-out link-prediction benchmark.  Build or refresh these files
+before standalone LP training:
+
+```sh
+make prepare-lp-data
+```
+
+For MetaQA and MQuAKE, LP uses a generous epoch ceiling and early-stops on the
+existing dev-MRR signal as an optimization/convergence criterion. Because the
+full KG includes those triples, do not report that MRR as a held-out LP result.
+RL early stopping, in contrast, uses held-out QA development questions. Kinship
+always runs its paper-specified 100 epochs.
+
 ### Question-conditioned reward shaping
 
 For the current KinshipHintonLatest setup:
@@ -83,6 +99,22 @@ For the current KinshipHintonLatest setup:
 uv run -- ./experiment-rs-nlp.sh \
   configs/kinshiphinton-rs-nlp-conve.sh --train 0 --seed=44
 ```
+
+### End-to-end staged training
+
+The Makefile trains the four supported ConvE prerequisites, then their matching
+RL models, and stages the resulting checkpoints under isolated `*_make`
+directories in `model/final_evaluation/`. This preserves the released
+checkpoints while making the new runs directly consumable by `batch_eval.py`.
+
+```sh
+make pipeline GPU=0
+```
+
+`pipeline` runs `prepare-lp-data` automatically before ConvE training.
+
+Use `make train-all GPU=0` to train and stage without evaluating, or
+`make evaluate GPU=0` to evaluate previously staged runs.
 
 For MQuAKE single-answer QA:
 

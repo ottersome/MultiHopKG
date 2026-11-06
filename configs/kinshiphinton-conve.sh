@@ -26,6 +26,8 @@ hidden_dropout_rate=0.1
 kernel_size=2
 label_smoothing_epsilon=0.05
 beam_size=100
+bandwidth=300
+history_dim=200
 
 wandb_project="kinship_hinton_linkpred_emb"
 num_negative_samples=20
