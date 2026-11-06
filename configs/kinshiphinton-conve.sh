@@ -2,7 +2,7 @@
 
 data_dir="./data/KinshipHinton"
 # ConvE is a KG substrate for QA, so fit it on the complete observed KG.
-train_triples_path="./data/KinshipHinton/lp_train.triples"
+lp_train_triples_path="./data/KinshipHinton/lp_train.triples"
 model="conve"
 group_examples_by_query="True"
 emb_2D_d1=3

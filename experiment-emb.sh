@@ -12,6 +12,10 @@ add_reversed_training_edges_flag=''
 if [[ $add_reversed_training_edges = *"True"* ]]; then
     add_reversed_training_edges_flag="--add_reversed_training_edges"
 fi
+lp_train_triples_path_flag=''
+if [[ -n "$lp_train_triples_path" ]]; then
+    lp_train_triples_path_flag="--lp_train_triples_path $lp_train_triples_path"
+fi
 group_examples_by_query_flag=''
 if [[ $group_examples_by_query = *"True"* ]]; then
     group_examples_by_query_flag="--group_examples_by_query"
@@ -19,6 +23,7 @@ fi
 
 cmd="python3 -m src.experiments \
     --data_dir $data_dir \
+    $lp_train_triples_path_flag \
     $exp \
     --model $model \
     --entity_dim $entity_dim \

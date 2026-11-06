@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 data_dir="data/metaqa_encoded"
-train_triples_path="data/metaqa_encoded/lp_train.triples"
+lp_train_triples_path="data/metaqa_encoded/lp_train.triples"
 model="conve"
 add_reversed_training_edges="True"
 group_examples_by_query="True"

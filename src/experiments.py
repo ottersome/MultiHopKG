@@ -505,6 +505,12 @@ def train(lf: LFramework) -> None:
         seen_entities = set()
         # dev_data = data_utils.load_triples(dev_path, entity_index_path, relation_index_path, seen_entities=seen_entities)
     else:
+        # This override is deliberately applied here rather than in
+        # get_train_path(): --process_data must always construct the traversal
+        # KG from the canonical split files, never from an LP-only substrate.
+        lp_train_path = getattr(args, 'lp_train_triples_path', '')
+        if lp_train_path:
+            train_path = lp_train_path
         train_data = data_utils.load_triples(
             train_path, entity_index_path, relation_index_path, group_examples_by_query=args.group_examples_by_query,
             add_reverse_relations=args.add_reversed_training_edges)

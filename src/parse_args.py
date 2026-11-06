@@ -35,6 +35,8 @@ parser.add_argument('--run_analysis', action='store_true',
                     help='run algorithm analysis and print intermediate results (default: False)')
 parser.add_argument('--data_dir', type=str, default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data'),
                     help='directory where the knowledge graph data is stored (default: None)')
+parser.add_argument('--lp_train_triples_path', type=str, default='',
+                    help='optional triple file used only for link-prediction training; defaults to train.triples')
 parser.add_argument('--model_root_dir', type=str, default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'model'),
                     help='root directory where the model parameters are stored (default: None)')
 parser.add_argument('--model_dir', type=str, default=os.path.join(os.path.dirname(os.path.dirname(__file__)), 'model'),

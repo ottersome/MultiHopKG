@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 data_dir="data/mquake_st"
-train_triples_path="data/mquake_st/lp_train.triples"
+lp_train_triples_path="data/mquake_st/lp_train.triples"
 model="conve"
 group_examples_by_query="True"
 entity_dim=100
