@@ -27,8 +27,9 @@ num_rollouts=100
 num_rollout_steps=4
 num_out_channels=64
 bucket_interval=10
-num_epochs=100
-num_wait_epochs=100
+# Use a generous ceiling and stop at the best QA-development MRR checkpoint.
+num_epochs=500
+num_wait_epochs=50
 num_peek_epochs=2
 checkpoint_keep_last=3
 batch_size=128

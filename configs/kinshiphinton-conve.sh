@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
 data_dir="./data/KinshipHinton"
+# ConvE is a KG substrate for QA, so fit it on the complete observed KG.
+train_triples_path="./data/KinshipHinton/lp_train.triples"
 model="conve"
 group_examples_by_query="True"
 emb_2D_d1=3
@@ -10,6 +12,7 @@ relation_dim=12
 num_rollouts=1
 bucket_interval=10
 num_epochs=100
+# Kinship is intentionally trained for the paper-prescribed fixed 100 epochs.
 num_wait_epochs=500
 batch_size=16
 train_batch_size=8

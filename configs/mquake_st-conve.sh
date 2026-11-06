@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 data_dir="data/mquake_st"
+train_triples_path="data/mquake_st/lp_train.triples"
 model="conve"
 group_examples_by_query="True"
 entity_dim=100
@@ -9,8 +10,10 @@ emb_2D_d1=10
 emb_2D_d2=10
 num_rollouts=1
 bucket_interval=10
-num_epochs=300
-num_wait_epochs=500
+# A generous cap plus validation-based convergence selection.  The LP graph is
+# intentionally transductive; see README for the interpretation of dev MRR.
+num_epochs=1000
+num_wait_epochs=50
 batch_size=64
 train_batch_size=64
 dev_batch_size=16
