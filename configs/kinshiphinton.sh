@@ -3,15 +3,15 @@
 data_dir="data/KinshipHinton"
 model="point"
 group_examples_by_query="False"
-use_action_space_bucketing="True"
+use_action_space_bucketing="False"
 
 add_reverse_relations="False"
 add_reversed_training_edges="False"
 bandwidth=400
-entity_dim=100
-relation_dim=100
-history_dim=200
-history_num_layers=3
+entity_dim=12
+relation_dim=12
+history_dim=64 # Not used but just want congruency
+history_num_layers=2
 num_rollouts=20
 num_rollout_steps=2
 bucket_interval=10

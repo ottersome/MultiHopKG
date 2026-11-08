@@ -27,7 +27,7 @@ kernel_size=2
 label_smoothing_epsilon=0.05
 beam_size=100
 bandwidth=300
-history_dim=200
+history_dim=64 # Not used but just want congruency
 
 add_reverse_relations="False"
 add_reversed_training_edges="False"

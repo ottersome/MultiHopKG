@@ -12,8 +12,8 @@ max_question_len=30
 
 add_reverse_relations="True"
 bandwidth=400
-entity_dim=200
-relation_dim=200
+entity_dim=100
+relation_dim=100
 history_dim=200
 history_num_layers=3
 num_rollouts=20

@@ -11,8 +11,8 @@ QAData_path="n/a"
 max_question_len=30
 
 bandwidth=400
-entity_dim=200
-relation_dim=200
+entity_dim=100
+relation_dim=100
 history_dim=200
 history_num_layers=3
 num_rollouts=20

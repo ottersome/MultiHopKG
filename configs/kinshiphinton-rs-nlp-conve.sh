@@ -25,6 +25,7 @@ num_out_channels=8
 kernel_size=2
 use_question_encoder="True"
 allow_direct_answer_edges="True"
+use_action_space_bucketing="False"
 
 checkpoint_path="./model/final_evaluation/kinshiphinton/nov_model.tar"
 
