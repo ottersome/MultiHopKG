@@ -28,7 +28,7 @@ emb_2D_d2=10
 kernel_size=2
 history_num_layers=3
 num_rollouts=100
-num_rollout_steps=4
+num_rollout_steps=3
 num_out_channels=64
 bucket_interval=10
 # Use a generous ceiling and stop at the best QA-development MRR checkpoint.
