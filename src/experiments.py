@@ -362,7 +362,8 @@ def dump_metrics(args, metrics: Optional[Dict]) -> Optional[str]:
 
 def dump_run_metadata(args: Namespace, operation: str) -> Optional[str]:
     """Record the checkpoint produced or consumed by a completed run."""
-    output_path = getattr(args, 'run_metadata_output_path', '')
+    planb_dest = Path(args.model_dir) / f"run_metadata_{operation}.json" if getattr(args, 'model_dir', False) else ''
+    output_path = getattr(args, 'run_metadata_output_path', None) or  planb_dest
     if not output_path:
         return None
 
@@ -379,6 +380,7 @@ def dump_run_metadata(args: Namespace, operation: str) -> Optional[str]:
             checkpoint_path=checkpoint_path,
             seed=args.seed,
             train_hop=getattr(args, 'train_hop', 0),
+            args_dict=vars(args), 
         )
         print('Run metadata saved to {}'.format(manifest_path))
         return str(manifest_path)

@@ -149,6 +149,7 @@ def write_run_manifest(
     checkpoint_path: PathLike,
     seed: int,
     train_hop: int,
+    args_dict: dict,
 ) -> Path:
     """Atomically record a completed experiment and its reusable checkpoint."""
     manifest_path = ensure_parent(output_path)
@@ -163,6 +164,7 @@ def write_run_manifest(
         'checkpoint_path': str(resolved_checkpoint),
         'seed': seed,
         'train_hop': train_hop,
+        'args': args_dict,
     }
     temporary_path = manifest_path.with_name(
         f'.{manifest_path.name}.{os.getpid()}.tmp'
