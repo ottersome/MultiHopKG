@@ -12,6 +12,10 @@ add_reversed_training_edges_flag=''
 if [[ $add_reversed_training_edges = *"True"* ]]; then
     add_reversed_training_edges_flag="--add_reversed_training_edges"
 fi
+add_reverse_relations_flag=''
+if [[ $add_reverse_relations = *"True"* ]]; then
+    add_reverse_relations_flag="--add_reverse_relations"
+fi
 lp_train_triples_path_flag=''
 if [[ -n "$lp_train_triples_path" ]]; then
     lp_train_triples_path_flag="--lp_train_triples_path $lp_train_triples_path"
@@ -50,6 +54,7 @@ cmd="python3 -m src.experiments \
     --beam_size $beam_size \
     --wandb_project $wandb_project \
     $group_examples_by_query_flag \
+    $add_reverse_relations_flag \
     $add_reversed_training_edges_flag \
     --gpu $gpu \
     $ARGS"

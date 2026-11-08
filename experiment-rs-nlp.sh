@@ -8,6 +8,10 @@ exp=$2
 gpu=$3
 ARGS=${@:4}
 
+add_reversed_training_edges_flag=''
+if [[ $add_reversed_training_edges = *"True"* ]]; then
+    add_reversed_training_edges_flag="--add_reversed_training_edges"
+fi
 group_examples_by_query_flag=''
 if [[ $group_examples_by_query = *"True"* ]]; then
     group_examples_by_query_flag="--group_examples_by_query"
@@ -15,6 +19,10 @@ fi
 relation_only_flag=''
 if [[ $relation_only = *"True"* ]]; then
     relation_only_flag="--relation_only"
+fi
+add_reverse_relations_flag=''
+if [[ $add_reverse_relations = *"True"* ]]; then
+    add_reverse_relations_flag="--add_reverse_relations"
 fi
 use_action_space_bucketing_flag=''
 if [[ $use_action_space_bucketing = *"True"* ]]; then
@@ -87,6 +95,7 @@ cmd="python3 -m src.experiments \
     --beta $beta \
     --beam_size $beam_size \
     --num_paths_per_entity $num_paths_per_entity \
+    $add_reverse_relations_flag \
     $group_examples_by_query_flag \
     $use_action_space_bucketing_flag \
     $use_question_encoder_flag \

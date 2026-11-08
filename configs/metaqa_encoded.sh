@@ -10,6 +10,7 @@ question_texts_paths="n/a"
 QAData_path="n/a"
 max_question_len=30
 
+add_reverse_relations="True"
 bandwidth=400
 entity_dim=200
 relation_dim=200

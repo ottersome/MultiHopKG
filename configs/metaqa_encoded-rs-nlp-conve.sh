@@ -3,6 +3,8 @@
 # BERT-conditioned Reward Shaping on MQuake-ST
 
 data_dir="data/metaqa_encoded"
+# MetaQA uses the inverse-edge-augmented, undirected graph protocol.
+add_reverse_relations="True"
 model="point.rs.conve"
 # QA-row training bypasses load_triples(), so this is intentionally unused.
 group_examples_by_query="False"

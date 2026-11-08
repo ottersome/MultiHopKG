@@ -2,7 +2,9 @@
 
 data_dir="data/metaqa_encoded"
 lp_train_triples_path="data/metaqa_encoded/lp_train.triples"
+# MetaQA uses the inverse-edge-augmented, undirected graph protocol.
 model="conve"
+add_reverse_relations="True"
 add_reversed_training_edges="True"
 group_examples_by_query="True"
 entity_dim=100

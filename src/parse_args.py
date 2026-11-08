@@ -135,8 +135,8 @@ parser.add_argument('--num_graph_convolution_layers', type=int, default=0,
                     help='number of graph convolution layers to use (default: 0, no GC is used)')
 parser.add_argument('--graph_convolution_rank', type=int, default=10,
                     help='number of ranks ')
-parser.add_argument('--add_reverse_relations', type=bool, default=True,
-                    help='add reverse relations to KB (default: True)')
+parser.add_argument('--add_reverse_relations', action='store_true',
+                    help='add reverse relations to KB (default: False)')
 parser.add_argument('--add_reversed_training_edges', action='store_true',
                     help='add reversed edges to extend training set (default: False)')
 parser.add_argument('--train_entire_graph', type=bool, default=False,

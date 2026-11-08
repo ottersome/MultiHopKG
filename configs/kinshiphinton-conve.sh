@@ -29,6 +29,9 @@ beam_size=100
 bandwidth=300
 history_dim=200
 
+add_reverse_relations="False"
+add_reversed_training_edges="False"
+
 wandb_project="kinship_hinton_linkpred_emb"
 num_negative_samples=20
 margin=0.5

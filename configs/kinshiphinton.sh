@@ -6,6 +6,7 @@ group_examples_by_query="False"
 use_action_space_bucketing="True"
 
 add_reverse_relations="False"
+add_reversed_training_edges="False"
 bandwidth=400
 entity_dim=100
 relation_dim=100

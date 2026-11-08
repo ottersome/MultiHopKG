@@ -9,6 +9,7 @@
  Experiment Portal.
 """
 
+from pathlib import Path
 from datetime import datetime
 from argparse import Namespace
 import copy

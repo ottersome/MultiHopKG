@@ -26,6 +26,7 @@ EXPERIMENT_STORE_TRUE_ARGS = frozenset({
     'dump_hparams_only',
     'test',
     'group_examples_by_query',
+    'add_reverse_relations',
     'add_reversed_training_edges',
     'use_action_space_bucketing',
     'type_only',
