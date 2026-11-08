@@ -9,7 +9,7 @@ emb_2D_d2=4
 entity_dim=12
 relation_dim=12
 # num_rollouts generally for training
-num_rollouts=32
+num_rollouts=100
 bucket_interval=10
 num_epochs=100
 num_wait_epochs=30
