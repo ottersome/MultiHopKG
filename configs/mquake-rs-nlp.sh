@@ -15,7 +15,7 @@ cached_qa_metadata_path="./.cache/mquake/mquake_clean.json"
 raw_QAData_path="data/mquake_salesforce_compatible/mquake_qa_2hop.csv" # This ought to change a lot depending on what it is that you are testing.
 recompute_qadata_cache="False"
 max_question_len=200
-
+allow_direct_answer_edges="True"
 
 bandwidth=400
 relation_dim=100

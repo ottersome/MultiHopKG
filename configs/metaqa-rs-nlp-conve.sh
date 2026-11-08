@@ -15,6 +15,7 @@ cached_qa_metadata_path="./.cache/metaqa/metaqa_clean.json"
 raw_QAData_path="data/MetaQA/metaqa_qa_nhop.csv" # This ought to change a lot depending on what it is that you are testing.
 recompute_qadata_cache="False"
 max_question_len=200
+allow_direct_answer_edges="True"
 
 bandwidth=200
 relation_dim=100
