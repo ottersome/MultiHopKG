@@ -33,4 +33,3 @@ relation_only="False"
 beam_size=128
 
 num_paths_per_entity=-1
-margin=-1

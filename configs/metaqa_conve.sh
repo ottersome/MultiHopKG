@@ -30,5 +30,4 @@ checkpoint_keep_last=3
 history_dim=200
 
 num_negative_samples=20
-margin=0.5
 wandb_project="metaqa_st_linkpred_emb"

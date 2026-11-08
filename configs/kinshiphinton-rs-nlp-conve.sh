@@ -67,7 +67,6 @@ train_hop=0 # Means that it takes all hops for training
 # eval_hops= # IF we did you would fill that up 
 
 num_negative_samples=12
-margin=0.5
 seed=12
 
 wandb_project="rs-nlp-conve-kinship"

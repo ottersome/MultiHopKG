@@ -39,4 +39,3 @@ wandb="True"
 wandb_project="conve_salesforce_training"
 
 num_paths_per_entity=-1
-margin=-1

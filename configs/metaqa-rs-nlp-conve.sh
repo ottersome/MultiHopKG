@@ -56,7 +56,6 @@ complex_state_dict_path="/home/ottersome/projects/llmbi/salesforce/model/MetaQA-
 conve_state_dict_path="/home/ottersome/projects/llmbi/salesforce/model/MetaQA-conve-RV-xavier-100-100-0.005-64-2-0.1-0.1-0.2-0.05/checkpoint-57.tar"
 
 num_paths_per_entity=-1
-margin=-1
 
 wandb_project="rs-nlp-conve-metaqa-final_run"
 seed=12

@@ -59,7 +59,6 @@ complex_state_dict_path="model/neurips_final/lp_embeddings_conve/metaqa_encoded_
 conve_state_dict_path="model/neurips_final/lp_embeddings_conve/metaqa_encoded_conve-best.tar"
 
 num_paths_per_entity=-1
-margin=-1
 
 wandb_project="rs-nlp-conve-metaqa_encoded-final_run"
 seed=42

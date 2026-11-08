@@ -57,7 +57,6 @@ complex_state_dict_path="model/neurips_final/lp_embeddings_conve/mquake_st-conve
 conve_state_dict_path="model/neurips_final/lp_embeddings_conve/mquake_st-conve-RV-xavier-100-100-0.005-64-2-0.1-0.1-0.2-0.05/model_best.tar"
 
 num_paths_per_entity=-1
-margin=-1
 
 wandb_project="rs-nlp-conve-mquake-final_run"
 seed=12

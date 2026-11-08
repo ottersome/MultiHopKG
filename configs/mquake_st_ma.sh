@@ -44,4 +44,3 @@ wandb="True"
 wandb_project="mquake_st_ma_point"
 
 num_paths_per_entity=-1
-margin=-1

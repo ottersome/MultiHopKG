@@ -34,4 +34,3 @@ add_reversed_training_edges="False"
 
 wandb_project="kinship_hinton_linkpred_emb"
 num_negative_samples=20
-margin=0.5

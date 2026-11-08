@@ -110,7 +110,6 @@ cmd="python3 -m src.experiments \
     --batch_size $batch_size \
     --train_batch_size $train_batch_size \
     --dev_batch_size $dev_batch_size \
-    --margin $margin \
     --learning_rate $learning_rate \
     --baseline $baseline \
     --grad_norm $grad_norm \

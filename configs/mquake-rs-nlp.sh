@@ -49,4 +49,3 @@ complex_state_dict_path="model/FB15K-237-complex-RV-xavier-200-200-0.003-0.3-0.1
 conve_state_dict_path="model/mquake_standdata_full-graph/model_best.tar"
 
 num_paths_per_entity=-1
-margin=-1

@@ -33,5 +33,4 @@ label_smoothing_epsilon=0.05
 checkpoint_keep_last=3
 
 num_negative_samples=20
-margin=0.5
 wandb_project="mquake_st_ma_conve_substrate"

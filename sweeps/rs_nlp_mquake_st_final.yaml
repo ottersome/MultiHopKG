@@ -93,8 +93,6 @@ command:
   - "64"
   - --num_paths_per_entity
   - "-1"
-  - --margin
-  - "-1"
   - --gpu
   - "0"
   - ${args}
