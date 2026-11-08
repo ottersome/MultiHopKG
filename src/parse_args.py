@@ -151,7 +151,7 @@ parser.add_argument('--uniform_entity_initialization', type=bool, default=False,
 # Optimization
 parser.add_argument('--num_epochs', type=int, default=200,
                     help='maximum number of pass over the entire training set (default: 20)')
-parser.add_argument('--num_wait_epochs', type=int, default=5,
+parser.add_argument('--num_wait_epochs', type=int, default=30,
                     help='early-stopping patience in epochs without a new best dev score; 0 disables early stopping '
                          '(default: 5)')
 parser.add_argument('--disable_early_stopping', action='store_true',

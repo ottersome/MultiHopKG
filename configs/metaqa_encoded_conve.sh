@@ -16,7 +16,7 @@ bucket_interval=10
 # A generous cap plus validation-based convergence selection.  The LP graph is
 # intentionally transductive; see README for the interpretation of dev MRR.
 num_epochs=1000
-num_wait_epochs=50
+num_wait_epochs=30
 batch_size=64
 train_batch_size=64
 dev_batch_size=16

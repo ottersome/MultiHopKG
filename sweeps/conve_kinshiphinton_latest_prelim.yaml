@@ -40,7 +40,7 @@ command:
   - --num_epochs
   - "40"
   - --num_wait_epochs
-  - "12"
+  - "30"
   - --num_peek_epochs
   - "1"
   - --dev_batch_size

@@ -13,7 +13,7 @@ num_rollouts=1
 bucket_interval=10
 num_epochs=100
 # Kinship is intentionally trained for the paper-prescribed fixed 100 epochs.
-num_wait_epochs=500
+num_wait_epochs=30
 batch_size=16
 train_batch_size=8
 dev_batch_size=64

@@ -18,7 +18,7 @@ For a quick local smoke test without creating a sweep, run:
     --data_dir data/mquake_st --model conve \\
     --add_reversed_training_edges --group_examples_by_query \\
     --entity_dim 200 --relation_dim 200 --emb_2D_d1 10 --emb_2D_d2 20 \\
-    --num_epochs 2 --num_wait_epochs 2 --num_peek_epochs 1 \\
+    --num_epochs 2 --num_wait_epochs 30 --num_peek_epochs 1 \\
     --batch_size 32 --train_batch_size 32 --dev_batch_size 16 \\
     --learning_rate 0.003 --emb_dropout_rate 0.2 \\
     --hidden_dropout_rate 0.3 --feat_dropout_rate 0.2 \\

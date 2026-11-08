@@ -68,7 +68,7 @@ command:
   - --num_epochs
   - "60"
   - --num_wait_epochs
-  - "12"
+  - "30"
   - --num_peek_epochs
   - "1"
   - --batch_size
