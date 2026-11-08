@@ -463,6 +463,19 @@ class LFramework(nn.Module):
             batch_e1.append(e1)
             batch_e2.append(normalize_targets(e2))
             q_inputs.append(q)
+
+        # With direct answer edges masked, GraphSearchPolicy only receives one
+        # representative target entity when it constructs the mask.  It would
+        # therefore hide the shortcut to that answer but leave shortcuts to
+        # other valid answers available.  Refuse this ambiguous multi-answer
+        # RL protocol rather than silently training/evaluating with it.
+        if (self.model.startswith('point')
+                and not getattr(self.args, 'allow_direct_answer_edges', False)
+                and any(isinstance(targets, list) and len(targets) > 1 for targets in batch_e2)):
+            raise ValueError(
+                'Multi-answer RL requires --allow_direct_answer_edges. '
+                'The direct-answer mask can only represent one target entity per query.'
+            )
         build_gold_answer_tensor(batch_e2, num_tiles)
         # TODO: Why is e2 not receiving the same treatment
         batch_e1 = var_cuda(torch.LongTensor(batch_e1), requires_grad=False)
