@@ -4,6 +4,7 @@
 
 data_dir="data/mquake_st"
 model="point.rs.conve"
+# QA-row training bypasses load_triples(), so this is intentionally unused.
 group_examples_by_query="False"
 use_action_space_bucketing="True"
 

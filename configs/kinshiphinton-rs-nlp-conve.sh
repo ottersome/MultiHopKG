@@ -2,7 +2,8 @@
 
 data_dir="data/KinshipHinton/"
 model="point.rs.conve"
-group_examples_by_query="True"
+# QA-row training bypasses load_triples(), so this is intentionally unused.
+group_examples_by_query="False"
 emb_2D_d1=3
 emb_2D_d2=4
 entity_dim=12
