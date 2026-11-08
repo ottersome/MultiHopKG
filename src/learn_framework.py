@@ -496,8 +496,14 @@ class LFramework(nn.Module):
             proc_ids: List[List[int]] = []
             for toks in q_inputs:
                 assert isinstance(toks,list), "Your input is empty, remove it from the dataset"
-                assert len(toks) < self.args.max_question_len, "Your question is pretty long"
                 seq = [cls_id] + toks + [sep_id]
+                if len(seq) > self.args.max_question_len:
+                    raise AssertionError(
+                        'Question encoding would require truncation: got {} tokens '
+                        'including [CLS]/[SEP], but max_question_len is {}.'.format(
+                            len(seq), self.args.max_question_len
+                        )
+                    )
                 proc_ids.append(seq)
 
             # Pad to batch max length

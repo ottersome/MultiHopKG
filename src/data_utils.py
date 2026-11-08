@@ -815,6 +815,44 @@ def process_and_cache_triviaqa_data(
     return DFSplit(train=train_df, dev=dev_df, test=test_df), metadata
 
 
+def validate_question_lengths(
+    split_frames: Iterable[Tuple[str, pd.DataFrame]], max_question_len: int
+) -> Tuple[str, int]:
+    """Fail if a question encoder would have to truncate an active QA split.
+
+    Cached questions omit special tokens; the BERT encoder later adds [CLS] and
+    [SEP], so both are included in the reported and validated lengths.
+    """
+    if max_question_len < 2:
+        raise ValueError(
+            'max_question_len must allow at least [CLS] and [SEP] (minimum: 2).'
+        )
+
+    longest_by_split = {
+        split_name: max((len(tokens) + 2 for tokens in split_df['Question']), default=0)
+        for split_name, split_df in split_frames
+    }
+    longest_split, longest_encoded_len = max(
+        longest_by_split.items(), key=lambda item: item[1]
+    )
+    print(
+        'Question lengths (including [CLS]/[SEP]): longest={} '
+        '(split={}); max_question_len={}.'.format(
+            longest_encoded_len, longest_split, max_question_len
+        )
+    )
+    if longest_encoded_len > max_question_len:
+        raise AssertionError(
+            'Question encoding would require truncation: longest encoded '
+            'question has {} tokens (including [CLS]/[SEP]) in the {} split, '
+            'but max_question_len is {}. Increase --max_question_len or '
+            'shorten/filter the dataset; questions are never silently truncated.'.format(
+                longest_encoded_len, longest_split, max_question_len
+            )
+        )
+    return longest_split, longest_encoded_len
+
+
 def load_qa_data(
     cached_metadata_path: str,
     raw_QAData_path: str,
@@ -827,6 +865,7 @@ def load_qa_data(
     override_split: bool = True,
     evaluate_paraphrases: bool = False,
     filter_original_paraphrases: bool = False,
+    max_question_len: Optional[int] = None,
 ) -> Tuple[List[QAExample], List[QAExample], List[QAExample], Dict[str, Any]]:
     """
     Load QA dataset with intelligent caching and fallback processing.
@@ -846,6 +885,10 @@ def load_qa_data(
         logger: Optional logger for progress tracking
         force_recompute: If True, ignore cache and reprocess data
         override_split: If True, use SplitLabel column when available
+        max_question_len: Maximum sequence length accepted by the question
+            encoder, including its [CLS] and [SEP] special tokens. When set,
+            fail before training/evaluation if an encoded question would exceed
+            this limit.
         
     Returns:
         Tuple containing:
@@ -990,6 +1033,13 @@ def load_qa_data(
                 ' (original-identical filtered)' if filter_original_paraphrases else ''
             )
         )
+
+    if max_question_len is not None:
+        validate_question_lengths(
+            [('train', train_df), ('dev', dev_df), ('test', test_df)],
+            max_question_len,
+        )
+
     def to_qa_examples(df: pd.DataFrame) -> List[QAExample]:
         """Convert named DataFrame columns into the model's typed row format."""
         has_paths = 'Paths' in df.columns

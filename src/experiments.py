@@ -502,7 +502,8 @@ def train(lf: LFramework) -> None:
             relation_index_path,
             force_recompute=args.recompute_qadata_cache,
             evaluate_paraphrases=False,
-            filter_original_paraphrases=args.filter_original_paraphrases
+            filter_original_paraphrases=args.filter_original_paraphrases,
+            max_question_len=args.max_question_len,
         )
         assert 'NELL' not in args.data_dir,  "We have not accounted for NELL yet"
         seen_entities = set()
@@ -728,7 +729,8 @@ def inference(lf: LFramework) -> dict[str, dict[str, object]]:
                 relation_index_path,
                 force_recompute=args.recompute_qadata_cache,
                 evaluate_paraphrases=args.evaluate_paraphrases,
-                filter_original_paraphrases=args.filter_original_paraphrases
+                filter_original_paraphrases=args.filter_original_paraphrases,
+                max_question_len=args.max_question_len,
             )
             requested_eval_hops = parse_hop_filter(args.eval_hops)
             if requested_eval_hops:
