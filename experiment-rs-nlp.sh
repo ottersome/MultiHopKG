@@ -8,6 +8,17 @@ exp=$2
 gpu=$3
 ARGS=${@:4}
 
+# Keep the RL launcher compatible with the compact reviewer configs.  These
+# options are always forwarded below, so they need concrete values even when a
+# particular config does not override the argparse defaults.
+: "${train_hop:=0}"
+: "${checkpoint_keep_best:=3}"
+: "${checkpoint_keep_last:=0}"
+: "${mu:=1.0}"
+: "${distmult_state_dict_path:=}"
+: "${complex_state_dict_path:=}"
+: "${conve_state_dict_path:=}"
+
 add_reversed_training_edges_flag=''
 if [[ $add_reversed_training_edges = *"True"* ]]; then
     add_reversed_training_edges_flag="--add_reversed_training_edges"

@@ -100,21 +100,29 @@ uv run -- ./experiment-rs-nlp.sh \
   configs/kinshiphinton-rs-nlp-conve.sh --train 0 --seed=44
 ```
 
-### End-to-end staged training
+### Reproduce the full experiment suite
 
-The Makefile trains the four supported ConvE prerequisites, then their matching
-RL models, and stages the resulting checkpoints under isolated `*_make`
-directories in `model/final_evaluation/`. This preserves the released
-checkpoints while making the new runs directly consumable by `batch_eval.py`.
+From the repository root, the complete reviewer workflow is one command:
 
 ```sh
-make pipeline GPU=0
+make reproduce GPU=0
 ```
 
-`pipeline` runs `prepare-lp-data` automatically before ConvE training.
+It rebuilds the traversal graphs, prepares full-KG LP training data, trains one
+ConvE substrate per KG (MQuAKE-SA and MQuAKE-MA share theirs), trains three RL
+seeds (`12`, `42`, and `1337`) per QA setting, then evaluates each three-seed
+family separately. Results and staged checkpoints go to
+`model/final_evaluation/reviewer_3seed/`.
 
-Use `make train-all GPU=0` to train and stage without evaluating, or
-`make evaluate GPU=0` to evaluate previously staged runs.
+To use Weights & Biases, add `WANDB=1`. To use another output namespace or
+seed list, use `RUN_NAME=my_run RL_SEEDS="12 42 1337"`.
+
+```sh
+make reproduce GPU=0 WANDB=1 RUN_NAME=my_run
+```
+
+`make train-all GPU=0` performs only preprocessing and training; `make evaluate
+GPU=0` evaluates an already staged run.
 
 For MQuAKE single-answer QA:
 
