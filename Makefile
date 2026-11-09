@@ -93,7 +93,7 @@ linkpred-mquake-sa: prepare-lp-data
 define train_rl_family
 	@mkdir -p "$(1)" "$(BUILD_ROOT)/manifests"
 	@sed -e '/^checkpoint_path=/d' -e 's|^conve_state_dict_path=.*|conve_state_dict_path="$(3)"|' "$(2)" > "$(1)/$$(basename "$(2)")"
-	@first_seed=1; for seed in $(RL_SEEDS); do \
+	@set -e; first_seed=1; for seed in $(RL_SEEDS); do \
 		metadata="$(BUILD_ROOT)/manifests/$(4)-rl-s$$seed.json"; \
 		refresh=""; \
 		if [ "$$first_seed" -eq 1 ]; then refresh="--recompute_qadata_cache"; first_seed=0; fi; \

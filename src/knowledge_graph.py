@@ -29,7 +29,7 @@ class KnowledgeGraph(nn.Module):
     """
     The discrete knowledge graph is stored with an adjacency list.
     """
-    CACHE_VERSION = 1
+    CACHE_VERSION = 2
     _GRAPH_DATA_CACHE = {}
     _ACTION_SPACE_CACHE = {}
     _ANSWER_CACHE = {}
@@ -132,7 +132,23 @@ class KnowledgeGraph(nn.Module):
     def _graph_data_cache_key(self, data_dir):
         return os.path.abspath(data_dir)
 
+    @staticmethod
+    def _file_fingerprint(path):
+        """Return a stable content fingerprint for an action-space input file."""
+        digest = hashlib.sha256()
+        with open(path, 'rb') as input_file:
+            for chunk in iter(lambda: input_file.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest()
+
     def _action_space_cache_spec(self, data_dir, cache_namespace):
+        # The numeric action table is only valid for precisely the entity and
+        # relation vocabularies and adjacency list that produced it.  In
+        # particular, toggling reverse edges can change relation IDs while
+        # leaving the old cache path otherwise unchanged.
+        action_space_inputs = (
+            'entity2id.txt', 'relation2id.txt', 'adj_list.pkl', 'raw.pgrk',
+        )
         return {
             'data_dir': os.path.abspath(data_dir),
             'namespace': cache_namespace,
@@ -140,6 +156,10 @@ class KnowledgeGraph(nn.Module):
             'bandwidth': self.bandwidth,
             'use_action_space_bucketing': getattr(self.args, 'use_action_space_bucketing', False),
             'bucket_interval': getattr(self.args, 'bucket_interval', None),
+            'input_fingerprints': {
+                name: self._file_fingerprint(os.path.join(data_dir, name))
+                for name in action_space_inputs
+            },
         }
 
     def _answer_cache_spec(self, data_dir, add_reversed_edges):
