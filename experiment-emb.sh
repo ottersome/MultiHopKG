@@ -8,6 +8,11 @@ exp=$2
 gpu=$3
 ARGS=${@:4}
 
+# `margin` is retained as a legacy argparse option, but is not used by the
+# embedding models.  The launcher forwards it for compatibility, so ensure a
+# config that intentionally omits it never expands to a bare `--margin`.
+: "${margin:=0}"
+
 add_reversed_training_edges_flag=''
 if [[ $add_reversed_training_edges = *"True"* ]]; then
     add_reversed_training_edges_flag="--add_reversed_training_edges"
