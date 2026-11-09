@@ -318,16 +318,39 @@ class PolicyGradient(LFramework):
             print('Writing per-example rollout evaluation to {}'.format(output_path))
 
         def entity_name(entity_id: int) -> str:
-            return str(self.kg.id2entity.get(int(entity_id), int(entity_id)))
+            identifier = str(self.kg.id2entity.get(int(entity_id), int(entity_id)))
+            return entity_labels.get(identifier, identifier)
 
         def relation_name(relation_id: int) -> str:
-            return str(self.kg.id2relation.get(int(relation_id), int(relation_id)))
+            identifier = str(self.kg.id2relation.get(int(relation_id), int(relation_id)))
+            is_inverse = identifier.endswith('_inv')
+            base_identifier = identifier[:-4] if is_inverse else identifier
+            label = relation_labels.get(base_identifier, base_identifier)
+            return 'inverse of {}'.format(label) if is_inverse else label
 
         def format_path(path):
             return [
                 {'head': entity_name(head), 'relation': relation_name(relation), 'tail': entity_name(tail)}
                 for head, relation, tail in path
             ]
+
+        label_path = os.path.join(self.args.data_dir, 'wikidata_labels.json')
+        entity_labels: Dict[str, str] = {}
+        relation_labels: Dict[str, str] = {}
+        if os.path.isfile(label_path):
+            try:
+                with open(label_path, encoding='utf-8') as label_file:
+                    labels = json.load(label_file)
+                entity_labels = {
+                    str(identifier): str(label)
+                    for identifier, label in labels.get('entities', {}).items()
+                }
+                relation_labels = {
+                    str(identifier): str(label)
+                    for identifier, label in labels.get('relations', {}).items()
+                }
+            except (OSError, ValueError, AttributeError) as exc:
+                print('Could not load human-readable KG labels from {}: {}'.format(label_path, exc))
 
         def question_text(token_ids):
             """Decode the cached question tokens for a human-readable export."""

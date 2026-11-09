@@ -114,6 +114,10 @@ seeds (`12`, `42`, and `1337`) per QA setting, then evaluates each three-seed
 family separately. Results and staged checkpoints go to
 `model/final_evaluation/reviewer_3seed/`.
 
+The pipeline also caches English Wikidata labels for MQuAKE evidence paths,
+including readable inverse-relation names. An offline run can skip this optional
+presentation step with `WIKIDATA_LABELS=0`; raw IDs remain in every export.
+
 To use Weights & Biases, add `WANDB=1`. To use another output namespace or
 seed list, use `RUN_NAME=my_run RL_SEEDS="12 42 1337"`.
 

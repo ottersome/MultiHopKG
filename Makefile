@@ -12,6 +12,7 @@ SHELL := /bin/bash
 PYTHON ?= python3
 GPU ?= 0
 WANDB ?= 0
+WIKIDATA_LABELS ?= 1
 RUN_NAME ?= reviewer_3seed
 RL_SEEDS ?= 12 42 1337
 
@@ -35,7 +36,11 @@ else
 WANDB_FLAG :=
 endif
 
-.PHONY: help reproduce pipeline train-all evaluate process-data prepare-lp-data \
+ifeq ($(WIKIDATA_LABELS),1)
+LABELS_TARGET := wikidata-labels
+endif
+
+.PHONY: help reproduce pipeline train-all evaluate wikidata-labels process-data prepare-lp-data \
 	linkpred-all rl-all \
 	linkpred-kinship linkpred-metaqa linkpred-mquake-sa \
 	rl-kinship rl-metaqa rl-mquake-sa rl-mquake-ma
@@ -46,7 +51,11 @@ help:
 	  'make reproduce GPU=0 WANDB=1  # same pipeline with Weights & Biases logging' \
 	  'Optional: RUN_NAME=my_run RL_SEEDS="12 42 1337"' \
 	  'make train-all GPU=0          # stage three RL seeds per family, without evaluation' \
-	  'make evaluate GPU=0           # evaluate an already staged run.'
+	  'make evaluate GPU=0           # evaluate an already staged run.' \
+	  'make wikidata-labels          # cache English MQuAKE labels for evidence exports.'
+
+wikidata-labels:
+	$(PYTHON) scripts/fetch_wikidata_labels.py --data_dir data/mquake_st --all-entities
 
 # These files define entity/relation IDs and traversal adjacency. MQuAKE SA and
 # MA share one KG, so it is intentionally processed once.
@@ -117,8 +126,9 @@ rl-mquake-ma: linkpred-mquake-sa
 train-all: rl-all
 
 # Evaluate each family separately so the reported mean +/- std is over its
-# three seeds rather than over all twelve checkpoints.
-evaluate:
+# three seeds rather than over all twelve checkpoints. The Wikidata label cache
+# is optional for offline environments (pass WIKIDATA_LABELS=0 to skip it).
+evaluate: $(LABELS_TARGET)
 	@mkdir -p "$(EVAL_ROOT)"
 	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/kinship" --output_json "$(EVAL_ROOT)/kinship.json" --output_csv "$(EVAL_ROOT)/kinship.csv" "$(KINSHIP_STAGE)"
 	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/metaqa_encoded" --output_json "$(EVAL_ROOT)/metaqa_encoded.json" --output_csv "$(EVAL_ROOT)/metaqa_encoded.csv" "$(METAQA_STAGE)"
@@ -128,5 +138,5 @@ evaluate:
 # Explicit recursive calls preserve ordering even with make -j: evaluation
 # must not begin before all staged checkpoints exist.
 reproduce pipeline:
-	+$(MAKE) train-all GPU="$(GPU)" WANDB="$(WANDB)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
-	+$(MAKE) evaluate GPU="$(GPU)" WANDB="$(WANDB)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
+	+$(MAKE) train-all GPU="$(GPU)" WANDB="$(WANDB)" WIKIDATA_LABELS="$(WIKIDATA_LABELS)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
+	+$(MAKE) evaluate GPU="$(GPU)" WANDB="$(WANDB)" WIKIDATA_LABELS="$(WIKIDATA_LABELS)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
