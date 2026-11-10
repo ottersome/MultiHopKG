@@ -634,6 +634,13 @@ class FaithfulnessEvaluator:
         self.path_edit = 0.0
         self.ped = 0.0
         self.path_examples = 0
+        # Path fidelity conditional on the top-1 answer being correct.  This
+        # is deliberately separate from ordinary answer-set/path metrics: it
+        # answers whether the model used the reference evidence when it did
+        # reach a gold endpoint.
+        self.answer_correct_path_fidelity = 0.0
+        self.answer_correct_path_edit = 0.0
+        self.answer_correct_path_examples = 0.0
         self.answer_precision = 0.0
         self.answer_recall = 0.0
         self.answer_f1 = 0.0
@@ -725,7 +732,8 @@ class FaithfulnessEvaluator:
                example: QAExample,
                pred_path: Sequence[Tuple[int, int, int]],
                predicted_endpoints: Iterable[int],
-               weight: float = 1.0) -> None:
+               weight: float = 1.0,
+               answer_correct: bool = False) -> None:
         gt_path = get_gold_path(example)
         gt_relations = get_gold_relations(example)
         if not gt_path and not gt_relations:
@@ -783,6 +791,10 @@ class FaithfulnessEvaluator:
             self.path_edit += path_dist * weight
             self.ped += ped * weight
             self.path_examples += weight
+            if answer_correct:
+                self.answer_correct_path_fidelity += edge_f * weight
+                self.answer_correct_path_edit += path_dist * weight
+                self.answer_correct_path_examples += weight
         self.rel_precision += rel_p * weight
         self.rel_recall += rel_r * weight
         self.rel_f1 += rel_f * weight
@@ -838,6 +850,10 @@ class FaithfulnessEvaluator:
         n = float(self.num_examples)
         edge_n = float(self.edge_examples) if self.edge_examples else 1.0
         path_n = float(self.path_examples) if self.path_examples else 1.0
+        answer_correct_path_n = (
+            float(self.answer_correct_path_examples)
+            if self.answer_correct_path_examples else 1.0
+        )
         metrics = {
             'faithfulness/examples': self.num_examples,
             'faithfulness/edge_examples': self.edge_examples,
@@ -854,6 +870,13 @@ class FaithfulnessEvaluator:
             'faithfulness/path_examples': self.path_examples,
             'faithfulness/path_edit_distance': self.path_edit / path_n,
             'faithfulness/ped': self.ped / path_n,
+            'faithfulness/answer_correct_path_fidelity_examples': self.answer_correct_path_examples,
+            'faithfulness/answer_correct_path_fidelity': (
+                self.answer_correct_path_fidelity / answer_correct_path_n
+            ),
+            'faithfulness/answer_correct_path_edit_distance': (
+                self.answer_correct_path_edit / answer_correct_path_n
+            ),
             'faithfulness/answer_set_precision': self.answer_precision / n,
             'faithfulness/answer_set_recall': self.answer_recall / n,
             'faithfulness/answer_set_f1': self.answer_f1 / n,

@@ -463,17 +463,20 @@ class PolicyGradient(LFramework):
                                 rel = int(search_traces[step + 1][0][top_ind])
                                 t = int(search_traces[step + 1][1][top_ind])
                                 pred_path.append((h, rel, t))
+                            gold_answers_for_example = get_gold_answers(example)
+                            top_entity = int(pred_entities_np[row, 0])
+                            solved = top_entity in set(gold_answers_for_example)
                             faithfulness_evaluator.update(
                                 example,
                                 pred_path,
                                 pred_entities_np[row].tolist(),
-                                weight=float(example_weights[row])
+                                weight=float(example_weights[row]),
+                                answer_correct=solved,
                             )
                             if example_output is not None:
                                 gold_path = get_gold_path(example)
                                 gold_relations = get_gold_relations(example) or []
                                 pred_relations = [edge[1] for edge in pred_path]
-                                gold_answers_for_example = get_gold_answers(example)
                                 edge_f1 = None
                                 path_edit = None
                                 if gold_path:
@@ -503,8 +506,6 @@ class PolicyGradient(LFramework):
                                     path_entropy = float(-np.sum(probs * np.log(probs + 1e-12)))
                                 else:
                                     path_entropy = 0.0
-                                top_entity = int(pred_entities_np[row, 0])
-                                solved = top_entity in set(gold_answers_for_example)
                                 clean_hops = sum(
                                     relation not in faithfulness_evaluator.special_tokens
                                     for _, relation, _ in pred_path)
@@ -521,6 +522,7 @@ class PolicyGradient(LFramework):
                                     'predicted_path': format_path(pred_path),
                                     'predicted_path_raw': [list(edge) for edge in pred_path],
                                     'path_f1': edge_f1,
+                                    'path_fidelity_given_correct_answer': edge_f1 if solved else None,
                                     'path_edit_distance': path_edit,
                                     'relation_f1': relation_f1,
                                     'relation_edit_distance': relation_edit,
