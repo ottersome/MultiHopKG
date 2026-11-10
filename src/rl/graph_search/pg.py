@@ -166,7 +166,11 @@ class PolicyGradient(LFramework):
                 path_components.append((e, top_k_action, top_k_action_prob))
 
         pred_e2 = path_trace[-1][1]
-        self.record_path_trace(path_trace)
+        # Path-type accounting is an analysis diagnostic. Retaining a trie of
+        # every sampled path during ordinary training grows with the number of
+        # rollouts and is never consumed outside --run_analysis.
+        if self.run_analysis:
+            self.record_path_trace(path_trace)
 
         return {
             'pred_e2': pred_e2,

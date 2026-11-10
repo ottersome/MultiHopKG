@@ -108,16 +108,29 @@ class LFramework(nn.Module):
         # Track dev metrics changes
         best_dev_metrics = float('-inf')
         best_dev_epoch = None
+        # Checkpoint selection retains the numerically best MRR, while early
+        # stopping only resets when an increase clears this meaningful-change
+        # threshold.  Keeping these separate prevents a series of tiny noisy
+        # gains from extending training forever or hiding the true best model.
+        early_stopping_min_delta = float(getattr(self.args, 'early_stopping_min_delta', 0.001))
+        if early_stopping_min_delta < 0:
+            raise ValueError('--early_stopping_min_delta must be non-negative.')
+        meaningful_dev_metrics = float('-inf')
+        meaningful_dev_epoch = None
         dev_metrics_history = []
 
-        # Setup wandb model watching if enabled
+        # Scalar logging is cheap. W&B's module-wide gradient watcher is
+        # deliberately opt-in: this model owns a frozen BERT encoder and the
+        # watcher can retain instrumentation/history for every submodule over
+        # a long RL run.
         _wandb_enabled = getattr(self.args, 'wandb_enabled', False)
         _wandb = None
         if _wandb_enabled:
             try:
                 import wandb as _wandb  # type: ignore
-                # Only watch once per run
-                if not hasattr(self, '_wandb_watching'):
+                # Only watch once per run, and only when explicitly requested.
+                if (getattr(self.args, 'wandb_watch_gradients', False)
+                        and not hasattr(self, '_wandb_watching')):
                     _wandb.watch(self, log='gradients', log_freq=500)
                     setattr(self, '_wandb_watching', True)
             except Exception:
@@ -159,7 +172,6 @@ class LFramework(nn.Module):
                 mini_batch = train_data[example_id:example_id + self.batch_size]
                 if len(mini_batch) < self.batch_size:
                     continue
-                # 🎯 Pay close attention here. 
                 loss = self.loss(mini_batch)
                 loss['model_loss'].backward()
                 if self.grad_norm > 0:
@@ -180,7 +192,7 @@ class LFramework(nn.Module):
                     else:
                         fns = torch.cat([fns, loss['fn']])
 
-                # Inter-batch wandb logging
+                # Inter-batch W&B scalar logging
                 self._global_step += 1
                 if _wandb_enabled and log_interval > 0 and (self._global_step % log_interval == 0):
                     log_dict = {
@@ -208,7 +220,7 @@ class LFramework(nn.Module):
             # Keep a single rolling checkpoint for the most recently completed
             # epoch. Ranked checkpoints are written after validation below.
             self.save_checkpoint(checkpoint_id=epoch_id, epoch_id=epoch_id, is_last=True)
-            # wandb: log training metrics
+            # W&B epoch-level scalar logging
             if _wandb_enabled:
                 log_dict = {
                     'epoch': epoch_id,
@@ -331,6 +343,10 @@ class LFramework(nn.Module):
                     best_dev_epoch = epoch_id
                     with open(os.path.join(self.model_dir, 'best_dev_iteration.dat'), 'w') as o_f:
                         o_f.write('{}'.format(epoch_id))
+                is_meaningful_improvement = metrics > meaningful_dev_metrics + early_stopping_min_delta
+                if is_meaningful_improvement:
+                    meaningful_dev_metrics = metrics
+                    meaningful_dev_epoch = epoch_id
                 self.save_checkpoint(
                     checkpoint_id=epoch_id,
                     epoch_id=epoch_id,
@@ -340,15 +356,19 @@ class LFramework(nn.Module):
                 dev_metrics_history.append(metrics)
 
                 # Stop after the configured number of training epochs without
-                # a strict improvement in the monitored dev metric.
+                # a monitored-metric gain larger than the configured noise
+                # tolerance.
                 patience = int(self.num_wait_epochs or 0)
                 early_stopping_enabled = not getattr(self.args, 'disable_early_stopping', False)
-                if (early_stopping_enabled and not is_best and patience > 0 and best_dev_epoch is not None
-                        and epoch_id - best_dev_epoch >= patience):
+                if (early_stopping_enabled and not is_meaningful_improvement and patience > 0
+                        and meaningful_dev_epoch is not None
+                        and epoch_id - meaningful_dev_epoch >= patience):
                     print(
-                        'Early stopping at epoch {}: dev metric did not improve for {} epochs '
-                        '(best={:.6f} at epoch {}).'.format(
-                            epoch_id, epoch_id - best_dev_epoch, best_dev_metrics, best_dev_epoch
+                        'Early stopping at epoch {}: monitored dev metric did not improve by more than {:.6f} '
+                        'for {} epochs (best={:.6f} at epoch {}; last meaningful={:.6f} at epoch {}).'.format(
+                            epoch_id, early_stopping_min_delta, epoch_id - meaningful_dev_epoch,
+                            best_dev_metrics, best_dev_epoch,
+                            meaningful_dev_metrics, meaningful_dev_epoch,
                         )
                     )
                     self.update_checkpoint_metadata(
@@ -649,6 +669,7 @@ class LFramework(nn.Module):
             'checkpoint_keep_best': int(getattr(self.args, 'checkpoint_keep_best', 3) or 0),
             'early_stopping_enabled': not getattr(self.args, 'disable_early_stopping', False),
             'early_stopping_patience_epochs': int(self.num_wait_epochs or 0),
+            'early_stopping_min_delta': float(getattr(self.args, 'early_stopping_min_delta', 0.001)),
             'stopped_early': False,
         }
         if os.path.isfile(metadata_path):

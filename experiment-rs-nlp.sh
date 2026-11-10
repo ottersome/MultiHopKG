@@ -18,6 +18,7 @@ ARGS=${@:4}
 : "${distmult_state_dict_path:=}"
 : "${complex_state_dict_path:=}"
 : "${conve_state_dict_path:=}"
+: "${early_stopping_min_delta:=0.001}"
 
 add_reversed_training_edges_flag=''
 if [[ $add_reversed_training_edges = *"True"* ]]; then
@@ -65,6 +66,10 @@ evaluate_per_hop_flag=''
 if [[ $evaluate_per_hop = *"True"* ]]; then
     evaluate_per_hop_flag='--evaluate_per_hop'
 fi
+wandb_watch_gradients_flag=''
+if [[ $wandb_watch_gradients = *"True"* ]]; then
+    wandb_watch_gradients_flag='--wandb_watch_gradients'
+fi
 eval_hops_arg=''
 if [[ -n "$eval_hops" ]]; then
     eval_hops_arg="--eval_hops $eval_hops"
@@ -88,6 +93,7 @@ cmd="python3 -m src.experiments \
     --num_epochs $num_epochs \
     --num_out_channels $num_out_channels \
     --num_wait_epochs $num_wait_epochs \
+    --early_stopping_min_delta $early_stopping_min_delta \
     --num_peek_epochs $num_peek_epochs \
     --batch_size $batch_size \
     --train_batch_size $train_batch_size \
@@ -126,6 +132,7 @@ cmd="python3 -m src.experiments \
     --complex_state_dict_path $complex_state_dict_path \
     --conve_state_dict_path $conve_state_dict_path \
     --wandb_project $wandb_project \
+    $wandb_watch_gradients_flag \
     --seed $seed \
     --gpu $gpu \
     $ARGS"

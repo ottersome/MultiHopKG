@@ -50,6 +50,7 @@ EXPERIMENT_STORE_TRUE_ARGS = frozenset({
     'grid_search',
     'debug',
     'wandb',
+    'wandb_watch_gradients',
     'disable_checkpoint_saving',
     'disable_early_stopping',
     'evaluate_per_hop',

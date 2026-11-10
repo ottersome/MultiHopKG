@@ -109,7 +109,7 @@ define train_rl_family
 	done
 endef
 
-rl-all: rl-kinship rl-metaqa rl-mquake-sa rl-mquake-ma
+rl-all: rl-kinship rl-mquake-sa rl-mquake-ma # rl-metaqa  #NOTE: Skip metaqa training  for now.
 
 rl-kinship: linkpred-kinship
 	$(call train_rl_family,$(KINSHIP_STAGE),configs/kinshiphinton-rs-nlp-conve.sh,$(KINSHIP_LP),kinship)

@@ -152,11 +152,14 @@ parser.add_argument('--uniform_entity_initialization', type=bool, default=False,
 parser.add_argument('--num_epochs', type=int, default=200,
                     help='maximum number of pass over the entire training set (default: 20)')
 parser.add_argument('--num_wait_epochs', type=int, default=30, # Try to keep it a multiple of `num_peek_epochs` for it to make more sense. 
-                    help='early-stopping patience in epochs without a new best dev score; 0 disables early stopping '
-                         '(default: 5)')
+                    help='early-stopping patience in epochs without a meaningful monitored dev-metric gain; 0 disables early '
+                         'stopping (default: 30)')
 parser.add_argument('--disable_early_stopping', action='store_true',
                     help='train for all configured epochs instead of stopping on stale dev performance '
                          '(default: False)')
+parser.add_argument('--early_stopping_min_delta', type=float, default=0.01,
+                    help='minimum strict increase in the monitored dev metric required to reset early-stopping patience '
+                         '(default: 0.001)')
 parser.add_argument('--num_peek_epochs', type=int, default=2,
                     help='number of epochs to wait for next dev set result check (default: 2)')
 parser.add_argument('--start_epoch', type=int, default=0,
@@ -325,6 +328,9 @@ parser.add_argument('--wandb_mode', type=str, default='online',
                     help='wandb mode: online, offline, or disabled (default: online)')
 parser.add_argument('--wandb_log_interval', type=int, default=100,
                     help='log inter-batch metrics every N steps (0 disables)')
+parser.add_argument('--wandb_watch_gradients', action='store_true',
+                    help='opt in to W&B gradient/parameter watching; disabled by default because it can retain '
+                         'substantial memory for large models (default: False)')
 
 def parse_args(argv=None):
     """Parse CLI arguments explicitly instead of consuming argv at import time."""

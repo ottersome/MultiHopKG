@@ -91,6 +91,19 @@ full KG includes those triples, do not report that MRR as a held-out LP result.
 RL early stopping, in contrast, uses held-out QA development questions. Kinship
 always runs its paper-specified 100 epochs.
 
+All LP (including ConvE) and RL runs use `early_stopping_min_delta=0.001` by
+default: an increase in the monitored development metric must be strictly
+larger than that value to reset patience. The numerically best checkpoint is
+still retained. Set
+`early_stopping_min_delta=0.01` in a shell config (or pass
+`--early_stopping_min_delta 0.01`) for a coarser tolerance; set it to `0` to
+restore the previous strict-any-increase behavior.
+
+W&B scalar logging is safe to enable with `WANDB=1`. Gradient/parameter
+watching is off by default because it can consume substantial memory for the
+question-conditioned BERT policy; opt in only for short diagnostics with
+`wandb_watch_gradients="True"` in the relevant config.
+
 ### Question-conditioned reward shaping
 
 For the current KinshipHintonLatest setup:
