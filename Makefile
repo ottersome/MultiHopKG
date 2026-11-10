@@ -9,7 +9,10 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-PYTHON ?= python3
+# Use the lockfile-managed environment. batch_eval.py launches one Python
+# subprocess per checkpoint, so its own interpreter must already provide
+# PyTorch and the project's optional runtime dependencies.
+PYTHON ?= uv run python
 GPU ?= 0
 WANDB ?= 0
 RUN_NAME ?= reviewer_3seed

@@ -18,7 +18,6 @@ import json
 import numpy as np
 import os, sys
 import random
-import debugpy
 import platform
 
 from typing import Dict, Iterable, List, Optional, Set, TypeVar, Union
@@ -1287,6 +1286,12 @@ def run_experiment(run_args):
 if __name__ == '__main__':
     args = parse_args()
     if args.debug:
+        try:
+            import debugpy
+        except ImportError as exc:
+            raise RuntimeError(
+                '--debug requires the optional debugpy package. Install it or run without --debug.'
+            ) from exc
         debugpy.listen(args.debug_port)
         print(f"debugpy listening on {args.debug_port}", flush=True)
         debugpy.wait_for_client()

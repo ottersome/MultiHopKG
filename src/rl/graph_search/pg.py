@@ -7,8 +7,10 @@
  Policy gradient (REINFORCE algorithm) training and inference.
 """
 
+import csv
 import json
 import os
+from pathlib import Path
 from typing import Dict, List, Optional, TextIO, cast
 
 import numpy as np
@@ -321,16 +323,20 @@ class PolicyGradient(LFramework):
             example_output = open(output_path, mode, encoding='utf-8')
             print('Writing per-example rollout evaluation to {}'.format(output_path))
 
+        def display_name(identifier: str, labels: Dict[str, str]) -> str:
+            label = labels.get(identifier)
+            return '{} ({})'.format(label, identifier) if label else identifier
+
         def entity_name(entity_id: int) -> str:
             identifier = str(self.kg.id2entity.get(int(entity_id), int(entity_id)))
-            return entity_labels.get(identifier, identifier)
+            return display_name(identifier, entity_labels)
 
         def relation_name(relation_id: int) -> str:
             identifier = str(self.kg.id2relation.get(int(relation_id), int(relation_id)))
             is_inverse = identifier.endswith('_inv')
             base_identifier = identifier[:-4] if is_inverse else identifier
-            label = relation_labels.get(base_identifier, base_identifier)
-            return 'inverse of {}'.format(label) if is_inverse else label
+            label = display_name(base_identifier, relation_labels)
+            return 'inverse of {} ({})'.format(label, identifier) if is_inverse else label
 
         def format_path(path):
             return [
@@ -338,23 +344,32 @@ class PolicyGradient(LFramework):
                 for head, relation, tail in path
             ]
 
-        label_path = os.path.join(self.args.data_dir, 'wikidata_labels.json')
         entity_labels: Dict[str, str] = {}
         relation_labels: Dict[str, str] = {}
-        if os.path.isfile(label_path):
+
+        # MQuAKE ships titles for its Wikidata-style Q/P identifiers.  Load
+        # them directly rather than generating and maintaining a duplicate
+        # JSON cache.  Other datasets simply retain their native identifiers.
+        data_dir = Path(self.args.data_dir).resolve()
+        metadata_dir = data_dir.parent.parent / 'raw_data' / data_dir.name / 'metadata'
+        node_metadata = metadata_dir / 'node_data.csv'
+        relation_metadata = metadata_dir / 'relation_data.csv'
+
+        def load_metadata_titles(path: Path, identifier_column: str) -> Dict[str, str]:
+            with path.open(encoding='utf-8', newline='') as metadata_file:
+                return {
+                    identifier.strip(): title.strip()
+                    for row in csv.DictReader(metadata_file)
+                    if (identifier := row.get(identifier_column) or '').strip()
+                    and (title := row.get('Title') or '').strip()
+                }
+
+        if node_metadata.is_file() and relation_metadata.is_file():
             try:
-                with open(label_path, encoding='utf-8') as label_file:
-                    labels = json.load(label_file)
-                entity_labels = {
-                    str(identifier): str(label)
-                    for identifier, label in labels.get('entities', {}).items()
-                }
-                relation_labels = {
-                    str(identifier): str(label)
-                    for identifier, label in labels.get('relations', {}).items()
-                }
-            except (OSError, ValueError, AttributeError) as exc:
-                print('Could not load human-readable KG labels from {}: {}'.format(label_path, exc))
+                entity_labels = load_metadata_titles(node_metadata, 'QID')
+                relation_labels = load_metadata_titles(relation_metadata, 'Property')
+            except (OSError, csv.Error) as exc:
+                print('Could not load local MQuAKE metadata labels from {}: {}'.format(metadata_dir, exc))
 
         def question_text(token_ids):
             """Decode the cached question tokens for a human-readable export."""
