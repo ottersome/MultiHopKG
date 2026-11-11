@@ -227,9 +227,9 @@ class DistMult(nn.Module):
 class TransE(nn.Module):
     def __init__(self, args):
         super(TransE, self).__init__()
-        # No learnable parameters; uses KG embeddings directly.
-        # Memory-efficient scoring via entity chunking.
-        self.entity_chunk_size = getattr(args, 'transe_entity_chunk_size', 32)
+        # No learnable parameters; uses KG embeddings directly. Candidate
+        # entities are chunked to avoid materializing [batch, entities, dim].
+        self.entity_chunk_size = 256
 
     def forward(self, e1, r, kg):
         """
@@ -242,32 +242,19 @@ class TransE(nn.Module):
         E2 = kg.get_all_entity_embeddings()        # [N, d]
         head = (E1 + R)                            # [B, d]
 
-        # Chunk by batches instead 
-        B, d = head.size(0), head.size(1)
+        B = head.size(0)
         N = E2.size(0)
-        chunk = max(1, min(self.entity_chunk_size, B))
-
-        batch_losses = torch.zeros((B,N), dtype=torch.float32, device=head.device)
-        for start in range(0, B, chunk):
-            end = min(start+chunk, B)
-            micro_head = head[start:end, :].unsqueeze(1)
-            micro_target = E2.unsqueeze(0)
-            diff = F.mse_loss(micro_head, micro_target, reduction='none').mean(dim=-1)
-            batch_losses[start:end] = diff
-
-        # Memory-efficient computation: avoid building [B, N, d]
-        # B, d = head.size(0), head.size(1)
-        # N = E2.size(0)
-        # chunk = max(1, min(self.entity_chunk_size, N))
-        # scores_chunks = []
-        # for start in range(0, N, chunk):
-        #     end = min(start + chunk, N)
-        #     e2_chunk = E2[start:end]               # [C, d]
-        #     # Vectorized within chunk; keeps peak tensor at [B, C, d]
-        #     diff = head.unsqueeze(1) - e2_chunk.unsqueeze(0)  # [B, C, d]
-        #     sc = -torch.sum(torch.abs(diff), dim=2)           # [B, C]
-        #     scores_chunks.append(sc)
-        return torch.sigmoid(batch_losses)
+        chunk = min(self.entity_chunk_size, N)
+        scores_chunks = []
+        for start in range(0, N, chunk):
+            end = min(start + chunk, N)
+            e2_chunk = E2[start:end]
+            # [B, C, d] is bounded by the entity chunk, rather than all N.
+            distance = torch.sum(torch.abs(head.unsqueeze(1) - e2_chunk.unsqueeze(0)), dim=2)
+            scores_chunks.append(-distance)
+        scores = torch.cat(scores_chunks, dim=1)
+        assert scores.shape == (B, N)
+        return torch.sigmoid(scores)
 
     def forward_fact(self, e1, r, e2, kg):
         """

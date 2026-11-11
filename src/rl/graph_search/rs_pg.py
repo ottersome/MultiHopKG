@@ -45,6 +45,10 @@ class RewardShapingPolicyGradient(PolicyGradient):
             fn_state_dict = torch.load(args.conve_state_dict_path)
             fn_kg_state_dict = get_conve_kg_state_dict(fn_state_dict)
         elif fn_model == 'transe':
+            if not args.transe_state_dict_path:
+                raise ValueError(
+                    'point.rs.transe requires --transe_state_dict_path; train or provide a TransE LP checkpoint.'
+                )
             fn_state_dict = torch.load(args.transe_state_dict_path)
             fn_kg_state_dict = get_transe_kg_state_dict(fn_state_dict)
         else:

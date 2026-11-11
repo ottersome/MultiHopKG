@@ -65,10 +65,10 @@ Configurations in `configs/` are the source of truth for model and data
 settings. Copy one before changing hyperparameters so published configurations
 remain reproducible.
 
-### QA ConvE prerequisite
+### QA fact-model prerequisite
 
-The reward-shaped QA configurations use a pretrained ConvE fact model. Train
-or supply that checkpoint, then set `conve_state_dict_path` in the QA
+The default reward-shaped QA configurations use a pretrained ConvE fact model.
+Train or supply that checkpoint, then set `conve_state_dict_path` in the QA
 configuration to its location:
 
 ```sh
@@ -137,6 +137,23 @@ seed list, use `RUN_NAME=my_run RL_SEEDS="12 42 1337"`.
 ```sh
 make reproduce GPU=0 WANDB=1 RUN_NAME=my_run
 ```
+
+### Optional MQuAKE-ST TransE comparison
+
+The default reviewer pipeline remains ConvE-based. A separately named,
+end-to-end TransE comparison is available for both MQuAKE-ST single-answer and
+multi-answer QA:
+
+```sh
+make reproduce-mquake-transe GPU=0
+```
+
+It prepares the complete-KG LP triples, trains `mquake_st-transe`, initializes
+each `point.rs.transe` policy from that staged checkpoint, trains the configured
+RL seeds, and writes separate artifacts under `mquake_sa_transe` and
+`mquake_ma_transe`. Add `WANDB=1` to log it. TransE scores candidate tails as
+`sigmoid(-L1 distance)` and internally chunks candidate entities to control GPU
+memory.
 
 `make train-all GPU=0` performs only preprocessing and training; `make evaluate
 GPU=0` evaluates an already staged run.

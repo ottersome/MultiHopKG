@@ -18,6 +18,7 @@ ARGS=${@:4}
 : "${distmult_state_dict_path:=}"
 : "${complex_state_dict_path:=}"
 : "${conve_state_dict_path:=}"
+: "${transe_state_dict_path:=}"
 : "${early_stopping_min_delta:=0.001}"
 
 add_reversed_training_edges_flag=''
@@ -131,6 +132,7 @@ cmd="python3 -m src.experiments \
     --distmult_state_dict_path $distmult_state_dict_path \
     --complex_state_dict_path $complex_state_dict_path \
     --conve_state_dict_path $conve_state_dict_path \
+    --transe_state_dict_path $transe_state_dict_path \
     --wandb_project $wandb_project \
     $wandb_watch_gradients_flag \
     --seed $seed \
