@@ -194,9 +194,9 @@ def render_faithfulness_summary(
         ('faithfulness/subgraph_f1', 'F1_SG'),
         ('faithfulness/ped', 'PED'),
         ('faithfulness/answer_set_f1', 'Answer_F1'),
-        ('faithfulness/answer_correct_path_fidelity', 'Correct_Path_Fid'),
-        ('faithfulness/answer_correct_path_fidelity_examples', 'Correct_Path_N'),
-        ('faithfulness/answer_correct_path_edit_distance', 'Correct_Path_ED'),
+        ('faithfulness/answer_correct_subgraph_f1', 'Correct_F1_SG'),
+        ('faithfulness/answer_correct_ped', 'Correct_PED'),
+        ('faithfulness/answer_correct_path_examples', 'Correct_Path_N'),
         ('faithfulness/semantic_path_coverage', 'Path_Coverage'),
         ('faithfulness/semantic_path_examples', 'Path_Covered'),
         ('faithfulness/semantic_path_attempts', 'Path_Attempts'),
@@ -236,13 +236,14 @@ def render_per_hop_faithfulness_summary(
         ('path_examples', 'Path_Examples'),
         ('predicted_hop_count_mean', 'Pred_Hops'),
     ]
-    hop_pattern = re.compile(r'^faithfulness/(\d+)hop_')
+    hop_pattern = re.compile(r'^faithfulness/(\d+)hop_(.+)$')
+    metric_suffixes = {suffix for suffix, _ in metric_specs}
     hops = sorted({
         int(match.group(1))
         for split_metrics in successful_split_metrics
         for key in split_metrics
         for match in [hop_pattern.match(key)]
-        if match is not None
+        if match is not None and match.group(2) in metric_suffixes
     })
     if not hops:
         return 'No per-hop faithfulness metrics available.'
@@ -260,6 +261,57 @@ def render_per_hop_faithfulness_summary(
             prefix = f'faithfulness/{hop}hop_'
             if not any(f'{prefix}{suffix}' in split_metrics for suffix, _ in metric_specs):
                 continue
+            table_rows.append([
+                str(row['label']),
+                str(hop),
+                *(format_metric(split_metrics.get(f'{prefix}{suffix}'))
+                  for suffix, _ in metric_specs),
+            ])
+
+    for hop in hops:
+        prefix = f'faithfulness/{hop}hop_'
+        table_rows.append([
+            'mean ± std',
+            str(hop),
+            *(format_mean_std(numeric_metric_values(
+                successful_split_metrics, f'{prefix}{suffix}'))
+              for suffix, _ in metric_specs),
+        ])
+    return render_table(headers, table_rows)
+
+
+def render_per_hop_answer_correct_faithfulness_summary(
+        rows: Sequence[Dict[str, object]],
+        split: str,
+        successful_split_metrics: Sequence[Dict[str, object]]) -> str:
+    """Render path fidelity only over examples whose top-1 answer is gold."""
+    metric_specs = [
+        ('answer_correct_subgraph_f1', 'F1_SG'),
+        ('answer_correct_ped', 'PED'),
+        ('answer_correct_path_examples', 'Answer_Correct_N'),
+    ]
+    hop_pattern = re.compile(r'^faithfulness/(\d+)hop_answer_correct_')
+    hops = sorted({
+        int(match.group(1))
+        for split_metrics in successful_split_metrics
+        for key in split_metrics
+        for match in [hop_pattern.match(key)]
+        if match is not None
+    })
+    if not hops:
+        return 'No answer-reaching per-hop path-fidelity metrics available.'
+
+    headers = ['label', 'hop', *(name for _, name in metric_specs)]
+    table_rows: List[List[str]] = []
+    for row in rows:
+        if row.get('status') != 'ok':
+            continue
+        metrics = row.get('metrics', {}) or {}
+        split_metrics = metrics.get(split, {}) if isinstance(metrics, dict) else {}
+        if not isinstance(split_metrics, dict):
+            continue
+        for hop in hops:
+            prefix = f'faithfulness/{hop}hop_'
             table_rows.append([
                 str(row['label']),
                 str(hop),
@@ -324,6 +376,10 @@ def print_summary(rows: Sequence[Dict[str, object]], split: str) -> str:
         rows, split, successful_split_metrics)
     per_hop_faithfulness_summary = render_per_hop_faithfulness_summary(
         rows, split, successful_split_metrics)
+    per_hop_answer_correct_faithfulness_summary = (
+        render_per_hop_answer_correct_faithfulness_summary(
+            rows, split, successful_split_metrics)
+    )
     rendered_summary = '\n\n'.join([
         'Ranking metrics',
         ranking_summary,
@@ -331,6 +387,8 @@ def print_summary(rows: Sequence[Dict[str, object]], split: str) -> str:
         faithfulness_summary,
         'Per-hop faithfulness metrics',
         per_hop_faithfulness_summary,
+        'Per-hop path fidelity on answer-reaching examples',
+        per_hop_answer_correct_faithfulness_summary,
     ])
     print(rendered_summary)
     return rendered_summary

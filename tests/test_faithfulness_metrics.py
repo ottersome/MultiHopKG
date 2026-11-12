@@ -80,6 +80,33 @@ class FaithfulnessMetricTests(unittest.TestCase):
         self.assertEqual(metrics['faithfulness/predicted_hop_count_mean'], 3.0)
         self.assertEqual(metrics['faithfulness/3hop_predicted_hop_count_mean'], 3.0)
 
+    def test_answer_correct_path_fidelity_is_raw_ped_and_stratified_by_gold_hop(self) -> None:
+        kg = SimpleNamespace(
+            entity2id={}, relation2id={}, id2relation={}, adj_list={},
+        )
+        evaluator = FaithfulnessEvaluator(kg)
+        two_hop = QAExample(2, 4, [], 2, Paths=[(2, 10, 3), (3, 11, 4)])
+        three_hop = QAExample(
+            5, 8, [], 3, Paths=[(5, 20, 6), (6, 21, 7), (7, 22, 8)])
+
+        # The first answer is correct but one evidence edge is wrong: F1=0.5,
+        # raw PED=1. The second is fully faithful. A third correct-looking
+        # path that misses its answer must not enter the conditional average.
+        evaluator.update(two_hop, [(2, 10, 3), (3, 12, 4)], [4], answer_correct=True)
+        evaluator.update(three_hop, [(5, 20, 6), (6, 21, 7), (7, 22, 8)], [8], answer_correct=True)
+        evaluator.update(two_hop, [(2, 10, 3), (3, 11, 4)], [99], answer_correct=False)
+        metrics = evaluator.compute()
+
+        self.assertEqual(metrics['faithfulness/answer_correct_path_examples'], 2.0)
+        self.assertAlmostEqual(metrics['faithfulness/answer_correct_subgraph_f1'], 0.75)
+        self.assertAlmostEqual(metrics['faithfulness/answer_correct_ped'], 0.5)
+        self.assertEqual(metrics['faithfulness/2hop_answer_correct_path_examples'], 1.0)
+        self.assertAlmostEqual(metrics['faithfulness/2hop_answer_correct_subgraph_f1'], 0.5)
+        self.assertAlmostEqual(metrics['faithfulness/2hop_answer_correct_ped'], 1.0)
+        self.assertEqual(metrics['faithfulness/3hop_answer_correct_path_examples'], 1.0)
+        self.assertAlmostEqual(metrics['faithfulness/3hop_answer_correct_subgraph_f1'], 1.0)
+        self.assertAlmostEqual(metrics['faithfulness/3hop_answer_correct_ped'], 0.0)
+
 
 if __name__ == '__main__':
     unittest.main()

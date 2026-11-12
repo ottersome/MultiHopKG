@@ -31,6 +31,11 @@ pythonpath = ["."]
 [tool.ruff.lint]
 ignore = ["I001", "UP035", "UP045", "UP006", "UP032"]
 
+[dependency-groups]
+dev = [
+    "ipykernel>=7.4.0",
+]
+
 [tool.uv.sources]
 torch = { index = "pytorch-cu130" }
 torchvision = { index = "pytorch-cu130" }

@@ -640,6 +640,7 @@ class FaithfulnessEvaluator:
         # reach a gold endpoint.
         self.answer_correct_path_fidelity = 0.0
         self.answer_correct_path_edit = 0.0
+        self.answer_correct_ped = 0.0
         self.answer_correct_path_examples = 0.0
         self.answer_precision = 0.0
         self.answer_recall = 0.0
@@ -680,8 +681,8 @@ class FaithfulnessEvaluator:
 
     def _get_semantically_valid_paths(
             self,
-            example,
-            relation_chain: Sequence[int],
+            example: QAExample,
+            relation_chain: Sequence[int], # Ground Truth relations
             gold_answers: Sequence[int]) -> List[List[Tuple[int, int, int]]]:
         """Expand every full-KG path matching a relation chain and valid answer."""
         if not self.semantic_multi_path or not relation_chain:
@@ -794,6 +795,7 @@ class FaithfulnessEvaluator:
             if answer_correct:
                 self.answer_correct_path_fidelity += edge_f * weight
                 self.answer_correct_path_edit += path_dist * weight
+                self.answer_correct_ped += ped * weight
                 self.answer_correct_path_examples += weight
         self.rel_precision += rel_p * weight
         self.rel_recall += rel_r * weight
@@ -822,6 +824,9 @@ class FaithfulnessEvaluator:
             'path_examples': 0,
             'path_edit_distance': 0.0,
             'ped': 0.0,
+            'answer_correct_path_examples': 0,
+            'answer_correct_subgraph_f1': 0.0,
+            'answer_correct_ped': 0.0,
             'answer_set_f1': 0.0,
             'predicted_hop_count': 0.0,
         })
@@ -837,6 +842,10 @@ class FaithfulnessEvaluator:
             entry['path_examples'] += weight
             entry['path_edit_distance'] += path_dist * weight
             entry['ped'] += ped * weight
+            if answer_correct:
+                entry['answer_correct_path_examples'] += weight
+                entry['answer_correct_subgraph_f1'] += edge_f * weight
+                entry['answer_correct_ped'] += ped * weight
         entry['relation_precision'] += rel_p * weight
         entry['relation_recall'] += rel_r * weight
         entry['relation_f1'] += rel_f * weight
@@ -871,6 +880,7 @@ class FaithfulnessEvaluator:
             'faithfulness/path_edit_distance': self.path_edit / path_n,
             'faithfulness/ped': self.ped / path_n,
             'faithfulness/answer_correct_path_fidelity_examples': self.answer_correct_path_examples,
+            'faithfulness/answer_correct_path_examples': self.answer_correct_path_examples,
             'faithfulness/answer_correct_path_fidelity': (
                 self.answer_correct_path_fidelity / answer_correct_path_n
             ),
@@ -882,6 +892,13 @@ class FaithfulnessEvaluator:
             'faithfulness/answer_set_f1': self.answer_f1 / n,
             'faithfulness/predicted_hop_count_mean': self.predicted_hop_total / n,
         }
+        if self.answer_correct_path_examples:
+            metrics['faithfulness/answer_correct_subgraph_f1'] = (
+                self.answer_correct_path_fidelity / answer_correct_path_n
+            )
+            metrics['faithfulness/answer_correct_ped'] = (
+                self.answer_correct_ped / answer_correct_path_n
+            )
         for predicted_hops, count in sorted(self.predicted_hop_histogram.items()):
             metrics[f'faithfulness/predicted_{predicted_hops}hop_examples'] = count
         if self.semantic_path_attempts:
@@ -905,6 +922,17 @@ class FaithfulnessEvaluator:
             path_count = float(values['path_examples']) if values['path_examples'] else 1.0
             metrics[f'faithfulness/{hop}hop_path_edit_distance'] = values['path_edit_distance'] / path_count
             metrics[f'faithfulness/{hop}hop_ped'] = values['ped'] / path_count
+            metrics[f'faithfulness/{hop}hop_answer_correct_path_examples'] = (
+                values['answer_correct_path_examples']
+            )
+            if values['answer_correct_path_examples']:
+                answer_correct_count = float(values['answer_correct_path_examples'])
+                metrics[f'faithfulness/{hop}hop_answer_correct_subgraph_f1'] = (
+                    values['answer_correct_subgraph_f1'] / answer_correct_count
+                )
+                metrics[f'faithfulness/{hop}hop_answer_correct_ped'] = (
+                    values['answer_correct_ped'] / answer_correct_count
+                )
             for key in ['relation_precision', 'relation_recall', 'relation_f1',
                         'relation_edit_distance', 'answer_set_f1']:
                 metrics[f'faithfulness/{hop}hop_{key}'] = values[key] / count
