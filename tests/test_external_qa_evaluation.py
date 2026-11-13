@@ -84,6 +84,32 @@ class ExternalQAEvaluationTests(unittest.TestCase):
                     str(entities), str(relations), expected_setting='sa',
                 )
 
+    def test_question_paraphrased_expands_variants_without_changing_row_weight(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            entities, relations = self._write_indices(directory)
+            source = directory / 'external.csv'
+            pd.DataFrame([{
+                'SplitLabel': 'test',
+                'Setting': 'sa',
+                'Question': 'original wording',
+                'Question-Paraphrased': "['first variant', 'second variant']",
+                'Source-Entity': 'source',
+                'Answer-Entity': 'answer',
+                'Paths': "[('source', 'relation', 'answer')]",
+                'Hops': 1,
+            }]).to_csv(source, index=False)
+
+            with patch('src.data_utils.AutoTokenizer.from_pretrained', return_value=_Tokenizer()):
+                examples = load_external_qa_test_data(
+                    str(source), str(directory / 'cache.json'), 'test-tokenizer',
+                    str(entities), str(relations),
+                    question_column='Question-Paraphrased', expected_setting='sa',
+                )
+
+            self.assertEqual([example.question for example in examples], [[5, 7], [6, 7]])
+            self.assertEqual([example.Eval_Weight for example in examples], [0.5, 0.5])
+
 
 if __name__ == '__main__':
     unittest.main()

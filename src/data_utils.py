@@ -634,7 +634,7 @@ def load_external_qa_test_data(
         with cache_path.open() as cache_file:
             cache_metadata = json.load(cache_file)
         use_cache = (
-            cache_metadata.get('schema_version') == 1
+            cache_metadata.get('schema_version') == 2
             and cache_metadata.get('source_sha256') == source_sha256
             and cache_metadata.get('question_column') == question_column
             and cache_metadata.get('expected_setting') == expected_setting
@@ -671,10 +671,39 @@ def load_external_qa_test_data(
         if expected_setting == 'ma' and 'Path-Key' not in raw_df.columns:
             raise ValueError('Multi-answer external evaluation requires a Path-Key column')
 
+        # ``Question-Paraphrased`` stores a Python/JSON list per original
+        # question. Expand that list for evaluation, but weight each variant
+        # by 1 / number-of-variants so every underlying QA row has equal
+        # influence. Other requested columns represent exactly one text per
+        # row (for example Question and New-Paraphrase).
+        evaluation_df = raw_df.copy()
+        if question_column == 'Question-Paraphrased':
+            def parse_question_variants(value):
+                variants = normalize_answer_entities(value)
+                if isinstance(variants, str):
+                    variants = [variants]
+                if not isinstance(variants, list):
+                    raise ValueError(
+                        'Question-Paraphrased must contain a string or a list of strings')
+                variants = [str(variant).strip() for variant in variants if str(variant).strip()]
+                if not variants:
+                    raise ValueError('Question-Paraphrased contains an empty variant list')
+                return variants
+
+            evaluation_df['_External-Question'] = evaluation_df[question_column].map(
+                parse_question_variants)
+            evaluation_df['_External-Eval-Weight'] = evaluation_df['_External-Question'].map(
+                lambda variants: 1.0 / len(variants))
+            evaluation_df = evaluation_df.explode('_External-Question', ignore_index=True)
+            question_text = evaluation_df['_External-Question']
+        else:
+            evaluation_df['_External-Eval-Weight'] = 1.0
+            question_text = evaluation_df[question_column].astype(str)
+
         tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
         entity2id, _ = load_index(entity2id_path)
         relation2id, _ = load_index(relation2id_path)
-        answers = raw_df['Answer-Entity'].map(normalize_answer_entities)
+        answers = evaluation_df['Answer-Entity'].map(normalize_answer_entities)
 
         def map_answers(answer_value):
             if isinstance(answer_value, list):
@@ -682,22 +711,22 @@ def load_external_qa_test_data(
             return entity2id[answer_value]
 
         processed_columns: Dict[str, Any] = {
-            'Question': raw_df[question_column].map(
+            'Question': question_text.map(
                 lambda question: tokenizer.encode(str(question), add_special_tokens=False)),
-            'Source-Entity': raw_df['Source-Entity'].map(lambda entity: entity2id[entity]),
+            'Source-Entity': evaluation_df['Source-Entity'].map(lambda entity: entity2id[entity]),
             'Answer-Entity': answers.map(map_answers),
-            'Hops': raw_df['Hops'].astype(int),
-            'SplitLabel': raw_df['SplitLabel'],
-            'Eval-Weight': 1.0,
+            'Hops': evaluation_df['Hops'].astype(int),
+            'SplitLabel': evaluation_df['SplitLabel'],
+            'Eval-Weight': evaluation_df['_External-Eval-Weight'].astype(float),
         }
-        if 'Paths' in raw_df.columns:
-            paths = extract_literals(raw_df['Paths'])
+        if 'Paths' in evaluation_df.columns:
+            paths = extract_literals(evaluation_df['Paths'])
             processed_columns['Paths'] = paths.map(lambda path: [
                 [entity2id[head], relation2id[relation], entity2id[tail]]
                 for head, relation, tail in path
             ])
-        if 'Path-Key' in raw_df.columns:
-            processed_columns['Path-Key'] = raw_df['Path-Key'].map(lambda relation_chain: [
+        if 'Path-Key' in evaluation_df.columns:
+            processed_columns['Path-Key'] = evaluation_df['Path-Key'].map(lambda relation_chain: [
                 relation2id[relation.strip()]
                 for relation in str(relation_chain).split('->')
                 if relation.strip()
@@ -706,7 +735,7 @@ def load_external_qa_test_data(
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         test_df.to_parquet(parquet_path, index=False)
         cache_metadata = {
-            'schema_version': 1,
+            'schema_version': 2,
             'source_path': str(raw_path),
             'source_sha256': source_sha256,
             'question_column': question_column,
@@ -727,7 +756,7 @@ def load_external_qa_test_data(
     test_df['Answer-Entity'] = test_df['Answer-Entity'].apply(
         lambda answers: [int(answer) for answer in answers]
         if isinstance(answers, list) else int(answers))
-    test_df['Eval-Weight'] = 1.0
+    test_df['Eval-Weight'] = test_df['Eval-Weight'].astype(float)
 
     # Parquet restores nested lists as NumPy arrays.  The evaluator expects
     # ordinary Python containers (and tests their truth value), so normalize
@@ -761,7 +790,7 @@ def load_external_qa_test_data(
         Hops=int(row['Hops']),
         Paths=row['Paths'] if has_paths else None,
         Path_Key=row['Path-Key'] if has_path_key else None,
-        Eval_Weight=1.0,
+        Eval_Weight=float(row['Eval-Weight']),
     ) for _, row in test_df.iterrows()]
 
 

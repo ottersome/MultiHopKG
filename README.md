@@ -144,17 +144,23 @@ GPU=0` evaluates an already staged run.
 ### Additional MQuAKE paraphrase suites
 
 The separately supplied MQuAKE files are evaluated as immutable test-only
-suites: each row uses its `New-Paraphrase` text, while its source, answer, and
-gold-path annotations remain those supplied in that row. They do not affect
-training, early stopping, or the canonical QA cache/split.
+suites. The target evaluates the same annotated rows three times—using
+`Question`, `Question-Paraphrased`, and `New-Paraphrase`—so their ranking and
+path-fidelity metrics are directly comparable. Multi-valued
+`Question-Paraphrased` rows are expanded, with each original row retaining a
+total evaluation weight of one. These runs do not affect training, early
+stopping, or the canonical QA cache/split.
 
 ```sh
 make evaluate-additional-paraphrases GPU=0 RUN_NAME=reviewer_3seed
 ```
 
 This evaluates the staged MQuAKE-SA and MQuAKE-MA checkpoint families and
-writes independent summaries, logs, evidence JSONL, and isolated token caches
-under `model/final_evaluation/<RUN_NAME>/evaluation/` and `.cache/mquake_st/`.
+writes one independent summary, log/evidence directory, and isolated token
+cache per question variant under
+`model/final_evaluation/<RUN_NAME>/evaluation/` and `.cache/mquake_st/`.
+It also writes one side-by-side Markdown table per setting:
+`mquake_{sa,ma}_additional_question_variants.md`.
 
 For MQuAKE single-answer QA:
 
