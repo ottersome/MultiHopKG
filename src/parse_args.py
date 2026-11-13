@@ -123,6 +123,14 @@ parser.add_argument('--cached_qa_metadata_path', default="./.cache", type=str,
                     help='path to store processed Q&A data')
 parser.add_argument('--raw_QAData_path', default="./datasets/data_preprocessed/mquake/mquake_qa_2hop.csv",
                     type=str, help="Path to the n-hop detaset containing the questions")
+parser.add_argument('--external_eval_qa_path', type=str, default='',
+                    help='test-only QA CSV to use during inference; never used for training')
+parser.add_argument('--external_eval_cache_path', type=str, default='',
+                    help='metadata cache path for --external_eval_qa_path (default: disabled)')
+parser.add_argument('--external_eval_question_column', type=str, default='New-Paraphrase',
+                    help='column from the external test CSV used as question text (default: New-Paraphrase)')
+parser.add_argument('--external_eval_setting', type=str, default='', choices=['', 'sa', 'ma'],
+                    help='optional expected Setting value in external test CSV (sa or ma)')
 parser.add_argument('--recompute_qadata_cache', action="store_true", 
                      help="Force recompute of the Q&A cache.")
 parser.add_argument('--evaluate_paraphrases', action='store_true',

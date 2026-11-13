@@ -19,6 +19,10 @@ ARGS=${@:4}
 : "${complex_state_dict_path:=}"
 : "${conve_state_dict_path:=}"
 : "${early_stopping_min_delta:=0.001}"
+: "${external_eval_qa_path:=}"
+: "${external_eval_cache_path:=}"
+: "${external_eval_question_column:=New-Paraphrase}"
+: "${external_eval_setting:=}"
 
 add_reversed_training_edges_flag=''
 if [[ $add_reversed_training_edges = *"True"* ]]; then
@@ -74,6 +78,18 @@ eval_hops_arg=''
 if [[ -n "$eval_hops" ]]; then
     eval_hops_arg="--eval_hops $eval_hops"
 fi
+external_eval_qa_path_arg=''
+if [[ -n "$external_eval_qa_path" ]]; then
+    external_eval_qa_path_arg="--external_eval_qa_path $external_eval_qa_path"
+fi
+external_eval_cache_path_arg=''
+if [[ -n "$external_eval_cache_path" ]]; then
+    external_eval_cache_path_arg="--external_eval_cache_path $external_eval_cache_path"
+fi
+external_eval_setting_arg=''
+if [[ -n "$external_eval_setting" ]]; then
+    external_eval_setting_arg="--external_eval_setting $external_eval_setting"
+fi
 
 cmd="python3 -m src.experiments \
     --data_dir $data_dir \
@@ -119,6 +135,10 @@ cmd="python3 -m src.experiments \
     $filter_original_paraphrases_flag \
     --cached_qa_metadata_path $cached_qa_metadata_path \
     --raw_QAData_path $raw_QAData_path \
+    $external_eval_qa_path_arg \
+    $external_eval_cache_path_arg \
+    --external_eval_question_column $external_eval_question_column \
+    $external_eval_setting_arg \
     $recompute_qadata_cache_flag \
     --bert_model_name $bert_model_name \
     --max_question_len $max_question_len \

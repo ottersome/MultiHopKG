@@ -141,6 +141,21 @@ make reproduce GPU=0 WANDB=1 RUN_NAME=my_run
 `make train-all GPU=0` performs only preprocessing and training; `make evaluate
 GPU=0` evaluates an already staged run.
 
+### Additional MQuAKE paraphrase suites
+
+The separately supplied MQuAKE files are evaluated as immutable test-only
+suites: each row uses its `New-Paraphrase` text, while its source, answer, and
+gold-path annotations remain those supplied in that row. They do not affect
+training, early stopping, or the canonical QA cache/split.
+
+```sh
+make evaluate-additional-paraphrases GPU=0 RUN_NAME=reviewer_3seed
+```
+
+This evaluates the staged MQuAKE-SA and MQuAKE-MA checkpoint families and
+writes independent summaries, logs, evidence JSONL, and isolated token caches
+under `model/final_evaluation/<RUN_NAME>/evaluation/` and `.cache/mquake_st/`.
+
 For MQuAKE single-answer QA:
 
 ```sh

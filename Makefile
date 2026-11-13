@@ -38,7 +38,7 @@ else
 WANDB_FLAG :=
 endif
 
-.PHONY: help reproduce pipeline train-all evaluate process-data prepare-lp-data \
+.PHONY: help reproduce pipeline train-all evaluate evaluate-additional-paraphrases process-data prepare-lp-data \
 	linkpred-all rl-all \
 	linkpred-kinship linkpred-metaqa linkpred-mquake-sa \
 	rl-kinship rl-metaqa rl-mquake-sa rl-mquake-ma
@@ -49,7 +49,8 @@ help:
 	  'make reproduce GPU=0 WANDB=1  # same pipeline with Weights & Biases logging' \
 	  'Optional: RUN_NAME=my_run RL_SEEDS="12 42 1337"' \
 	  'make train-all GPU=0          # stage three RL seeds per family, without evaluation' \
-	  'make evaluate GPU=0           # evaluate an already staged run.'
+	  'make evaluate GPU=0           # evaluate an already staged run' \
+	  'make evaluate-additional-paraphrases GPU=0  # MQuAKE external paraphrase suites.'
 
 # These files define entity/relation IDs and traversal adjacency. MQuAKE SA and
 # MA share one KG, so it is intentionally processed once.
@@ -128,6 +129,14 @@ evaluate:
 	# MetaQA is intentionally omitted while its reviewer run is not staged.
 	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/mquake_sa" --output_json "$(EVAL_ROOT)/mquake_sa.json" --output_csv "$(EVAL_ROOT)/mquake_sa.csv" "$(MQUAKE_SA_STAGE)"
 	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/mquake_ma" --output_json "$(EVAL_ROOT)/mquake_ma.json" --output_csv "$(EVAL_ROOT)/mquake_ma.csv" "$(MQUAKE_MA_STAGE)"
+
+# These are separately supplied, test-only paraphrases. They deliberately use
+# an isolated cache and never call the canonical QA splitter or rewrite its
+# train/dev/test cache. The model receives exactly New-Paraphrase per row.
+evaluate-additional-paraphrases:
+	@mkdir -p "$(EVAL_ROOT)"
+	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/mquake_sa_additional_paraphrases" --output_json "$(EVAL_ROOT)/mquake_sa_additional_paraphrases.json" --output_csv "$(EVAL_ROOT)/mquake_sa_additional_paraphrases.csv" "$(MQUAKE_SA_STAGE)" -- --external_eval_qa_path data/mquake_st/mquake_st_sa_nhop_additional.csv --external_eval_cache_path .cache/mquake_st/mquake_st_sa_additional_eval.json --external_eval_question_column New-Paraphrase --external_eval_setting sa
+	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/mquake_ma_additional_paraphrases" --output_json "$(EVAL_ROOT)/mquake_ma_additional_paraphrases.json" --output_csv "$(EVAL_ROOT)/mquake_ma_additional_paraphrases.csv" "$(MQUAKE_MA_STAGE)" -- --external_eval_qa_path data/mquake_st/mquake_st_ma_nhop_additional.csv --external_eval_cache_path .cache/mquake_st/mquake_st_ma_additional_eval.json --external_eval_question_column New-Paraphrase --external_eval_setting ma
 
 # Explicit recursive calls preserve ordering even with make -j: evaluation
 # must not begin before all staged checkpoints exist.

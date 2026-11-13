@@ -17,6 +17,7 @@ import collections
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 from functools import cache
+import hashlib
 
 from sklearn.model_selection import train_test_split
 import numpy as np
@@ -592,6 +593,176 @@ def normalize_answer_entities(value):
     if isinstance(value, (list, tuple, set)):
         return list(value)
     return value
+
+
+def _file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, 'rb') as source_file:
+        for block in iter(lambda: source_file.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def load_external_qa_test_data(
+    raw_qa_path: str,
+    cache_metadata_path: str,
+    question_tokenizer_name: str,
+    entity2id_path: str,
+    relation2id_path: str,
+    question_column: str = 'New-Paraphrase',
+    expected_setting: str = '',
+    force_recompute: bool = False,
+    max_question_len: Optional[int] = None,
+) -> List[QAExample]:
+    """Load a labeled external QA CSV as an immutable, test-only evaluation set.
+
+    This deliberately does not call the train/dev/test splitter. The CSV must
+    already declare every row as ``test``; its cache is separate from the
+    canonical QA cache so external paraphrase evaluation cannot alter training.
+    """
+    raw_path = Path(raw_qa_path)
+    if not raw_path.is_file():
+        raise FileNotFoundError('External evaluation CSV not found: {}'.format(raw_path))
+    if not cache_metadata_path:
+        raise ValueError('external_eval_cache_path is required for external evaluation')
+    cache_path = Path(cache_metadata_path)
+    parquet_path = cache_path.with_suffix('.parquet')
+    source_sha256 = _file_sha256(raw_path)
+    cache_metadata: Dict[str, Any] = {}
+    use_cache = False
+    if cache_path.is_file() and parquet_path.is_file() and not force_recompute:
+        with cache_path.open() as cache_file:
+            cache_metadata = json.load(cache_file)
+        use_cache = (
+            cache_metadata.get('schema_version') == 1
+            and cache_metadata.get('source_sha256') == source_sha256
+            and cache_metadata.get('question_column') == question_column
+            and cache_metadata.get('expected_setting') == expected_setting
+            and cache_metadata.get('question_tokenizer') == question_tokenizer_name
+        )
+
+    if use_cache:
+        test_df = pd.read_parquet(parquet_path)
+        print('Loaded cached external test data from {}'.format(cache_path))
+    else:
+        raw_df = pd.read_csv(raw_path)
+        required_columns = {'SplitLabel', question_column, 'Source-Entity', 'Answer-Entity', 'Hops'}
+        missing_columns = sorted(required_columns.difference(raw_df.columns))
+        if missing_columns:
+            raise ValueError('External evaluation CSV is missing required columns: {}'.format(
+                ', '.join(missing_columns)))
+        split_labels = set(raw_df['SplitLabel'].dropna().astype(str).str.strip())
+        if split_labels != {'test'}:
+            raise ValueError('External evaluation CSV must contain only SplitLabel=test, got {}'.format(
+                sorted(split_labels)))
+        if expected_setting:
+            if 'Setting' not in raw_df.columns:
+                raise ValueError('External evaluation CSV is missing Setting for expected {}'.format(
+                    expected_setting))
+            settings = set(raw_df['Setting'].dropna().astype(str).str.strip().str.lower())
+            if settings != {expected_setting}:
+                raise ValueError('External evaluation Setting must be {}, got {}'.format(
+                    expected_setting, sorted(settings)))
+        if raw_df[question_column].isna().any() or raw_df[question_column].astype(str).str.strip().eq('').any():
+            raise ValueError('External evaluation question column {} contains empty values'.format(
+                question_column))
+        if expected_setting == 'sa' and 'Paths' not in raw_df.columns:
+            raise ValueError('Single-answer external evaluation requires a Paths column')
+        if expected_setting == 'ma' and 'Path-Key' not in raw_df.columns:
+            raise ValueError('Multi-answer external evaluation requires a Path-Key column')
+
+        tokenizer = AutoTokenizer.from_pretrained(question_tokenizer_name)
+        entity2id, _ = load_index(entity2id_path)
+        relation2id, _ = load_index(relation2id_path)
+        answers = raw_df['Answer-Entity'].map(normalize_answer_entities)
+
+        def map_answers(answer_value):
+            if isinstance(answer_value, list):
+                return [entity2id[entity] for entity in answer_value]
+            return entity2id[answer_value]
+
+        processed_columns: Dict[str, Any] = {
+            'Question': raw_df[question_column].map(
+                lambda question: tokenizer.encode(str(question), add_special_tokens=False)),
+            'Source-Entity': raw_df['Source-Entity'].map(lambda entity: entity2id[entity]),
+            'Answer-Entity': answers.map(map_answers),
+            'Hops': raw_df['Hops'].astype(int),
+            'SplitLabel': raw_df['SplitLabel'],
+            'Eval-Weight': 1.0,
+        }
+        if 'Paths' in raw_df.columns:
+            paths = extract_literals(raw_df['Paths'])
+            processed_columns['Paths'] = paths.map(lambda path: [
+                [entity2id[head], relation2id[relation], entity2id[tail]]
+                for head, relation, tail in path
+            ])
+        if 'Path-Key' in raw_df.columns:
+            processed_columns['Path-Key'] = raw_df['Path-Key'].map(lambda relation_chain: [
+                relation2id[relation.strip()]
+                for relation in str(relation_chain).split('->')
+                if relation.strip()
+            ])
+        test_df = pd.DataFrame(processed_columns)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        test_df.to_parquet(parquet_path, index=False)
+        cache_metadata = {
+            'schema_version': 1,
+            'source_path': str(raw_path),
+            'source_sha256': source_sha256,
+            'question_column': question_column,
+            'expected_setting': expected_setting,
+            'question_tokenizer': question_tokenizer_name,
+            'test_path': str(parquet_path),
+            'examples': len(test_df),
+        }
+        with cache_path.open('w') as cache_file:
+            json.dump(cache_metadata, cache_file, indent=2, sort_keys=True)
+        print('Processed {} external test examples and cached them at {}'.format(
+            len(test_df), cache_path))
+
+    test_df = test_df.copy()
+    test_df['Question'] = test_df['Question'].apply(
+        lambda tokens: tokens.tolist() if hasattr(tokens, 'tolist') else list(tokens))
+    test_df['Answer-Entity'] = test_df['Answer-Entity'].apply(normalize_answer_entities)
+    test_df['Answer-Entity'] = test_df['Answer-Entity'].apply(
+        lambda answers: [int(answer) for answer in answers]
+        if isinstance(answers, list) else int(answers))
+    test_df['Eval-Weight'] = 1.0
+
+    # Parquet restores nested lists as NumPy arrays.  The evaluator expects
+    # ordinary Python containers (and tests their truth value), so normalize
+    # path annotations just as we normalize cached questions and answers.
+    def normalize_path(path):
+        if hasattr(path, 'tolist'):
+            path = path.tolist()
+        return [
+            [int(value) for value in (edge.tolist() if hasattr(edge, 'tolist') else edge)]
+            for edge in path
+        ]
+
+    def normalize_path_key(path_key):
+        if hasattr(path_key, 'tolist'):
+            path_key = path_key.tolist()
+        return [int(relation) for relation in path_key]
+
+    if 'Paths' in test_df.columns:
+        test_df['Paths'] = test_df['Paths'].apply(normalize_path)
+    if 'Path-Key' in test_df.columns:
+        test_df['Path-Key'] = test_df['Path-Key'].apply(normalize_path_key)
+    if max_question_len is not None:
+        validate_question_lengths([('external test', test_df)], max_question_len)
+
+    has_paths = 'Paths' in test_df.columns
+    has_path_key = 'Path-Key' in test_df.columns
+    return [QAExample(
+        source_entity=int(row['Source-Entity']),
+        answer_entity=row['Answer-Entity'],
+        question=row['Question'],
+        Hops=int(row['Hops']),
+        Paths=row['Paths'] if has_paths else None,
+        Path_Key=row['Path-Key'] if has_path_key else None,
+        Eval_Weight=1.0,
+    ) for _, row in test_df.iterrows()]
 
 
 def process_and_cache_triviaqa_data(

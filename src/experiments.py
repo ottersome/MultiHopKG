@@ -722,24 +722,53 @@ def inference(lf: LFramework) -> dict[str, dict[str, object]]:
             verbose=True, beam_size=args.beam_size)
     else:
         if args.use_question_encoder:
-            _, dev_data, test_data, _ = data_utils.load_qa_data(
-                args.cached_qa_metadata_path,
-                args.raw_QAData_path,
-                args.bert_model_name,
-                entity_index_path,
-                relation_index_path,
-                force_recompute=args.recompute_qadata_cache,
-                evaluate_paraphrases=args.evaluate_paraphrases,
-                filter_original_paraphrases=args.filter_original_paraphrases,
-                max_question_len=args.max_question_len,
-            )
+            external_eval_path = args.external_eval_qa_path
+            if external_eval_path:
+                # An external suite is deliberately test-only.  In particular,
+                # do not load (or rewrite) the canonical QA split/cache here:
+                # it is the data on which the policy was trained and selected.
+                test_data = data_utils.load_external_qa_test_data(
+                    external_eval_path,
+                    args.external_eval_cache_path,
+                    args.bert_model_name,
+                    entity_index_path,
+                    relation_index_path,
+                    question_column=args.external_eval_question_column,
+                    expected_setting=args.external_eval_setting,
+                    force_recompute=args.recompute_qadata_cache,
+                    max_question_len=args.max_question_len,
+                )
+                evaluation_splits = [('Test', test_data)]
+                print('External test-only evaluation: {} examples from {}'.format(
+                    len(test_data), external_eval_path))
+            else:
+                _, dev_data, test_data, _ = data_utils.load_qa_data(
+                    args.cached_qa_metadata_path,
+                    args.raw_QAData_path,
+                    args.bert_model_name,
+                    entity_index_path,
+                    relation_index_path,
+                    force_recompute=args.recompute_qadata_cache,
+                    evaluate_paraphrases=args.evaluate_paraphrases,
+                    filter_original_paraphrases=args.filter_original_paraphrases,
+                    max_question_len=args.max_question_len,
+                )
+                evaluation_splits = [('Dev', dev_data), ('Test', test_data)]
             requested_eval_hops = parse_hop_filter(args.eval_hops)
             if requested_eval_hops:
-                dev_data = filter_examples_by_hop(
-                    dev_data, requested_eval_hops, 'dev evaluation', required=True)
-                test_data = filter_examples_by_hop(
-                    test_data, requested_eval_hops, 'test evaluation', required=True)
-            for split_name, split_data in [('Dev', dev_data), ('Test', test_data)]:
+                evaluation_splits = [
+                    (
+                        split_name,
+                        filter_examples_by_hop(
+                            split_data,
+                            requested_eval_hops,
+                            '{} evaluation'.format(split_name.lower()),
+                            required=True,
+                        ),
+                    )
+                    for split_name, split_data in evaluation_splits
+                ]
+            for split_name, split_data in evaluation_splits:
                 if hasattr(lf, 'supports_rollout_evaluation') and lf.supports_rollout_evaluation():
                     rollout_metrics = lf.evaluate_with_rollouts(split_data, split_name=split_name.lower())
                     if rollout_metrics:
@@ -1049,6 +1078,12 @@ def run_experiment(run_args):
     global args
     args = run_args
     configure_runtime(args)
+
+    if args.external_eval_qa_path:
+        if not args.inference:
+            raise ValueError('--external_eval_qa_path is supported only with --inference.')
+        if not args.use_question_encoder:
+            raise ValueError('--external_eval_qa_path requires --use_question_encoder.')
 
     if args.test:
         if 'NELL' in args.data_dir:
