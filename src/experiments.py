@@ -1325,12 +1325,27 @@ if __name__ == '__main__':
     if args.debug:
         try:
             import debugpy
+            import subprocess
         except ImportError as exc:
             raise RuntimeError(
                 '--debug requires the optional debugpy package. Install it or run without --debug.'
             ) from exc
         debugpy.listen(args.debug_port)
+        subprocess.run([
+            "notify-send",
+            "-u", "normal",
+            "-t", "5000",
+            "Training Notification",
+            "Debugpy waiting on you."
+        ])
         print(f"debugpy listening on {args.debug_port}", flush=True)
         debugpy.wait_for_client()
+        subprocess.run([
+            "notify-send",
+            "-u", "normal",
+            "-t", "5000",
+            "Training Notification",
+            "Got you. Continuing"
+        ])
     
     run_experiment(args)
