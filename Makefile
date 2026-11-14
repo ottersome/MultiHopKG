@@ -38,7 +38,7 @@ else
 WANDB_FLAG :=
 endif
 
-.PHONY: help reproduce pipeline train-all evaluate evaluate-additional-paraphrases process-data prepare-lp-data \
+.PHONY: help reproduce pipeline train-all evaluate evaluate-additional-paraphrases clean-caches process-data prepare-lp-data \
 	linkpred-all rl-all \
 	linkpred-kinship linkpred-metaqa linkpred-mquake-sa \
 	rl-kinship rl-metaqa rl-mquake-sa rl-mquake-ma
@@ -50,7 +50,16 @@ help:
 	  'Optional: RUN_NAME=my_run RL_SEEDS="12 42 1337"' \
 	  'make train-all GPU=0          # stage three RL seeds per family, without evaluation' \
 	  'make evaluate GPU=0           # evaluate an already staged run' \
-	  'make evaluate-additional-paraphrases GPU=0  # MQuAKE external paraphrase suites.'
+	  'make evaluate-additional-paraphrases GPU=0  # MQuAKE external paraphrase suites' \
+	  'make clean-caches             # remove only reproducible project caches.'
+
+# Safe for a clean run: these directories contain only derived QA/tokenization,
+# KG action-space, and local Python/test cache files.  This intentionally does
+# not delete data/, processed KG indices, model checkpoints, final evaluation
+# artifacts, or user-level Hugging Face/uv caches.
+clean-caches:
+	rm -rf -- .cache data/KinshipHinton/.kg_cache data/metaqa_encoded/.kg_cache data/mquake_st/.kg_cache
+	find . -path './.venv' -prune -o \( -type d \( -name '__pycache__' -o -name '.pytest_cache' -o -name '.mypy_cache' \) -prune -exec rm -rf -- '{}' + \)
 
 # These files define entity/relation IDs and traversal adjacency. MQuAKE SA and
 # MA share one KG, so it is intentionally processed once.

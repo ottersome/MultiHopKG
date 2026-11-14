@@ -56,6 +56,18 @@ MQuAKE configurations similarly identify their required QA CSV with
 Review these paths, plus the pretrained ConvE checkpoint paths, in a copied
 configuration before launching a run.
 
+For a clean derived-data run, use:
+
+```sh
+make clean-caches
+```
+
+It removes QA/tokenization caches, KG action-space caches, and repository-local
+Python/test caches. It does not remove source data, processed KG indices,
+checkpoints, final-evaluation artifacts, or user-level Hugging Face/uv caches.
+The next train or evaluation command rebuilds what it needs, so its first pass
+will be slower.
+
 `data-release.tgz` belongs to the original non-QA release; it is not part of a
 supported workflow in this version of the repository.
 
