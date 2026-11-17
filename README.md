@@ -153,6 +153,10 @@ make reproduce GPU=0 WANDB=1 RUN_NAME=my_run
 `make train-all GPU=0` performs only preprocessing and training; `make evaluate
 GPU=0` evaluates an already staged run.
 
+For a compact end-to-end reproducibility check of the complete Kinship
+pipeline only (KG processing, full-KG LP training, three RL seeds, and batch
+evaluation), use `make reproduce-kinship GPU=0`.
+
 ### Additional MQuAKE paraphrase suites
 
 The separately supplied MQuAKE files are evaluated as immutable test-only

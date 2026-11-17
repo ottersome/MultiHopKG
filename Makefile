@@ -38,7 +38,9 @@ else
 WANDB_FLAG :=
 endif
 
-.PHONY: help reproduce pipeline train-all evaluate evaluate-additional-paraphrases clean-caches process-data prepare-lp-data \
+.PHONY: help reproduce pipeline reproduce-kinship train-all train-kinship evaluate evaluate-kinship evaluate-additional-paraphrases clean-caches \
+	process-data process-data-kinship process-data-metaqa process-data-mquake \
+	prepare-lp-data prepare-lp-data-kinship prepare-lp-data-metaqa prepare-lp-data-mquake \
 	linkpred-all rl-all \
 	linkpred-kinship linkpred-metaqa linkpred-mquake-sa \
 	rl-kinship rl-metaqa rl-mquake-sa rl-mquake-ma
@@ -46,6 +48,7 @@ endif
 help:
 	@printf '%s\n' \
 	  'make reproduce GPU=0          # full preprocessing, training, and evaluation' \
+	  'make reproduce-kinship GPU=0  # full Kinship-only replication check' \
 	  'make reproduce GPU=0 WANDB=1  # same pipeline with Weights & Biases logging' \
 	  'Optional: RUN_NAME=my_run RL_SEEDS="12 42 1337"' \
 	  'make train-all GPU=0          # stage three RL seeds per family, without evaluation' \
@@ -64,29 +67,44 @@ clean-caches:
 # These files define entity/relation IDs and traversal adjacency. MQuAKE SA and
 # MA share one KG, so it is intentionally processed once.
 process-data:
+	+$(MAKE) process-data-kinship GPU="$(GPU)"
+	+$(MAKE) process-data-metaqa GPU="$(GPU)"
+	+$(MAKE) process-data-mquake GPU="$(GPU)"
+
+process-data-kinship:
 	./experiment-rs-nlp.sh configs/kinshiphinton-rs-nlp-conve.sh --process_data $(GPU)
+
+process-data-metaqa:
 	./experiment-rs-nlp.sh configs/metaqa_encoded-rs-nlp-conve.sh --process_data $(GPU)
+
+process-data-mquake:
 	./experiment-rs-nlp.sh configs/mquake_st-rs-nlp-conve.sh --process_data $(GPU)
 
 # LP is trained on the complete observed KG, never a QA split.
-prepare-lp-data: process-data
+prepare-lp-data: prepare-lp-data-kinship prepare-lp-data-metaqa prepare-lp-data-mquake
+
+prepare-lp-data-kinship: process-data-kinship
 	$(PYTHON) scripts/prepare_lp_training_data.py --data_dir data/KinshipHinton
+
+prepare-lp-data-metaqa: process-data-metaqa
 	$(PYTHON) scripts/prepare_lp_training_data.py --data_dir data/metaqa_encoded
+
+prepare-lp-data-mquake: process-data-mquake
 	$(PYTHON) scripts/prepare_lp_training_data.py --data_dir data/mquake_st
 
 linkpred-all: linkpred-kinship linkpred-metaqa linkpred-mquake-sa
 
-linkpred-kinship: prepare-lp-data
+linkpred-kinship: prepare-lp-data-kinship
 	@mkdir -p "$(BUILD_ROOT)/manifests" "$(LP_ROOT)"
 	./experiment-emb.sh configs/kinshiphinton-conve.sh --train $(GPU) $(WANDB_FLAG) --model_root_dir "$(BUILD_ROOT)/kinship/lp" --run_metadata_output_path "$(BUILD_ROOT)/manifests/kinship-lp.json"
 	@checkpoint="$$($(PYTHON) -c 'import json,sys; print(json.load(open(sys.argv[1]))["checkpoint_path"])' "$(BUILD_ROOT)/manifests/kinship-lp.json")"; test -f "$$checkpoint"; mv -f "$$checkpoint" "$(KINSHIP_LP)"
 
-linkpred-metaqa: prepare-lp-data
+linkpred-metaqa: prepare-lp-data-metaqa
 	@mkdir -p "$(BUILD_ROOT)/manifests" "$(LP_ROOT)"
 	./experiment-emb.sh configs/metaqa_encoded_conve.sh --train $(GPU) $(WANDB_FLAG) --model_root_dir "$(BUILD_ROOT)/metaqa_encoded/lp" --run_metadata_output_path "$(BUILD_ROOT)/manifests/metaqa-lp.json"
 	@checkpoint="$$($(PYTHON) -c 'import json,sys; print(json.load(open(sys.argv[1]))["checkpoint_path"])' "$(BUILD_ROOT)/manifests/metaqa-lp.json")"; test -f "$$checkpoint"; mv -f "$$checkpoint" "$(METAQA_LP)"
 
-linkpred-mquake-sa: prepare-lp-data
+linkpred-mquake-sa: prepare-lp-data-mquake
 	@mkdir -p "$(BUILD_ROOT)/manifests" "$(LP_ROOT)"
 	./experiment-emb.sh configs/mquake_st-conve.sh --train $(GPU) $(WANDB_FLAG) --model_root_dir "$(BUILD_ROOT)/mquake_sa/lp" --run_metadata_output_path "$(BUILD_ROOT)/manifests/mquake-sa-lp.json"
 	@checkpoint="$$($(PYTHON) -c 'import json,sys; print(json.load(open(sys.argv[1]))["checkpoint_path"])' "$(BUILD_ROOT)/manifests/mquake-sa-lp.json")"; test -f "$$checkpoint"; mv -f "$$checkpoint" "$(MQUAKE_SA_LP)"
@@ -129,6 +147,11 @@ rl-mquake-ma: linkpred-mquake-sa
 
 train-all: rl-all
 
+# A compact end-to-end reproduction target. It still builds the KG, trains a
+# fresh ConvE substrate, trains every requested RL seed, and evaluates those
+# staged checkpoints; it simply avoids the other dataset families.
+train-kinship: rl-kinship
+
 # Evaluate each family separately so the reported mean +/- std is over its
 # three seeds rather than over all twelve checkpoints. MQuAKE evidence labels
 # are loaded directly from its bundled metadata CSVs during evaluation.
@@ -138,6 +161,10 @@ evaluate:
 	# MetaQA is intentionally omitted while its reviewer run is not staged.
 	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/mquake_sa" --output_json "$(EVAL_ROOT)/mquake_sa.json" --output_csv "$(EVAL_ROOT)/mquake_sa.csv" "$(MQUAKE_SA_STAGE)"
 	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/mquake_ma" --output_json "$(EVAL_ROOT)/mquake_ma.json" --output_csv "$(EVAL_ROOT)/mquake_ma.csv" "$(MQUAKE_MA_STAGE)"
+
+evaluate-kinship:
+	@mkdir -p "$(EVAL_ROOT)"
+	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/kinship" --output_json "$(EVAL_ROOT)/kinship.json" --output_csv "$(EVAL_ROOT)/kinship.csv" "$(KINSHIP_STAGE)"
 
 # These are separately supplied, test-only question variants. They deliberately
 # use isolated caches and never call the canonical QA splitter or rewrite its
@@ -159,3 +186,7 @@ evaluate-additional-paraphrases:
 reproduce pipeline:
 	+$(MAKE) train-all GPU="$(GPU)" WANDB="$(WANDB)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
 	+$(MAKE) evaluate GPU="$(GPU)" WANDB="$(WANDB)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
+
+reproduce-kinship:
+	+$(MAKE) train-kinship GPU="$(GPU)" WANDB="$(WANDB)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
+	+$(MAKE) evaluate-kinship GPU="$(GPU)" WANDB="$(WANDB)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
