@@ -281,6 +281,8 @@ parser.add_argument('--baseline', type=str, default='n/a',
 
 parser.add_argument('--seed', type=int, default=543, metavar='S',
                     help='random seed (default: 543)')
+parser.add_argument('--deterministic', action='store_true',
+                    help='require deterministic PyTorch/CUDA algorithms; may reduce throughput')
 
 # Search Decoding
 parser.add_argument('--beam_size', type=int, default=100,

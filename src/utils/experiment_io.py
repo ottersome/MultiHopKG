@@ -54,6 +54,7 @@ EXPERIMENT_STORE_TRUE_ARGS = frozenset({
     'disable_checkpoint_saving',
     'disable_early_stopping',
     'evaluate_per_hop',
+    'deterministic',
 })
 
 

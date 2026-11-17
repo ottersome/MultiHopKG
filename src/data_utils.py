@@ -264,7 +264,11 @@ def prepare_kb_envrioment(raw_kb_path, train_path, dev_path, test_path, test_mod
         removed_triples = dev_triples + test_triples
 
     # Index entities and relations
-    for line in set(raw_kb_triples + keep_triples + removed_triples):
+    # The generated graph must not depend on Python's randomized string-hash
+    # order.  These triples feed adjacency/action-table construction later, so
+    # a different set traversal would otherwise change policy action columns
+    # after a cache-clean rebuild.
+    for line in sorted(set(raw_kb_triples + keep_triples + removed_triples)):
         e1, e2, r = line.strip().split()
         entity_hist[e1] += 1
         entity_hist[e2] += 1
@@ -308,7 +312,7 @@ def prepare_kb_envrioment(raw_kb_path, train_path, dev_path, test_path, test_mod
     adj_list = collections.defaultdict(collections.defaultdict)
     entity2typeid = [0 for i in range(len(entity2id))]
     num_facts = 0
-    for line in set(raw_kb_triples + keep_triples):
+    for line in sorted(set(raw_kb_triples + keep_triples)):
         e1, e2, r = line.strip().split()
         triple_signature = '{}\t{}\t{}'.format(e1, e2, r)
         e1_id = entity2id[e1]

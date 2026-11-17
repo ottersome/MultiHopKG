@@ -15,6 +15,7 @@ SHELL := /bin/bash
 PYTHON ?= uv run python
 GPU ?= 0
 WANDB ?= 0
+DETERMINISTIC ?= 1
 RUN_NAME ?= reviewer_3seed
 RL_SEEDS ?= 12 42 1337
 
@@ -36,6 +37,12 @@ ifeq ($(WANDB),1)
 WANDB_FLAG := --wandb
 else
 WANDB_FLAG :=
+endif
+
+ifeq ($(DETERMINISTIC),1)
+DETERMINISTIC_FLAG := --deterministic
+else
+DETERMINISTIC_FLAG :=
 endif
 
 .PHONY: help reproduce pipeline reproduce-kinship train-all train-kinship evaluate evaluate-kinship evaluate-additional-paraphrases clean-caches \
@@ -96,17 +103,17 @@ linkpred-all: linkpred-kinship linkpred-metaqa linkpred-mquake-sa
 
 linkpred-kinship: prepare-lp-data-kinship
 	@mkdir -p "$(BUILD_ROOT)/manifests" "$(LP_ROOT)"
-	./experiment-emb.sh configs/kinshiphinton-conve.sh --train $(GPU) $(WANDB_FLAG) --model_root_dir "$(BUILD_ROOT)/kinship/lp" --run_metadata_output_path "$(BUILD_ROOT)/manifests/kinship-lp.json"
+	./experiment-emb.sh configs/kinshiphinton-conve.sh --train $(GPU) $(WANDB_FLAG) $(DETERMINISTIC_FLAG) --model_root_dir "$(BUILD_ROOT)/kinship/lp" --run_metadata_output_path "$(BUILD_ROOT)/manifests/kinship-lp.json"
 	@checkpoint="$$($(PYTHON) -c 'import json,sys; print(json.load(open(sys.argv[1]))["checkpoint_path"])' "$(BUILD_ROOT)/manifests/kinship-lp.json")"; test -f "$$checkpoint"; mv -f "$$checkpoint" "$(KINSHIP_LP)"
 
 linkpred-metaqa: prepare-lp-data-metaqa
 	@mkdir -p "$(BUILD_ROOT)/manifests" "$(LP_ROOT)"
-	./experiment-emb.sh configs/metaqa_encoded_conve.sh --train $(GPU) $(WANDB_FLAG) --model_root_dir "$(BUILD_ROOT)/metaqa_encoded/lp" --run_metadata_output_path "$(BUILD_ROOT)/manifests/metaqa-lp.json"
+	./experiment-emb.sh configs/metaqa_encoded_conve.sh --train $(GPU) $(WANDB_FLAG) $(DETERMINISTIC_FLAG) --model_root_dir "$(BUILD_ROOT)/metaqa_encoded/lp" --run_metadata_output_path "$(BUILD_ROOT)/manifests/metaqa-lp.json"
 	@checkpoint="$$($(PYTHON) -c 'import json,sys; print(json.load(open(sys.argv[1]))["checkpoint_path"])' "$(BUILD_ROOT)/manifests/metaqa-lp.json")"; test -f "$$checkpoint"; mv -f "$$checkpoint" "$(METAQA_LP)"
 
 linkpred-mquake-sa: prepare-lp-data-mquake
 	@mkdir -p "$(BUILD_ROOT)/manifests" "$(LP_ROOT)"
-	./experiment-emb.sh configs/mquake_st-conve.sh --train $(GPU) $(WANDB_FLAG) --model_root_dir "$(BUILD_ROOT)/mquake_sa/lp" --run_metadata_output_path "$(BUILD_ROOT)/manifests/mquake-sa-lp.json"
+	./experiment-emb.sh configs/mquake_st-conve.sh --train $(GPU) $(WANDB_FLAG) $(DETERMINISTIC_FLAG) --model_root_dir "$(BUILD_ROOT)/mquake_sa/lp" --run_metadata_output_path "$(BUILD_ROOT)/manifests/mquake-sa-lp.json"
 	@checkpoint="$$($(PYTHON) -c 'import json,sys; print(json.load(open(sys.argv[1]))["checkpoint_path"])' "$(BUILD_ROOT)/manifests/mquake-sa-lp.json")"; test -f "$$checkpoint"; mv -f "$$checkpoint" "$(MQUAKE_SA_LP)"
 
 # $(1): staging directory; $(2): source config; $(3): LP checkpoint;
@@ -119,7 +126,7 @@ define train_rl_family
 		metadata="$(BUILD_ROOT)/manifests/$(4)-rl-s$$seed.json"; \
 		refresh=""; \
 		if [ "$$first_seed" -eq 1 ]; then refresh="--recompute_qadata_cache"; first_seed=0; fi; \
-		./experiment-rs-nlp.sh "$(2)" --train $(GPU) $(WANDB_FLAG) \
+		./experiment-rs-nlp.sh "$(2)" --train $(GPU) $(WANDB_FLAG) $(DETERMINISTIC_FLAG) \
 			--seed "$$seed" \
 			--conve_state_dict_path "$(3)" \
 			--model_root_dir "$(BUILD_ROOT)/$(4)/rl/s$$seed" \
@@ -157,14 +164,14 @@ train-kinship: rl-kinship
 # are loaded directly from its bundled metadata CSVs during evaluation.
 evaluate:
 	@mkdir -p "$(EVAL_ROOT)"
-	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/kinship" --output_json "$(EVAL_ROOT)/kinship.json" --output_csv "$(EVAL_ROOT)/kinship.csv" "$(KINSHIP_STAGE)"
+	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/kinship" --output_json "$(EVAL_ROOT)/kinship.json" --output_csv "$(EVAL_ROOT)/kinship.csv" "$(KINSHIP_STAGE)" -- $(DETERMINISTIC_FLAG)
 	# MetaQA is intentionally omitted while its reviewer run is not staged.
-	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/mquake_sa" --output_json "$(EVAL_ROOT)/mquake_sa.json" --output_csv "$(EVAL_ROOT)/mquake_sa.csv" "$(MQUAKE_SA_STAGE)"
-	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/mquake_ma" --output_json "$(EVAL_ROOT)/mquake_ma.json" --output_csv "$(EVAL_ROOT)/mquake_ma.csv" "$(MQUAKE_MA_STAGE)"
+	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/mquake_sa" --output_json "$(EVAL_ROOT)/mquake_sa.json" --output_csv "$(EVAL_ROOT)/mquake_sa.csv" "$(MQUAKE_SA_STAGE)" -- $(DETERMINISTIC_FLAG)
+	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/mquake_ma" --output_json "$(EVAL_ROOT)/mquake_ma.json" --output_csv "$(EVAL_ROOT)/mquake_ma.csv" "$(MQUAKE_MA_STAGE)" -- $(DETERMINISTIC_FLAG)
 
 evaluate-kinship:
 	@mkdir -p "$(EVAL_ROOT)"
-	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/kinship" --output_json "$(EVAL_ROOT)/kinship.json" --output_csv "$(EVAL_ROOT)/kinship.csv" "$(KINSHIP_STAGE)"
+	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/kinship" --output_json "$(EVAL_ROOT)/kinship.json" --output_csv "$(EVAL_ROOT)/kinship.csv" "$(KINSHIP_STAGE)" -- $(DETERMINISTIC_FLAG)
 
 # These are separately supplied, test-only question variants. They deliberately
 # use isolated caches and never call the canonical QA splitter or rewrite its
@@ -184,9 +191,9 @@ evaluate-additional-paraphrases:
 # Explicit recursive calls preserve ordering even with make -j: evaluation
 # must not begin before all staged checkpoints exist.
 reproduce pipeline:
-	+$(MAKE) train-all GPU="$(GPU)" WANDB="$(WANDB)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
-	+$(MAKE) evaluate GPU="$(GPU)" WANDB="$(WANDB)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
+	+$(MAKE) train-all GPU="$(GPU)" WANDB="$(WANDB)" DETERMINISTIC="$(DETERMINISTIC)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
+	+$(MAKE) evaluate GPU="$(GPU)" WANDB="$(WANDB)" DETERMINISTIC="$(DETERMINISTIC)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
 
 reproduce-kinship:
-	+$(MAKE) train-kinship GPU="$(GPU)" WANDB="$(WANDB)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
-	+$(MAKE) evaluate-kinship GPU="$(GPU)" WANDB="$(WANDB)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
+	+$(MAKE) train-kinship GPU="$(GPU)" WANDB="$(WANDB)" DETERMINISTIC="$(DETERMINISTIC)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"
+	+$(MAKE) evaluate-kinship GPU="$(GPU)" WANDB="$(WANDB)" DETERMINISTIC="$(DETERMINISTIC)" RUN_NAME="$(RUN_NAME)" RL_SEEDS="$(RL_SEEDS)" FINAL_ROOT="$(FINAL_ROOT)" BUILD_ROOT="$(BUILD_ROOT)"

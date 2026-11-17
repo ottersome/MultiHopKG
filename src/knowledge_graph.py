@@ -29,7 +29,7 @@ class KnowledgeGraph(nn.Module):
     """
     The discrete knowledge graph is stored with an adjacency list.
     """
-    CACHE_VERSION = 2
+    CACHE_VERSION = 3
     _GRAPH_DATA_CACHE = {}
     _ACTION_SPACE_CACHE = {}
     _ANSWER_CACHE = {}
@@ -242,9 +242,13 @@ class KnowledgeGraph(nn.Module):
         def get_action_space(e1):
             action_space = []
             if e1 in self.adj_list:
-                for r in self.adj_list[e1]:
+                # Relation and target containers originate as sets. Their
+                # iteration order is not a model property, yet it determines
+                # action-table columns and therefore multinomial/beam choices.
+                # Canonicalize it so rebuilding .kg_cache is reproducible.
+                for r in sorted(self.adj_list[e1]):
                     targets = self.adj_list[e1][r]
-                    for e2 in targets:
+                    for e2 in sorted(targets):
                         action_space.append((r, e2))
                 if len(action_space) + 1 >= self.bandwidth:
                     # Base graph pruning
@@ -256,7 +260,7 @@ class KnowledgeGraph(nn.Module):
 
         def get_unique_r_space(e1):
             if e1 in self.adj_list:
-                return list(self.adj_list[e1].keys())
+                return sorted(self.adj_list[e1])
             else:
                 return []
 

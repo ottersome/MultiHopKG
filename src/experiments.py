@@ -48,6 +48,13 @@ ExampleT = TypeVar('ExampleT')
 
 def configure_runtime(runtime_args: Namespace) -> None:
     """Apply process-wide runtime settings after CLI arguments are explicitly parsed."""
+    if getattr(runtime_args, 'deterministic', False):
+        # This must happen before the first CUDA context / cuBLAS operation.
+        # It is opt-in because deterministic convolution kernels can be slower.
+        os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.use_deterministic_algorithms(True)
     torch.cuda.set_device(runtime_args.gpu)
     torch.manual_seed(runtime_args.seed)
     torch.cuda.manual_seed_all(runtime_args.seed)
@@ -499,6 +506,7 @@ def train(lf: LFramework) -> None:
             args.bert_model_name,
             entity_index_path,
             relation_index_path,
+            seed=args.seed,
             force_recompute=args.recompute_qadata_cache,
             evaluate_paraphrases=False,
             filter_original_paraphrases=args.filter_original_paraphrases,
@@ -748,6 +756,7 @@ def inference(lf: LFramework) -> dict[str, dict[str, object]]:
                     args.bert_model_name,
                     entity_index_path,
                     relation_index_path,
+                    seed=args.seed,
                     force_recompute=args.recompute_qadata_cache,
                     evaluate_paraphrases=args.evaluate_paraphrases,
                     filter_original_paraphrases=args.filter_original_paraphrases,
