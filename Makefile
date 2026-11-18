@@ -138,7 +138,7 @@ define train_rl_family
 	done
 endef
 
-rl-all: rl-kinship rl-mquake-sa rl-mquake-ma # rl-metaqa  #NOTE: Skip metaqa training  for now.
+rl-all: rl-kinship rl-metaqa rl-mquake-sa rl-mquake-ma
 
 rl-kinship: linkpred-kinship
 	$(call train_rl_family,$(KINSHIP_STAGE),configs/kinshiphinton-rs-nlp-conve.sh,$(KINSHIP_LP),kinship)
@@ -165,7 +165,7 @@ train-kinship: rl-kinship
 evaluate:
 	@mkdir -p "$(EVAL_ROOT)"
 	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/kinship" --output_json "$(EVAL_ROOT)/kinship.json" --output_csv "$(EVAL_ROOT)/kinship.csv" "$(KINSHIP_STAGE)" -- $(DETERMINISTIC_FLAG)
-	# MetaQA is intentionally omitted while its reviewer run is not staged.
+	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/metaqa_encoded" --output_json "$(EVAL_ROOT)/metaqa_encoded.json" --output_csv "$(EVAL_ROOT)/metaqa_encoded.csv" "$(METAQA_STAGE)" -- $(DETERMINISTIC_FLAG)
 	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/mquake_sa" --output_json "$(EVAL_ROOT)/mquake_sa.json" --output_csv "$(EVAL_ROOT)/mquake_sa.csv" "$(MQUAKE_SA_STAGE)" -- $(DETERMINISTIC_FLAG)
 	$(PYTHON) batch_eval.py --gpu $(GPU) --log_dir "$(EVAL_ROOT)/mquake_ma" --output_json "$(EVAL_ROOT)/mquake_ma.json" --output_csv "$(EVAL_ROOT)/mquake_ma.csv" "$(MQUAKE_MA_STAGE)" -- $(DETERMINISTIC_FLAG)
 
