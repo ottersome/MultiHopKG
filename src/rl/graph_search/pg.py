@@ -18,8 +18,8 @@ import torch
 
 from src.eval import (
     FaithfulnessEvaluator, RolloutEvaluator, answer_set_f1, get_example_weight,
-    get_gold_answers, get_gold_path, get_gold_relations, path_edit_distance_norm,
-    relation_edit_distance_norm, relation_overlap_f1, subgraph_overlap_f1,
+    get_gold_answers, get_gold_path, get_gold_relations, path_edit_distance_raw,
+    relation_edit_distance_raw, relation_overlap_f1, subgraph_overlap_f1,
 )
 from src.itl_typing import QAExample
 from src.learn_framework import LFramework
@@ -521,7 +521,7 @@ class PolicyGradient(LFramework):
                                         pred_path, gold_path,
                                         faithfulness_evaluator.special_tokens,
                                         faithfulness_evaluator.inverse_mapping)[2]
-                                    path_edit = path_edit_distance_norm(
+                                    path_edit = path_edit_distance_raw(
                                         pred_path, gold_path,
                                         faithfulness_evaluator.special_tokens,
                                         faithfulness_evaluator.inverse_mapping)
@@ -529,7 +529,7 @@ class PolicyGradient(LFramework):
                                     pred_relations, gold_relations,
                                     faithfulness_evaluator.special_tokens,
                                     faithfulness_evaluator.inverse_mapping)[2]
-                                relation_edit = relation_edit_distance_norm(
+                                relation_edit = relation_edit_distance_raw(
                                     pred_relations, gold_relations,
                                     faithfulness_evaluator.special_tokens,
                                     faithfulness_evaluator.inverse_mapping)
