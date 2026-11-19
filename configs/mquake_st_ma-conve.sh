@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-# ConvE substrate for MQuAKE-ST multi-answer QA.
-# Assumes scripts/preprocess_mquake_st_ma.py has already regenerated
-# data/mquake_st/train.triples as the all-splits KG triple union.
+# ConvE substrate for MQuAKE-ST multi-answer QA. The explicit
+# lp_train.triples input is the full observed-KG union; train.triples itself
+# retains its conventional training-partition meaning.
 
 data_dir="data/mquake_st"
 lp_train_triples_path="data/mquake_st/lp_train.triples"
