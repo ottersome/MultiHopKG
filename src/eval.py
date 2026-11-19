@@ -631,7 +631,7 @@ class FaithfulnessEvaluator:
         self.rel_recall = 0.0
         self.rel_f1 = 0.0
         self.rel_edit = 0.0
-        self.path_edit = 0.0
+        self.path_edit_norm = 0.0
         self.ped = 0.0
         self.path_examples = 0
         # Path fidelity conditional on the top-1 answer being correct.  This
@@ -772,7 +772,7 @@ class FaithfulnessEvaluator:
                 for reference_path in reference_paths
             ]
             edge_p, edge_r, edge_f = max(overlap_scores, key=lambda scores: scores[2])
-            path_dist = min(
+            path_dist_norm = min(
                 path_edit_distance_norm(
                     pred_path, reference_path, self.special_tokens, self.inverse_mapping)
                 for reference_path in reference_paths
@@ -789,7 +789,7 @@ class FaithfulnessEvaluator:
             self.subgraph_precision += edge_p * weight
             self.subgraph_recall += edge_r * weight
             self.subgraph_f1 += edge_f * weight
-            self.path_edit += path_dist * weight
+            self.path_edit_norm += path_dist * weight
             self.ped += ped * weight
             self.path_examples += weight
             if answer_correct:
@@ -877,7 +877,7 @@ class FaithfulnessEvaluator:
             'faithfulness/relation_f1': self.rel_f1 / n,
             'faithfulness/relation_edit_distance': self.rel_edit / n,
             'faithfulness/path_examples': self.path_examples,
-            'faithfulness/path_edit_distance': self.path_edit / path_n,
+            'faithfulness/path_edit_distance_norm': self.path_edit_norm / path_n,
             'faithfulness/ped': self.ped / path_n,
             'faithfulness/answer_correct_path_fidelity_examples': self.answer_correct_path_examples,
             'faithfulness/answer_correct_path_examples': self.answer_correct_path_examples,
