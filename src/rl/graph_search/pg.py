@@ -329,7 +329,12 @@ class PolicyGradient(LFramework):
 
         def display_name(identifier: str, labels: Dict[str, str]) -> str:
             label = labels.get(identifier)
-            return '{} ({})'.format(label, identifier) if label else identifier
+            if label:
+                return label
+            # Keep identifiers available in the JSON raw-path fields, but do
+            # not append them to the human-readable evidence report.
+            # return '{} ({})'.format(label, identifier) if label else identifier
+            return identifier
 
         def entity_name(entity_id: int) -> str:
             identifier = str(self.kg.id2entity.get(int(entity_id), int(entity_id)))
@@ -340,10 +345,17 @@ class PolicyGradient(LFramework):
 
         def relation_name(relation_id: int) -> str:
             identifier = str(self.kg.id2relation.get(int(relation_id), int(relation_id)))
+            special_relation_labels = {
+                'NO_OP_RELATION': 'No Operation',
+                'START_RELATION': 'Start Relation',
+                'DUMMY_RELATION': 'Dummy Relation',
+            }
+            if identifier in special_relation_labels:
+                return special_relation_labels[identifier]
             is_inverse = identifier.endswith('_inv')
             base_identifier = identifier[:-4] if is_inverse else identifier
             label = display_name(base_identifier, relation_labels)
-            return 'inverse of {} ({})'.format(label, identifier) if is_inverse else label
+            return 'inverse of {}'.format(label) if is_inverse else label
 
         def relation_identifier(relation_id: int) -> str:
             return str(self.kg.id2relation.get(int(relation_id), int(relation_id)))
@@ -534,6 +546,10 @@ class PolicyGradient(LFramework):
                                 clean_hops = sum(
                                     relation not in faithfulness_evaluator.special_tokens
                                     for _, relation, _ in pred_path)
+                                clean_pred_path = [
+                                    edge for edge in pred_path
+                                    if edge[1] not in faithfulness_evaluator.special_tokens
+                                ]
                                 decoded_question = question_text(example.question)
                                 record = {
                                     'split': str(split_name).lower(),
@@ -588,8 +604,8 @@ class PolicyGradient(LFramework):
                                             ', '.join(entity_name(answer) for answer in gold_answers_for_example),
                                             entity_name(top_entity),
                                             format_path_text(gold_path or []),
+                                            format_path_text(clean_pred_path),
                                             format_path_text(pred_path),
-                                            format_path_text(pred_path, readable=False),
                                             metric_text(edge_f1),
                                             metric_text(path_edit),
                                             metric_text(relation_f1),
