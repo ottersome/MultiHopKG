@@ -512,6 +512,7 @@ class PolicyGradient(LFramework):
                                 record = {
                                     'split': str(split_name).lower(),
                                     'example_index': start + row,
+                                    'question_id': example.Question_ID,
                                     'question_text': question_text(example.question),
                                     'question_token_ids': [int(token) for token in example.question],
                                     'start_entity': entity_name(example.source_entity),

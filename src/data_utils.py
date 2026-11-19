@@ -590,6 +590,17 @@ def parse_literal_if_needed(value):
     return value
 
 
+def _normalize_question_id(value: Any) -> int | str:
+    """Convert pandas/NumPy scalar question IDs into JSON-safe primitives."""
+    if hasattr(value, 'item'):
+        value = value.item()
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if pd.isna(value):
+        raise ValueError('Question-ID must not be null')
+    return value if isinstance(value, (int, str)) else str(value)
+
+
 def normalize_answer_entities(value):
     value = parse_literal_if_needed(value)
     if hasattr(value, 'tolist'):
@@ -638,7 +649,7 @@ def load_external_qa_test_data(
         with cache_path.open() as cache_file:
             cache_metadata = json.load(cache_file)
         use_cache = (
-            cache_metadata.get('schema_version') == 2
+            cache_metadata.get('schema_version') == 3
             and cache_metadata.get('source_sha256') == source_sha256
             and cache_metadata.get('question_column') == question_column
             and cache_metadata.get('expected_setting') == expected_setting
@@ -681,6 +692,15 @@ def load_external_qa_test_data(
         # influence. Other requested columns represent exactly one text per
         # row (for example Question and New-Paraphrase).
         evaluation_df = raw_df.copy()
+        if 'Question-Number' in evaluation_df.columns:
+            source_question_ids = evaluation_df['Question-Number'].copy()
+            missing_question_ids = source_question_ids.isna()
+            source_question_ids.loc[missing_question_ids] = (
+                evaluation_df.index[missing_question_ids] + 1)
+        else:
+            source_question_ids = pd.Series(
+                evaluation_df.index + 1, index=evaluation_df.index)
+        evaluation_df['_Source-Question-ID'] = source_question_ids.map(_normalize_question_id)
         if question_column == 'Question-Paraphrased':
             def parse_question_variants(value):
                 variants = normalize_answer_entities(value)
@@ -717,6 +737,7 @@ def load_external_qa_test_data(
         processed_columns: Dict[str, Any] = {
             'Question': question_text.map(
                 lambda question: tokenizer.encode(str(question), add_special_tokens=False)),
+            'Question-ID': evaluation_df['_Source-Question-ID'],
             'Source-Entity': evaluation_df['Source-Entity'].map(lambda entity: entity2id[entity]),
             'Answer-Entity': answers.map(map_answers),
             'Hops': evaluation_df['Hops'].astype(int),
@@ -739,7 +760,7 @@ def load_external_qa_test_data(
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         test_df.to_parquet(parquet_path, index=False)
         cache_metadata = {
-            'schema_version': 2,
+            'schema_version': 3,
             'source_path': str(raw_path),
             'source_sha256': source_sha256,
             'question_column': question_column,
@@ -761,6 +782,7 @@ def load_external_qa_test_data(
         lambda answers: [int(answer) for answer in answers]
         if isinstance(answers, list) else int(answers))
     test_df['Eval-Weight'] = test_df['Eval-Weight'].astype(float)
+    test_df['Question-ID'] = test_df['Question-ID'].apply(_normalize_question_id)
 
     # Parquet restores nested lists as NumPy arrays.  The evaluator expects
     # ordinary Python containers (and tests their truth value), so normalize
@@ -795,6 +817,7 @@ def load_external_qa_test_data(
         Paths=row['Paths'] if has_paths else None,
         Path_Key=row['Path-Key'] if has_path_key else None,
         Eval_Weight=float(row['Eval-Weight']),
+        Question_ID=row['Question-ID'],
     ) for _, row in test_df.iterrows()]
 
 
@@ -872,6 +895,14 @@ def process_and_cache_triviaqa_data(
     path_keys = csv_df["Path-Key"] if "Path-Key" in csv_df.columns else None
     split_label = csv_df["SplitLabel"] if 'SplitLabel' in csv_df.columns else None
     hops = csv_df["Hops"] if 'Hops' in csv_df.columns else None
+    if 'Question-Number' in csv_df.columns:
+        question_ids = csv_df['Question-Number'].copy()
+        missing_question_ids = question_ids.isna()
+        question_ids.loc[missing_question_ids] = csv_df.index[missing_question_ids] + 1
+    else:
+        # Stable fallback based on the source CSV, before it is shuffled.
+        question_ids = pd.Series(csv_df.index + 1, index=csv_df.index)
+    question_ids = question_ids.map(_normalize_question_id).rename('Question-ID')
 
     # Ensure output directory exists
     dir_name = os.path.dirname(cached_toked_qatriples_metadata_path)
@@ -938,7 +969,7 @@ def process_and_cache_triviaqa_data(
     }
 
     # Combine all processed data into final DataFrame
-    data_columns = [tokenized_questions, mapped_source_ent, mapped_answer_ent]
+    data_columns = [tokenized_questions, mapped_source_ent, mapped_answer_ent, question_ids]
     if paraphrased_questions is not None:
         data_columns.append(tokenized_paraphrases.rename("Question-Paraphrased"))
     if paths is not None:
@@ -997,8 +1028,10 @@ def process_and_cache_triviaqa_data(
 
     # Create metadata for reproducibility and documentation
     metadata: Dict[str, Any] = {
+        "schema_version": 2,
         "question_tokenizer": question_tokenizer.name_or_path,
         "question_column": "Question",
+        "question_id_column": "Question-Number (or one-indexed source CSV row)",
         "paraphrased_question_column": "Question-Paraphrased",
         "source_entities_column": "Source-Entity",
         "answer_entity_column": "Answer-Entity",
@@ -1112,14 +1145,27 @@ def load_qa_data(
         - Automatic fallback to raw processing if cache is invalid
     """
 
-    if os.path.exists(cached_metadata_path) and not force_recompute:
+    use_cache = os.path.exists(cached_metadata_path) and not force_recompute
+    if use_cache:
+        with open(cached_metadata_path, 'r') as f:
+            cached_metadata = json.load(f)
+        # Older caches discarded Question-Number during preprocessing, so
+        # they cannot produce traceable exported evaluation examples.
+        use_cache = (
+            cached_metadata.get('schema_version') == 2
+            and 'question_id_column' in cached_metadata
+        )
+        if not use_cache:
+            print('Cached QA data lacks source question IDs; rebuilding {}'.format(
+                cached_metadata_path))
+
+    if use_cache:
         # Load from cache
         print(f"\033[93mFound cached QA data at {cached_metadata_path}, loading instead of "
               f"processing {raw_QAData_path}\033[0m")
               
         # Load metadata and extract file paths
-        with open(cached_metadata_path, 'r') as f:
-            train_metadata = json.load(f)
+        train_metadata = cached_metadata
         saved_paths: Dict[str, str] = train_metadata["saved_paths"]
 
         # Load preprocessed DataFrames
@@ -1182,6 +1228,8 @@ def load_qa_data(
     train_df['Answer-Entity'] = train_df['Answer-Entity'].apply(normalize_cached_answers)
     dev_df['Answer-Entity'] = dev_df['Answer-Entity'].apply(normalize_cached_answers)
     test_df['Answer-Entity'] = test_df['Answer-Entity'].apply(normalize_cached_answers)
+    for split_df in (train_df, dev_df, test_df):
+        split_df['Question-ID'] = split_df['Question-ID'].apply(_normalize_question_id)
 
     for split_name, split_df in [('train', train_df), ('dev', dev_df), ('test', test_df)]:
         if 'Hops' not in split_df.columns:
@@ -1258,6 +1306,7 @@ def load_qa_data(
                 Paths=row['Paths'] if has_paths else None,
                 Path_Key=row['Path-Key'] if has_path_key else None,
                 Eval_Weight=float(row['Eval-Weight']),
+                Question_ID=row['Question-ID'],
             ))
         return examples
 

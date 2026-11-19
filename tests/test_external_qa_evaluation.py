@@ -32,6 +32,7 @@ class ExternalQAEvaluationTests(unittest.TestCase):
             source = directory / 'external.csv'
             pd.DataFrame([{
                 'SplitLabel': 'test',
+                'Question-Number': 37,
                 'Setting': 'sa',
                 'New-Paraphrase': 'fresh wording',
                 'Source-Entity': 'source',
@@ -52,6 +53,7 @@ class ExternalQAEvaluationTests(unittest.TestCase):
             self.assertEqual(examples[0].question, [5, 7])
             self.assertEqual(examples[0].Paths, [[0, 0, 1]])
             self.assertEqual(examples[0].Path_Key, [0])
+            self.assertEqual(examples[0].Question_ID, 37)
             self.assertTrue(cache.is_file())
             self.assertTrue(cache.with_suffix('.parquet').is_file())
 
@@ -109,6 +111,9 @@ class ExternalQAEvaluationTests(unittest.TestCase):
 
             self.assertEqual([example.question for example in examples], [[5, 7], [6, 7]])
             self.assertEqual([example.Eval_Weight for example in examples], [0.5, 0.5])
+            # No Question-Number was supplied, so both paraphrases retain
+            # their shared one-indexed source CSV row ID.
+            self.assertEqual([example.Question_ID for example in examples], [1, 1])
 
 
 if __name__ == '__main__':

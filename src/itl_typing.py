@@ -52,6 +52,10 @@ class QAExample(NamedTuple):
     Paths: Optional[Sequence[Sequence[int]]] = None
     Path_Key: Optional[Sequence[int]] = None
     Eval_Weight: float = 1.0
+    # Stable identifier from the source QA CSV. This is intentionally separate
+    # from a split-local row index, which can change after shuffling or
+    # paraphrase expansion.
+    Question_ID: Union[int, str] = ''
 
 # Dataset Split Types
 SplitTuple = namedtuple("SplitTuple", ["train", "dev", "test"])
