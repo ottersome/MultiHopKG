@@ -308,11 +308,12 @@ class PolicyGradient(LFramework):
             data_dir=self.args.data_dir,
         )
 
-        # This intentionally writes JSON Lines: evaluation can be large, and a
-        # stream of independently parseable records avoids keeping every result
-        # in memory.  A {split} placeholder prevents dev and test records from
-        # sharing a file; otherwise the test pass appends to the dev pass.
+        # JSONL is the machine-readable source of truth.  A parallel text
+        # report makes the same evidence easy to inspect without a parser.
+        # A {split} placeholder prevents dev and test records from sharing a
+        # file; otherwise the test pass appends to the dev pass.
         example_output: Optional[TextIO] = None
+        human_example_output: Optional[TextIO] = None
         example_output_path = getattr(self.args, 'evaluation_examples_output_path', '')
         if example_output_path and is_qa_data:
             output_path = example_output_path.format(split=str(split_name).lower())
@@ -321,7 +322,10 @@ class PolicyGradient(LFramework):
                 os.makedirs(output_dir, exist_ok=True)
             mode = 'w' if ('{split}' in example_output_path or str(split_name).lower() == 'dev') else 'a'
             example_output = open(output_path, mode, encoding='utf-8')
-            print('Writing per-example rollout evaluation to {}'.format(output_path))
+            human_output_path = '{}.txt'.format(os.path.splitext(output_path)[0])
+            human_example_output = open(human_output_path, mode, encoding='utf-8')
+            print('Writing per-example rollout evaluation to {} and {}'.format(
+                output_path, human_output_path))
 
         def display_name(identifier: str, labels: Dict[str, str]) -> str:
             label = labels.get(identifier)
@@ -331,6 +335,9 @@ class PolicyGradient(LFramework):
             identifier = str(self.kg.id2entity.get(int(entity_id), int(entity_id)))
             return display_name(identifier, entity_labels)
 
+        def entity_identifier(entity_id: int) -> str:
+            return str(self.kg.id2entity.get(int(entity_id), int(entity_id)))
+
         def relation_name(relation_id: int) -> str:
             identifier = str(self.kg.id2relation.get(int(relation_id), int(relation_id)))
             is_inverse = identifier.endswith('_inv')
@@ -338,11 +345,29 @@ class PolicyGradient(LFramework):
             label = display_name(base_identifier, relation_labels)
             return 'inverse of {} ({})'.format(label, identifier) if is_inverse else label
 
+        def relation_identifier(relation_id: int) -> str:
+            return str(self.kg.id2relation.get(int(relation_id), int(relation_id)))
+
         def format_path(path):
             return [
                 {'head': entity_name(head), 'relation': relation_name(relation), 'tail': entity_name(tail)}
                 for head, relation, tail in path
             ]
+
+        def format_path_text(path, readable: bool = True) -> str:
+            if not path:
+                return '(none)'
+            entity_formatter = entity_name if readable else entity_identifier
+            relation_formatter = relation_name if readable else relation_identifier
+            head, relation, tail = path[0]
+            rendered = entity_formatter(head)
+            for head, relation, tail in path:
+                rendered += ' --[{}]--> {}'.format(
+                    relation_formatter(relation), entity_formatter(tail))
+            return rendered
+
+        def metric_text(value: Optional[float]) -> str:
+            return 'n/a' if value is None else '{:.4f}'.format(value)
 
         entity_labels: Dict[str, str] = {}
         relation_labels: Dict[str, str] = {}
@@ -509,11 +534,12 @@ class PolicyGradient(LFramework):
                                 clean_hops = sum(
                                     relation not in faithfulness_evaluator.special_tokens
                                     for _, relation, _ in pred_path)
+                                decoded_question = question_text(example.question)
                                 record = {
                                     'split': str(split_name).lower(),
                                     'example_index': start + row,
                                     'question_id': example.Question_ID,
-                                    'question_text': question_text(example.question),
+                                    'question_text': decoded_question,
                                     'question_token_ids': [int(token) for token in example.question],
                                     'start_entity': entity_name(example.source_entity),
                                     'gold_answers': [entity_name(answer) for answer in gold_answers_for_example],
@@ -536,9 +562,50 @@ class PolicyGradient(LFramework):
                                     'solved_hit_at_1': bool(solved),
                                 }
                                 example_output.write(json.dumps(record, sort_keys=True) + '\n')
+                                if human_example_output is not None:
+                                    human_example_output.write(
+                                        '========================================\n'
+                                        'Question ID:       {}\n'
+                                        'Question:          {}\n'
+                                        'Start Entity:      {}\n'
+                                        'Gold Answer(s):    {}\n'
+                                        'Predicted Answer:  {}\n'
+                                        'Gold Path:         {}\n'
+                                        'Predicted Path:    {}\n'
+                                        'Path (Raw):        {}\n'
+                                        'Path F1 Score(↑):  {}\n'
+                                        'Edit Distance(↓):  {}\n'
+                                        'Rel F1 Score(↑):   {}\n'
+                                        'Rel Edit Dist(↓):  {}\n'
+                                        'Neg LogProb(↓):    {:.6f}\n'
+                                        'Path Entropy(↓):   {:.6f}\n'
+                                        'Gold Hop Count:    {}\n'
+                                        'Agent Hop Count:   {}\n'
+                                        'Solved (Hit@1):    {}\n\n'.format(
+                                            example.Question_ID,
+                                            decoded_question or '(unable to decode cached tokens)',
+                                            entity_name(example.source_entity),
+                                            ', '.join(entity_name(answer) for answer in gold_answers_for_example),
+                                            entity_name(top_entity),
+                                            format_path_text(gold_path or []),
+                                            format_path_text(pred_path),
+                                            format_path_text(pred_path, readable=False),
+                                            metric_text(edge_f1),
+                                            metric_text(path_edit),
+                                            metric_text(relation_f1),
+                                            metric_text(relation_edit),
+                                            float(-row_scores[0]),
+                                            path_entropy,
+                                            int(example.Hops),
+                                            int(clean_hops),
+                                            bool(solved),
+                                        )
+                                    )
         finally:
             if example_output is not None:
                 example_output.close()
+            if human_example_output is not None:
+                human_example_output.close()
             if disable_dropout:
                 self.action_dropout_rate = prev_dropout
             if training_state:
